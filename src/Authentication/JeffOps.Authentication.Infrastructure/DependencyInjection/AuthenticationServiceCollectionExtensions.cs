@@ -170,6 +170,8 @@ public static class AuthenticationServiceCollectionExtensions
 
         services.AddHostedService<AuthenticationStartup>();
         services.AddHttpClient(BackchannelLogoutNotifier.HttpClientName);
+        services.AddHttpClient(ExternalTokenValidator.HttpClientName);
+        services.TryAddSingleton<Application.Features.Grants.WorkloadIdentity.IExternalTokenValidator, ExternalTokenValidator>();
         services.AddDomainEventHandler<BackchannelLogoutNotifier>();
 
         return new AuthenticationBuilder(services, configuration);

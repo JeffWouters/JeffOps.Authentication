@@ -504,6 +504,17 @@ The `external` token-exchange grant is **kept** as an optional extension for cli
 - **Clients** are seeded from configuration at startup and kept in sync; confidential clients need a secret of at least 32 characters outside Development; PKCE is required for every code-flow client.
 - **`AuthenticationBuilder`** lives in Application (it is only the service collection and configuration), so plug-ins that may reference Application only can extend it. EF-specific extensions (`UseDatabase`) live in Infrastructure.
 
+### 7.3.2 As built (phase 9: hardening)
+
+All opt-in per client (`ClientDefinition`), except the endpoints themselves, which are always on.
+
+- **Pushed authorization requests** (RFC 9126): `connect/par`; every code-flow client may push, `RequirePushedAuthorization` makes it mandatory (OpenIddict refuses unpushed requests).
+- **`private_key_jwt`** (RFC 7523 client authentication): `JsonWebKeySet` holds the client's public keys; a confidential client with keys needs no secret. Assertions use `typ` `client-authentication+jwt` and the issuer as audience (OpenIddict 7 enforces both).
+- **Device authorization grant** (RFC 8628): `connect/device` and `connect/verify`; the hosted page `account/device` takes the code, **names the client**, and asks to allow or deny (antiforgery-protected). Device codes redeem through the same session rebuild as authorization codes.
+- **DPoP** (RFC 9449), implemented here because OpenIddict 7 doesn't: proofs are validated by a dependency-free validator in Abstractions (ES256/384/512, RS256, PS256; RFC 7638 thumbprints). At the token endpoint a proof binds the access token (`cnf.jkt`, `token_type: DPoP`) and the refresh token (a private binding claim kept out of access tokens; refreshing needs the same key); `RequireDpop` makes proofs mandatory; proofs work once (replay cache) within ±5 minutes; discovery lists `dpop_signing_alg_values_supported`. Resource services (`AuthenticationClientOptions.Dpop`): the `DPoP` scheme is read, a bound token needs a fresh proof for the request (`htm`, `htu`, `ath`) signed by the bound key, a bound token sent as `Bearer` is refused, and `Required` refuses unbound tokens. Not yet: server nonces, DPoP at `connect/userinfo`, `dpop_jkt` at the authorization endpoint.
+- **Workload identity federation** (RFC 7523 JWT bearer grant, `urn:ietf:params:oauth:grant-type:jwt-bearer`): a workload (CI, Kubernetes, a cloud) presents its platform-issued token; when it matches one of the client's `FederatedCredentials` (issuer, exact subject, audience) — validated against the issuer's discovery document and keys over HTTPS, with signature, issuer, audience and lifetime checks — it gets the client's service token, with no secret to store. Audited as `workload.signed_in`. Extension grants may now be full URNs.
+- Service-principal claims moved to a shared `ServiceIdentity` used by client credentials and workload identity.
+
 ### 7.4 Tokens
 
 | Token | Format | Lifetime (default) | Notes |
@@ -1009,7 +1020,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **6 — Delegation** ✅ | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
 | **7 — Local accounts** ✅ | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
 | **8 — Enterprise** ✅ | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
-| **9 — Hardening** | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
+| **9 — Hardening** ✅ | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
 
 ---
 

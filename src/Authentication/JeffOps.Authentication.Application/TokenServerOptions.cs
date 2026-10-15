@@ -45,8 +45,12 @@ public sealed class TokenServerOptions
 
     public string PatGrantType => $"{ExtensionGrantNamespace}:pat";
 
-    /// <summary>The grant type of the extension grant <paramref name="name"/>.</summary>
-    public string ExtensionGrantType(string name) => $"{ExtensionGrantNamespace}:{name}";
+    /// <summary>
+    /// The grant type of the extension grant <paramref name="name"/>: <c>{ExtensionGrantNamespace}:{name}</c>, or the name itself
+    /// when it is already a URN (standard grants such as RFC 7523's JWT bearer grant).
+    /// </summary>
+    public string ExtensionGrantType(string name) =>
+        name.StartsWith("urn:", StringComparison.Ordinal) ? name : $"{ExtensionGrantNamespace}:{name}";
 }
 
 /// <summary>The strong-authentication policy (docs/DESIGN.md §8.1).</summary>
