@@ -6,7 +6,22 @@ Reusable authentication and authorization libraries for multi-tenant .NET 10 app
 - permission-based authorization evaluated locally in each service
 - client libraries for SPAs (through a BFF), web apps, native apps, CLIs and services
 
-> Status: **phase 0, scaffold**. Packages are empty apart from the shared kernel. Do not use yet.
+> Status: **pre-release**. All roadmap phases are implemented and tested, but nothing is published to NuGet yet and the
+> public API may still change.
+
+## What's in it
+
+- **Token server:** authorization code + PKCE, refresh with live revalidation, client credentials, personal access tokens,
+  userinfo, end-session, back-channel logout, PAR, device flow, `private_key_jwt`, DPoP, workload identity federation;
+  signing keys in the database or Azure Key Vault.
+- **Sign-in:** any OpenID Connect provider, Microsoft Entra, SAML 2.0, and local accounts (passwords, TOTP, recovery codes,
+  passkeys, lockout, verification, reset), with a hosted login UI.
+- **Enterprise:** DNS-verified tenant domains, per-tenant SSO and SSO-only, SCIM 2.0 provisioning of users and groups.
+- **Delegation:** impersonation with the target's approval (and break-glass), lockbox tenant access, tenant switch.
+- **Authorization:** permissions with wildcards, scopes, roles, attribute policies, ceilings (PAT, delegation, step-up,
+  impersonation), and management with four-eyes approval, break-glass, recertification, group role assignments.
+- **Clients:** JWT validation for resource services (with DPoP), service tokens, and a backend-for-frontend with YARP,
+  including acting sessions for impersonation and tenant switch.
 
 ## Design
 
@@ -35,8 +50,8 @@ Release builds are strict: warnings are errors, analyzers and code style are enf
 src/
   Shared/           SharedKernel, Abstractions
   Authentication/   Domain, Application, Infrastructure, Persistence.SqlServer, Endpoints, UI
-    Plugins/        KeyVault, Federation.Entra, Federation.Oidc
-    Modules/        LocalAccounts, Delegation
+    Plugins/        KeyVault, Federation.Entra, Federation.Oidc, Federation.Saml
+    Modules/        LocalAccounts, Delegation, Enterprise (each with a .SqlServer package)
   Authorization/    Domain, Application, Infrastructure, Persistence.SqlServer, Endpoints, AspNetCore
   Clients/          Client, Bff, Bff.Yarp
   Common/           Security.AspNetCore, Entitlements, Testing
