@@ -20,6 +20,7 @@
   <Folder Name="/src/Authorization/">
     <Project Path="src/Authorization/JeffOps.Authorization.Application/JeffOps.Authorization.Application.csproj" />
     <Project Path="src/Authorization/JeffOps.Authorization.AspNetCore/JeffOps.Authorization.AspNetCore.csproj" />
+    <Project Path="src/Authorization/JeffOps.Authorization.Contracts/JeffOps.Authorization.Contracts.csproj" />
     <Project Path="src/Authorization/JeffOps.Authorization.Domain/JeffOps.Authorization.Domain.csproj" />
     <Project Path="src/Authorization/JeffOps.Authorization.Endpoints/JeffOps.Authorization.Endpoints.csproj" />
     <Project Path="src/Authorization/JeffOps.Authorization.Infrastructure/JeffOps.Authorization.Infrastructure.csproj" />
@@ -42,5 +43,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/JeffOps.Authentication.Architecture.Tests/JeffOps.Authentication.Architecture.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.SharedKernel.Tests/JeffOps.Authentication.SharedKernel.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authorization.AspNetCore.Tests/JeffOps.Authorization.AspNetCore.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authorization.Domain.Tests/JeffOps.Authorization.Domain.Tests.csproj" />
   </Folder>
 </Solution>

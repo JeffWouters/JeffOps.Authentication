@@ -24,6 +24,7 @@
     <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Application/JeffOps.Authorization.Application.csproj" />
     <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.AspNetCore/JeffOps.Authorization.AspNetCore.csproj" />
     <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Domain/JeffOps.Authorization.Domain.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Contracts/JeffOps.Authorization.Contracts.csproj" />
     <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Endpoints/JeffOps.Authorization.Endpoints.csproj" />
     <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Infrastructure/JeffOps.Authorization.Infrastructure.csproj" />
     <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Persistence.SqlServer/JeffOps.Authorization.Persistence.SqlServer.csproj" />

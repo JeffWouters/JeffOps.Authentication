@@ -49,10 +49,10 @@ public sealed class ProjectDependencyTests
 
     [Theory]
     [MemberData(nameof(SourceProjects))]
-    public void Domain_and_application_reference_no_frameworks_or_infrastructure_packages(string projectName)
+    public void Domain_contracts_and_application_reference_no_frameworks_or_infrastructure_packages(string projectName)
     {
         var kind = ProjectKinds.KindOf(projectName);
-        if (kind is not (ProjectKind.Domain or ProjectKind.Application))
+        if (kind is not (ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application))
         {
             return;
         }
@@ -92,17 +92,19 @@ public sealed class ProjectDependencyTests
         {
             ProjectKind.Kernel => false,
             ProjectKind.Domain => reference == ProjectKinds.SharedKernel,
-            ProjectKind.Application => referenceKind == ProjectKind.Kernel
+            ProjectKind.Contracts => referenceKind == ProjectKind.Kernel
                 || (referenceKind == ProjectKind.Domain && sameContext),
+            ProjectKind.Application => referenceKind == ProjectKind.Kernel
+                || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Contracts),
             ProjectKind.Infrastructure => referenceKind is ProjectKind.Kernel
-                || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Application or ProjectKind.Infrastructure),
+                || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application or ProjectKind.Infrastructure),
             ProjectKind.Presentation => referenceKind is ProjectKind.Kernel
-                || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Application),
+                || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
             ProjectKind.Plugin or ProjectKind.FeatureModule => referenceKind == ProjectKind.Kernel
                 || (reference.StartsWith("JeffOps.Authentication.", StringComparison.Ordinal)
-                    && referenceKind is ProjectKind.Domain or ProjectKind.Application),
+                    && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
             ProjectKind.ClientAdapter or ProjectKind.Common => referenceKind is ProjectKind.Kernel
-                or ProjectKind.ClientAdapter or ProjectKind.Common
+                or ProjectKind.ClientAdapter or ProjectKind.Common or ProjectKind.Contracts
                 || (referenceKind == ProjectKind.Domain && reference.StartsWith("JeffOps.Authorization.", StringComparison.Ordinal)),
             _ => false,
         };

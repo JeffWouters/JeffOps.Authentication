@@ -34,12 +34,12 @@ public sealed class TypeDependencyTests
     };
 
     [Fact]
-    public void Domain_and_application_types_use_no_framework_or_infrastructure_namespaces()
+    public void Domain_contracts_and_application_types_use_no_framework_or_infrastructure_namespaces()
     {
         var violations =
             from type in SourceTypes.Model.Types
             let kind = ProjectKinds.Classify(type.Assembly.Name.Split(',')[0])
-            where kind is ProjectKind.Domain or ProjectKind.Application
+            where kind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application
             from dependency in type.Dependencies
             let target = dependency.Target.Namespace.FullName
             where ForbiddenInCore.Any(prefix => target == prefix || target.StartsWith(prefix + ".", StringComparison.Ordinal))

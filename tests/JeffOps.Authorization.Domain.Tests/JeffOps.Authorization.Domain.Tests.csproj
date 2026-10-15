@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Domain\JeffOps.Authorization.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

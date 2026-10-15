@@ -10,6 +10,9 @@ internal enum ProjectKind
 
     Domain,
 
+    /// <summary>Wire contracts (DTOs, integration events) of a bounded context; pure like Domain.</summary>
+    Contracts,
+
     Application,
 
     /// <summary>Infrastructure and Persistence.* projects.</summary>
@@ -50,6 +53,7 @@ internal static class ProjectKinds
             or "JeffOps.Authorization.AspNetCore" => ProjectKind.ClientAdapter,
         "JeffOps.Security.AspNetCore" or "JeffOps.Entitlements" or "JeffOps.Authentication.Testing" => ProjectKind.Common,
         _ when name.EndsWith(".Domain", StringComparison.Ordinal) => ProjectKind.Domain,
+        _ when name.EndsWith(".Contracts", StringComparison.Ordinal) => ProjectKind.Contracts,
         _ when name.EndsWith(".Application", StringComparison.Ordinal) => ProjectKind.Application,
         _ when name.EndsWith(".Infrastructure", StringComparison.Ordinal)
             || name.Contains(".Persistence.", StringComparison.Ordinal) => ProjectKind.Infrastructure,
