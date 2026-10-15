@@ -1,5 +1,6 @@
 using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.Abstractions.Messaging;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace JeffOps.Authentication.Infrastructure.Defaults;
@@ -30,16 +31,28 @@ internal sealed partial class LoggingAuditSink(ILogger<LoggingAuditSink> logger)
     private static partial void LogWarning(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId);
 }
 
-/// <summary>The default <see cref="IEventPublisher"/>: logs events without delivering them. Replace with a broker adapter.</summary>
-internal sealed partial class LoggingEventPublisher(ILogger<LoggingEventPublisher> logger) : IEventPublisher
+/// <summary>
+/// The default <see cref="IEventPublisher"/>: delivers events to this host's own <see cref="IIntegrationEventHandler{TEvent}"/>s
+/// (for example co-hosted authorization management) and logs them. Replace with a broker adapter to reach other services.
+/// </summary>
+internal sealed partial class InProcessEventPublisher(IServiceScopeFactory scopes, ILogger<InProcessEventPublisher> logger) : IEventPublisher
 {
-    public Task PublishAsync(IntegrationEvent integrationEvent, CancellationToken cancellationToken)
+    public async Task PublishAsync(IntegrationEvent integrationEvent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(integrationEvent);
-        LogPublished(logger, integrationEvent.Type, integrationEvent.Id);
-        return Task.CompletedTask;
+
+        var handlerType = typeof(IIntegrationEventHandler<>).MakeGenericType(integrationEvent.GetType());
+        var method = handlerType.GetMethod(nameof(IIntegrationEventHandler<IntegrationEvent>.HandleAsync))!;
+        await using var scope = scopes.CreateAsyncScope();
+        var handlers = scope.ServiceProvider.GetServices(handlerType).ToList();
+        foreach (var handler in handlers)
+        {
+            await ((Task)method.Invoke(handler, [integrationEvent, cancellationToken])!).ConfigureAwait(false);
+        }
+
+        LogPublished(logger, integrationEvent.Type, integrationEvent.Id, handlers.Count);
     }
 
-    [LoggerMessage(EventId = 8303, Level = LogLevel.Debug, Message = "Integration event {Type} ({Id}) raised; no publisher is configured.")]
-    private static partial void LogPublished(ILogger logger, string type, Guid id);
+    [LoggerMessage(EventId = 8303, Level = LogLevel.Debug, Message = "Integration event {Type} ({Id}) delivered to {Count} local handlers.")]
+    private static partial void LogPublished(ILogger logger, string type, Guid id, int count);
 }

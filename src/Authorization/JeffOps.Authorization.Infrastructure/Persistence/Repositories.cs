@@ -101,6 +101,42 @@ internal sealed class RegisteredPermissionRepository(AuthorizationDbContext db) 
     public void Add(RegisteredPermission permission) => db.RegisteredPermissions.Add(permission);
 }
 
+internal sealed class GroupAssignmentRepository(AuthorizationDbContext db) : IGroupAssignmentRepository
+{
+    public Task<GroupAssignment?> FindAsync(Guid assignmentId, CancellationToken cancellationToken) =>
+        db.GroupAssignments.FirstOrDefaultAsync(assignment => assignment.Id == assignmentId, cancellationToken);
+
+    public async Task<IReadOnlyList<GroupAssignment>> ListForUserAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken) =>
+        await db.GroupAssignments
+            .Where(assignment => assignment.TenantId == tenantId
+                && db.GroupMembers.Any(member => member.TenantId == tenantId && member.GroupId == assignment.GroupId && member.UserId == userId))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<GroupAssignment>> ListForGroupAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken) =>
+        await db.GroupAssignments.Where(assignment => assignment.TenantId == tenantId && assignment.GroupId == groupId).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<GroupAssignment>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken) =>
+        await db.GroupAssignments.Where(assignment => assignment.TenantId == tenantId).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public void Add(GroupAssignment assignment) => db.GroupAssignments.Add(assignment);
+
+    public void Remove(GroupAssignment assignment) => db.GroupAssignments.Remove(assignment);
+}
+
+internal sealed class GroupMemberRepository(AuthorizationDbContext db) : IGroupMemberRepository
+{
+    public async Task<IReadOnlyList<Guid>> ListMembersAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken) =>
+        await db.GroupMembers.Where(member => member.TenantId == tenantId && member.GroupId == groupId).Select(member => member.UserId).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task ReplaceAsync(Guid tenantId, Guid groupId, IReadOnlyCollection<Guid> members, CancellationToken cancellationToken)
+    {
+        var current = await db.GroupMembers.Where(member => member.TenantId == tenantId && member.GroupId == groupId).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var wanted = members.ToHashSet();
+        db.GroupMembers.RemoveRange(current.Where(member => !wanted.Contains(member.UserId)));
+        db.GroupMembers.AddRange(wanted.Where(user => current.All(member => member.UserId != user)).Select(user => new GroupMember(tenantId, groupId, user)));
+    }
+}
+
 /// <summary>Saves, then dispatches the domain events of the saved aggregates (including deleted ones).</summary>
 internal sealed class EfUnitOfWork(AuthorizationDbContext db, IDomainEventDispatcher dispatcher) : IUnitOfWork
 {

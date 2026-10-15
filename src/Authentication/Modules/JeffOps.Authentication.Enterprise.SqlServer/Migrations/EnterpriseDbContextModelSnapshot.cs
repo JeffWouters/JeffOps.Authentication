@@ -23,6 +23,134 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("JeffOps.Authentication.Enterprise.Domain.ScimGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("Created")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("LastModified")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "DisplayName")
+                        .IsUnique();
+
+                    b.ToTable("ScimGroups", "enterprise");
+                });
+
+            modelBuilder.Entity("JeffOps.Authentication.Enterprise.Domain.ScimToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("LastUsedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("ScimTokens", "enterprise");
+                });
+
+            modelBuilder.Entity("JeffOps.Authentication.Enterprise.Domain.ScimUser", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Active")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset>("Created")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("CreatedAccount")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("FamilyName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("GivenName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTimeOffset>("LastModified")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("UserName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("TenantId", "AccountId");
+
+                    b.HasIndex("TenantId", "ExternalId");
+
+                    b.HasIndex("TenantId", "UserName")
+                        .IsUnique();
+
+                    b.ToTable("ScimUsers", "enterprise");
+                });
+
             modelBuilder.Entity("JeffOps.Authentication.Enterprise.Domain.SsoPolicy", b =>
                 {
                     b.Property<Guid>("TenantId")
@@ -87,6 +215,29 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
                         .IsUnique();
 
                     b.ToTable("TenantDomains", "enterprise");
+                });
+
+            modelBuilder.Entity("JeffOps.Authentication.Enterprise.Domain.ScimGroup", b =>
+                {
+                    b.OwnsMany("JeffOps.Authentication.Enterprise.Domain.ScimGroupMember", "Members", b1 =>
+                        {
+                            b1.Property<Guid>("GroupId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<Guid>("AccountId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.HasKey("GroupId", "AccountId");
+
+                            b1.HasIndex("AccountId");
+
+                            b1.ToTable("ScimGroupMembers", "enterprise");
+
+                            b1.WithOwner()
+                                .HasForeignKey("GroupId");
+                        });
+
+                    b.Navigation("Members");
                 });
 #pragma warning restore 612, 618
         }

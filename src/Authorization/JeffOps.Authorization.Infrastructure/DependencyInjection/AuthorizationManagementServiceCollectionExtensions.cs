@@ -59,6 +59,8 @@ public static class AuthorizationManagementServiceCollectionExtensions
         services.TryAddScoped<IPolicyRepository, PolicyRepository>();
         services.TryAddScoped<IScopeRepository, ScopeRepository>();
         services.TryAddScoped<IRegisteredPermissionRepository, RegisteredPermissionRepository>();
+        services.TryAddScoped<IGroupAssignmentRepository, GroupAssignmentRepository>();
+        services.TryAddScoped<IGroupMemberRepository, GroupMemberRepository>();
         services.TryAddScoped<IUnitOfWork, EfUnitOfWork>();
         services.TryAddSingleton<IAuditSink, LoggingAuditSink>();
         // Default: deliver to this host's own handlers (its decision cache). Register a broker publisher to reach other services.

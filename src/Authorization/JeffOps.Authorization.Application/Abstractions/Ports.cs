@@ -31,6 +31,31 @@ public interface IAssignmentRepository
     void Remove(Assignment assignment);
 }
 
+public interface IGroupAssignmentRepository
+{
+    Task<GroupAssignment?> FindAsync(Guid assignmentId, CancellationToken cancellationToken);
+
+    /// <summary>The group assignments that reach <paramref name="userId"/> through their group memberships in the tenant.</summary>
+    Task<IReadOnlyList<GroupAssignment>> ListForUserAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GroupAssignment>> ListForGroupAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GroupAssignment>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken);
+
+    void Add(GroupAssignment assignment);
+
+    void Remove(GroupAssignment assignment);
+}
+
+/// <summary>The mirrored membership of tenant groups.</summary>
+public interface IGroupMemberRepository
+{
+    Task<IReadOnlyList<Guid>> ListMembersAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken);
+
+    /// <summary>Makes <paramref name="members"/> the group's members.</summary>
+    Task ReplaceAsync(Guid tenantId, Guid groupId, IReadOnlyCollection<Guid> members, CancellationToken cancellationToken);
+}
+
 public interface IRoleChangeRepository
 {
     Task<RoleChangeRequest?> FindAsync(Guid requestId, CancellationToken cancellationToken);

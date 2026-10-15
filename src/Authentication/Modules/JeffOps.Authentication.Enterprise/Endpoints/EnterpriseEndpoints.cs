@@ -3,6 +3,7 @@ using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Application;
 using JeffOps.Authentication.Enterprise.Application.Features.Domains;
+using JeffOps.Authentication.Enterprise.Application.Features.ScimTokens;
 using JeffOps.Authentication.Enterprise.Application.Features.Sso;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
@@ -20,14 +21,18 @@ public sealed record ClaimDomainRequest(string Domain);
 
 public sealed record SetSsoPolicyRequest(string? Provider, bool SsoOnly);
 
+public sealed record CreateScimTokenRequest(string Name);
+
 public static class EnterpriseEndpointRouteBuilderExtensions
 {
     public const string DomainRoutes = "enterprise/domains";
     public const string SsoRoute = "enterprise/sso";
+    public const string ScimTokenRoutes = "enterprise/scim-tokens";
 
     /// <summary>
-    /// Maps tenant administration of verified domains (<c>enterprise/domains</c>: list, claim, verify, remove) and the
-    /// single sign-on policy (<c>enterprise/sso</c>: get, set) for the caller's own tenant. Callers need the host's
+    /// Maps tenant administration of verified domains (<c>enterprise/domains</c>: list, claim, verify, remove), the
+    /// single sign-on policy (<c>enterprise/sso</c>: get, set) and SCIM tokens (<c>enterprise/scim-tokens</c>: list, create,
+    /// revoke) for the caller's own tenant. Callers need the host's
     /// <see cref="EnterpriseOptions.ManagePolicy"/>, their own (non-impersonated, non-delegated) session, and step-up for changes.
     /// </summary>
     public static IEndpointRouteBuilder MapJeffOpsEnterprise(this IEndpointRouteBuilder endpoints)
@@ -57,6 +62,17 @@ public static class EnterpriseEndpointRouteBuilderExtensions
         {
             var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name).ToList();
             return ToResult(await handler.HandleAsync(new SetSsoPolicyCommand(Caller(context), request.Provider, request.SsoOnly, known), context.RequestAborted).ConfigureAwait(false));
+        }).AddEndpointFilter<StepUpFilter>();
+
+        root.MapGet(ScimTokenRoutes, async (HttpContext context, IQueryHandler<ListScimTokensQuery, IReadOnlyList<ScimTokenDto>> handler) =>
+            ToResult(await handler.HandleAsync(new ListScimTokensQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
+        root.MapPost(ScimTokenRoutes, async (CreateScimTokenRequest request, HttpContext context, ICommandHandler<CreateScimTokenCommand, CreatedScimToken> handler) =>
+            ToResult(await handler.HandleAsync(new CreateScimTokenCommand(Caller(context), request.Name), context.RequestAborted).ConfigureAwait(false)))
+            .AddEndpointFilter<StepUpFilter>();
+        root.MapDelete(ScimTokenRoutes + "/{tokenId:guid}", async (Guid tokenId, HttpContext context, ICommandHandler<RevokeScimTokenCommand> handler) =>
+        {
+            var result = await handler.HandleAsync(new RevokeScimTokenCommand(Caller(context), tokenId), context.RequestAborted).ConfigureAwait(false);
+            return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
         }).AddEndpointFilter<StepUpFilter>();
 
         return endpoints;

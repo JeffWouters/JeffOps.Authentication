@@ -71,12 +71,12 @@ public sealed class TypeDependencyTests
     {
         var violations =
             from type in SourceTypes.Model.Types
-            let module = FeatureModules.SingleOrDefault(name => type.Namespace.FullName.StartsWith(name + ".", StringComparison.Ordinal))
+            let module = FeatureModules.SingleOrDefault(name => (type.Namespace?.FullName ?? string.Empty).StartsWith(name + ".", StringComparison.Ordinal))
             where module is not null
             let fromLayer = LayerOf(module, type.Namespace.FullName)
             where fromLayer is not null
             from dependency in type.Dependencies
-            let toLayer = LayerOf(module, dependency.Target.Namespace.FullName)
+            let toLayer = LayerOf(module, dependency.Target.Namespace?.FullName ?? string.Empty)
             where toLayer is not null && !AllowedModuleLayers[fromLayer].Contains(toLayer)
             select $"{type.FullName} ({fromLayer}) -> {dependency.Target.FullName} ({toLayer})";
 

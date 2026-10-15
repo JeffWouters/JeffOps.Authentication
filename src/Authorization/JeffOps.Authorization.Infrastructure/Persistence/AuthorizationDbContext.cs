@@ -22,6 +22,10 @@ public sealed class AuthorizationDbContext(DbContextOptions<AuthorizationDbConte
 
     public DbSet<Scope> Scopes => Set<Scope>();
 
+    public DbSet<GroupAssignment> GroupAssignments => Set<GroupAssignment>();
+
+    public DbSet<GroupMember> GroupMembers => Set<GroupMember>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -99,6 +103,23 @@ public sealed class AuthorizationDbContext(DbContextOptions<AuthorizationDbConte
             policy.Property(entity => entity.TargetResourceType).HasMaxLength(100);
             policy.Property(entity => entity.Effect).HasConversion<string>().HasMaxLength(10);
             policy.Ignore(entity => entity.DomainEvents);
+        });
+
+        modelBuilder.Entity<GroupAssignment>(assignment =>
+        {
+            assignment.ToTable("GroupAssignments");
+            assignment.HasKey(entity => entity.Id);
+            assignment.Property(entity => entity.Id).ValueGeneratedNever();
+            assignment.Property(entity => entity.ScopeKey).HasMaxLength(100).IsRequired();
+            assignment.HasIndex(entity => new { entity.TenantId, entity.GroupId });
+            assignment.Ignore(entity => entity.DomainEvents);
+        });
+
+        modelBuilder.Entity<GroupMember>(member =>
+        {
+            member.ToTable("GroupMembers");
+            member.HasKey(entity => new { entity.TenantId, entity.GroupId, entity.UserId });
+            member.HasIndex(entity => new { entity.TenantId, entity.UserId });
         });
 
         modelBuilder.Entity<Scope>(scope =>

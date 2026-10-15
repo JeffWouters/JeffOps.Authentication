@@ -11,6 +11,7 @@ public static class ManagementRoutes
     public const string RoleChanges = Prefix + "/role-changes";
     public const string ApprovalSetting = Prefix + "/approval-setting";
     public const string Assignments = Prefix + "/assignments";
+    public const string GroupAssignments = Prefix + "/group-assignments";
     public const string Policies = Prefix + "/policies";
     public const string Scopes = Prefix + "/scopes";
     public const string Catalog = Prefix + "/permissions";
@@ -63,6 +64,11 @@ public sealed record AssignRoleRequest(Guid UserId, Guid RoleId, Guid TenantId, 
 public sealed record AssignmentDto(Guid Id, Guid UserId, Guid RoleId, string RoleName, Guid TenantId, string ScopeKey, Guid? ScopeInstanceId, DateTimeOffset? ExpiresAt);
 
 public sealed record RecertifyRequest(DateTimeOffset ExpiresAt);
+
+/// <summary>Assigns a role to every member of a tenant group (groups come from provisioning, for example SCIM).</summary>
+public sealed record AssignGroupRoleRequest(Guid GroupId, Guid RoleId, Guid TenantId, string ScopeKey = "tenant", Guid? ScopeInstanceId = null, DateTimeOffset? ExpiresAt = null);
+
+public sealed record GroupAssignmentDto(Guid Id, Guid GroupId, Guid RoleId, string RoleName, Guid TenantId, string ScopeKey, Guid? ScopeInstanceId, DateTimeOffset? ExpiresAt, int Members);
 
 public sealed record UpsertPolicyRequest(
     string Name,

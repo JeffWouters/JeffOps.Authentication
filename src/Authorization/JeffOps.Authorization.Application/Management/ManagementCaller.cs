@@ -26,7 +26,12 @@ public sealed record ManagementCaller(Guid? UserId, bool IsRoot, bool IsService,
 /// What a user holds in a tenant, read straight from the store (not the cache): the basis of the escalation checks, which
 /// must never decide on stale data.
 /// </summary>
-public sealed class HeldPermissions(IAssignmentRepository assignments, IRoleRepository roles, IScopeRepository scopes, TimeProvider time)
+public sealed class HeldPermissions(
+    IAssignmentRepository assignments,
+    IGroupAssignmentRepository groupAssignments,
+    IRoleRepository roles,
+    IScopeRepository scopes,
+    TimeProvider time)
 {
     public async Task<IReadOnlyList<string>> OfAsync(Guid userId, Guid tenantId, string scopeKey, Guid? instanceId, CancellationToken cancellationToken)
     {
@@ -34,9 +39,11 @@ public sealed class HeldPermissions(IAssignmentRepository assignments, IRoleRepo
         var tree = await TreeAsync(cancellationToken).ConfigureAwait(false);
         var held = new List<string>();
 
-        foreach (var assignment in await assignments.ListForUserAsync(userId, tenantId, cancellationToken).ConfigureAwait(false))
+        var direct = (await assignments.ListForUserAsync(userId, tenantId, cancellationToken).ConfigureAwait(false)).Select(assignment => assignment.ToRoleAssignment());
+        var viaGroups = (await groupAssignments.ListForUserAsync(userId, tenantId, cancellationToken).ConfigureAwait(false)).Select(assignment => assignment.ToRoleAssignment());
+        foreach (var assignment in direct.Concat(viaGroups))
         {
-            if (assignment.IsExpired(now)
+            if (Domain.Assignments.AssignmentExpiry.IsExpired(assignment.ExpiresAt, now)
                 || !tree.IsWithin(scopeKey, assignment.ScopeKey)
                 || (assignment.ScopeInstanceId is not null && assignment.ScopeInstanceId != instanceId))
             {

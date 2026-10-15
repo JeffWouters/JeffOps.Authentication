@@ -72,7 +72,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddScoped<IPersonalAccessTokenRepository, PersonalAccessTokenRepository>();
         services.TryAddScoped<IUnitOfWork, EfUnitOfWork>();
         services.TryAddSingleton<IAuditSink, LoggingAuditSink>();
-        services.TryAddSingleton<IEventPublisher, LoggingEventPublisher>();
+        services.TryAddSingleton<IEventPublisher, InProcessEventPublisher>();
 
         services.AddDataProtection();
         services.TryAddSingleton<DatabaseKeyStore>();

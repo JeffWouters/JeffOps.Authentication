@@ -90,6 +90,62 @@ namespace JeffOps.Authorization.Persistence.SqlServer.Migrations
                     b.ToTable("Assignments", "authz");
                 });
 
+            modelBuilder.Entity("JeffOps.Authorization.Domain.Management.GroupAssignment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("GrantedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("GrantedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ScopeInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "GroupId");
+
+                    b.ToTable("GroupAssignments", "authz");
+                });
+
+            modelBuilder.Entity("JeffOps.Authorization.Domain.Management.GroupMember", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("TenantId", "GroupId", "UserId");
+
+                    b.HasIndex("TenantId", "UserId");
+
+                    b.ToTable("GroupMembers", "authz");
+                });
+
             modelBuilder.Entity("JeffOps.Authorization.Domain.Management.RegisteredPermission", b =>
                 {
                     b.Property<string>("Code")

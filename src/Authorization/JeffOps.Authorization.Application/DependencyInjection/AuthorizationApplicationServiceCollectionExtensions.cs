@@ -1,6 +1,8 @@
+using JeffOps.Authentication.Abstractions.Messaging;
 using JeffOps.Authentication.SharedKernel.DependencyInjection;
 using JeffOps.Authorization.Application.Abstractions;
 using JeffOps.Authorization.Application.Features.Assignments;
+using JeffOps.Authorization.Application.Features.GroupAssignments;
 using JeffOps.Authorization.Application.Features.Permissions;
 using JeffOps.Authorization.Application.Features.Policies;
 using JeffOps.Authorization.Application.Features.RoleChanges;
@@ -43,6 +45,9 @@ public static class AuthorizationApplicationServiceCollectionExtensions
             .AddHandler<RevokeAssignmentHandler>()
             .AddHandler<ListTenantAssignmentsHandler>()
             .AddHandler<RecertifyAssignmentHandler>()
+            .AddHandler<AssignGroupRoleHandler>()
+            .AddHandler<RevokeGroupAssignmentHandler>()
+            .AddHandler<ListGroupAssignmentsHandler>()
             .AddHandler<SweepExpiredAssignmentsHandler>()
             .AddHandler<ListPoliciesHandler>()
             .AddHandler<UpsertPolicyHandler>()
@@ -57,6 +62,9 @@ public static class AuthorizationApplicationServiceCollectionExtensions
 
         services.AddDomainEventDispatcher();
         services.AddDomainEventHandler<AuthorizationEventPublishers>();
+        services.TryAddScoped<GroupSync>();
+        services.AddScoped<IIntegrationEventHandler<GroupMembershipChangedEvent>>(provider => provider.GetRequiredService<GroupSync>());
+        services.AddScoped<IIntegrationEventHandler<GroupDeletedEvent>>(provider => provider.GetRequiredService<GroupSync>());
         return services;
     }
 }

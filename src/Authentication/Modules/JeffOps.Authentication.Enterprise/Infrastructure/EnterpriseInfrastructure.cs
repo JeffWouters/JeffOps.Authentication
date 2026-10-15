@@ -1,9 +1,12 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Application;
 using JeffOps.Authentication.Enterprise.Application.Features.Domains;
+using JeffOps.Authentication.Enterprise.Application.Features.Scim;
+using JeffOps.Authentication.Enterprise.Application.Features.ScimTokens;
 using JeffOps.Authentication.Enterprise.Application.Features.Sso;
 using JeffOps.Authentication.Enterprise.Domain;
 using JeffOps.Authentication.SharedKernel.DependencyInjection;
@@ -25,6 +28,12 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
     public DbSet<TenantDomain> Domains => Set<TenantDomain>();
 
     public DbSet<SsoPolicy> SsoPolicies => Set<SsoPolicy>();
+
+    public DbSet<ScimToken> ScimTokens => Set<ScimToken>();
+
+    public DbSet<ScimUser> ScimUsers => Set<ScimUser>();
+
+    public DbSet<ScimGroup> ScimGroups => Set<ScimGroup>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -49,6 +58,54 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             policy.ToTable("SsoPolicies");
             policy.HasKey(entity => entity.TenantId);
             policy.Property(entity => entity.Provider).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<ScimToken>(token =>
+        {
+            token.ToTable("ScimTokens");
+            token.HasKey(entity => entity.Id);
+            token.Property(entity => entity.Name).HasMaxLength(100);
+            token.Property(entity => entity.TokenHash).HasMaxLength(64);
+            token.HasIndex(entity => entity.TokenHash).IsUnique();
+            token.HasIndex(entity => entity.TenantId);
+            token.Ignore(entity => entity.IsActive);
+        });
+
+        modelBuilder.Entity<ScimUser>(user =>
+        {
+            user.ToTable("ScimUsers");
+            user.HasKey(entity => new { entity.TenantId, entity.AccountId });
+            user.Property(entity => entity.UserName).HasMaxLength(256).IsRequired();
+            user.Property(entity => entity.ExternalId).HasMaxLength(256);
+            user.Property(entity => entity.GivenName).HasMaxLength(200);
+            user.Property(entity => entity.FamilyName).HasMaxLength(200);
+            user.Property(entity => entity.DisplayName).HasMaxLength(300);
+            user.Property(entity => entity.Version).IsConcurrencyToken();
+            user.HasIndex(entity => new { entity.TenantId, entity.UserName }).IsUnique();
+            user.HasIndex(entity => new { entity.TenantId, entity.ExternalId });
+        });
+
+        modelBuilder.Entity<ScimGroup>(group =>
+        {
+            group.ToTable("ScimGroups");
+            group.HasKey(entity => entity.Id);
+            group.Property(entity => entity.Id).ValueGeneratedNever();
+            group.Property(entity => entity.DisplayName).HasMaxLength(256).IsRequired();
+            group.Property(entity => entity.ExternalId).HasMaxLength(256);
+            group.Property(entity => entity.Version).IsConcurrencyToken();
+            group.HasIndex(entity => new { entity.TenantId, entity.DisplayName }).IsUnique();
+            group.Ignore(entity => entity.MemberIds);
+            group.OwnsMany(entity => entity.Members, member =>
+            {
+                member.ToTable("ScimGroupMembers");
+                member.WithOwner().HasForeignKey(entity => entity.GroupId);
+                member.HasKey(entity => new { entity.GroupId, entity.AccountId });
+
+                // A key the domain sets: never generated, or EF takes a new member for an existing one and doesn't insert it.
+                member.Property(entity => entity.AccountId).ValueGeneratedNever();
+                member.HasIndex(entity => entity.AccountId);
+            });
+            group.Navigation(entity => entity.Members).HasField("_members").UsePropertyAccessMode(PropertyAccessMode.Field);
         });
     }
 }
@@ -91,6 +148,80 @@ internal sealed class EnterpriseUnitOfWork(EnterpriseDbContext db, IDomainEventD
 
         await dispatcher.DispatchAsync(events, cancellationToken).ConfigureAwait(false);
     }
+}
+
+internal sealed class ScimTokenRepository(EnterpriseDbContext db) : IScimTokenRepository
+{
+    public Task<ScimToken?> FindByHashAsync(string hash, CancellationToken cancellationToken) =>
+        db.ScimTokens.FirstOrDefaultAsync(token => token.TokenHash == hash, cancellationToken);
+
+    public Task<ScimToken?> FindAsync(Guid tokenId, CancellationToken cancellationToken) =>
+        db.ScimTokens.FirstOrDefaultAsync(token => token.Id == tokenId, cancellationToken);
+
+    public async Task<IReadOnlyList<ScimToken>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken) =>
+        await db.ScimTokens.Where(token => token.TenantId == tenantId).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public void Add(ScimToken token) => db.ScimTokens.Add(token);
+}
+
+internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepository
+{
+    public Task<ScimUser?> FindAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken) =>
+        db.ScimUsers.FirstOrDefaultAsync(user => user.TenantId == tenantId && user.AccountId == accountId, cancellationToken);
+
+    public async Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = db.ScimUsers.Where(user => user.TenantId == tenantId);
+        if (filter is { Attribute: "userName" })
+        {
+            // SCIM userName is case-insensitive (RFC 7643 section 4.1.1).
+            var value = filter.Value.ToLowerInvariant();
+            query = query.Where(user => user.UserName.ToLower() == value);
+        }
+        else if (filter is { Attribute: "externalId" })
+        {
+            query = query.Where(user => user.ExternalId == filter.Value);
+        }
+
+        var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+        var page = await query.OrderBy(user => user.UserName).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
+        return (page, total);
+    }
+
+    public void Add(ScimUser user) => db.ScimUsers.Add(user);
+
+    public void Remove(ScimUser user) => db.ScimUsers.Remove(user);
+}
+
+internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRepository
+{
+    public Task<ScimGroup?> FindAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken) =>
+        db.ScimGroups.FirstOrDefaultAsync(group => group.TenantId == tenantId && group.Id == groupId, cancellationToken);
+
+    public async Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, CancellationToken cancellationToken)
+    {
+        var query = db.ScimGroups.Where(group => group.TenantId == tenantId);
+        if (filter is { Attribute: "displayName" })
+        {
+            var value = filter.Value.ToLowerInvariant();
+            query = query.Where(group => group.DisplayName.ToLower() == value);
+        }
+        else if (filter is { Attribute: "externalId" })
+        {
+            query = query.Where(group => group.ExternalId == filter.Value);
+        }
+
+        var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+        var page = await query.OrderBy(group => group.DisplayName).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
+        return (page, total);
+    }
+
+    public async Task<IReadOnlyList<ScimGroup>> ListForMemberAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken) =>
+        await db.ScimGroups.Where(group => group.TenantId == tenantId && group.Members.Any(member => member.AccountId == accountId)).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public void Add(ScimGroup group) => db.ScimGroups.Add(group);
+
+    public void Remove(ScimGroup group) => db.ScimGroups.Remove(group);
 }
 
 /// <summary>Reads TXT records with DNS over HTTPS (RFC 8484 JSON API, as Cloudflare and Google serve it).</summary>
@@ -169,6 +300,12 @@ public static class EnterpriseServiceCollectionExtensions
         services.TryAddScoped<IEnterpriseUnitOfWork, EnterpriseUnitOfWork>();
         services.TryAddScoped<IDnsTxtResolver, DnsOverHttpsResolver>();
         services.AddHttpClient(DnsOverHttpsResolver.HttpClientName);
+        services.TryAddScoped<IScimTokenRepository, ScimTokenRepository>();
+        services.TryAddScoped<IScimUserRepository, ScimUserRepository>();
+        services.TryAddScoped<IScimGroupRepository, ScimGroupRepository>();
+        services.TryAddScoped<ITenantMembershipProvisioner, NoMembershipProvisioning>();
+        services.TryAddScoped<ScimProvisioning>();
+        services.TryAddScoped<ScimTokenAuthenticator>();
 
         services.RemoveAll<IHomeRealmDirectory>();
         services.AddScoped<IHomeRealmDirectory, EnterpriseHomeRealms>();
@@ -179,7 +316,20 @@ public static class EnterpriseServiceCollectionExtensions
             .AddHandler<ListDomainsHandler>()
             .AddHandler<RemoveDomainHandler>()
             .AddHandler<GetSsoPolicyHandler>()
-            .AddHandler<SetSsoPolicyHandler>();
+            .AddHandler<SetSsoPolicyHandler>()
+            .AddHandler<CreateScimTokenHandler>()
+            .AddHandler<ListScimTokensHandler>()
+            .AddHandler<RevokeScimTokenHandler>()
+            .AddHandler<CreateScimUserHandler>()
+            .AddHandler<UpdateScimUserHandler>()
+            .AddHandler<DeleteScimUserHandler>()
+            .AddHandler<GetScimUserHandler>()
+            .AddHandler<ListScimUsersHandler>()
+            .AddHandler<CreateScimGroupHandler>()
+            .AddHandler<UpdateScimGroupHandler>()
+            .AddHandler<DeleteScimGroupHandler>()
+            .AddHandler<GetScimGroupHandler>()
+            .AddHandler<ListScimGroupsHandler>();
 
         services.AddHostedService<EnterpriseStartup>();
         return new EnterpriseBuilder(services);
