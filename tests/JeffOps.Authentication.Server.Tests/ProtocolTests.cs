@@ -21,7 +21,9 @@ public sealed class DiscoveryTests
         root.GetProperty("end_session_endpoint").GetString().ShouldBe("https://localhost/connect/endsession");
         root.GetProperty("code_challenge_methods_supported").EnumerateArray().Select(value => value.GetString()).ShouldContain("S256");
         root.GetProperty("grant_types_supported").EnumerateArray().Select(value => value.GetString())
-            .ShouldBe(["authorization_code", "refresh_token", "client_credentials", "urn:jeffops:grant-type:pat"], ignoreOrder: true);
+            .ShouldBe(["authorization_code", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:device_code", "urn:jeffops:grant-type:pat"], ignoreOrder: true);
+        root.GetProperty("pushed_authorization_request_endpoint").GetString().ShouldBe("https://localhost/connect/par");
+        root.GetProperty("device_authorization_endpoint").GetString().ShouldBe("https://localhost/connect/device");
     }
 
     [Fact]
