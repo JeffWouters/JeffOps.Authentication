@@ -616,6 +616,16 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Tested end to end** with a second JeffOps token server as the upstream provider.
 - **Not yet:** per-tenant provider registrations and verified domains (phase 8), SAML (phase 8).
 
+### 8.4.2 As built (phase 8)
+
+- **Enterprise module** (`JeffOps.Authentication.Enterprise` + `.SqlServer`, schema `enterprise`; `AddEnterprise()`, `MapJeffOpsEnterprise()`, `MapJeffOpsScim()`).
+- **Verified domains:** a tenant administrator (host policy `auth.enterprise.manage`, own session, step-up for changes) claims a domain and publishes `jeffops-verification={token}` at `_jeffops-challenge.{domain}` (label and prefix configurable); verification reads TXT records over DNS-over-HTTPS (`IDnsTxtResolver`, default Cloudflare JSON API). A domain is verified by at most one tenant; pending claims don't count.
+- **Per-tenant SSO policy:** the provider (one of the configured providers) the tenant's members use, and **SSO-only**. Exposed to the core through the new `IHomeRealmDirectory` port (`RealmPolicy(tenant, provider, ssoOnly)`): home realm discovery order is `idp` hint → host `DomainProviders` → tenant's verified domain → default provider. SSO-only refuses, for the verified domain, password sign-in and registration, passkey sign-in, and any other external provider (`sso_required`); the tenant's own provider admits its verified-email users even when the global domain allow-list doesn't. Per-tenant *registration* of new OIDC providers at runtime is not done: providers are configured by the host and tenants choose among them.
+- **SCIM 2.0** (RFC 7643/7644) at `scim/v2`: `Users` and `Groups` (create, replace, patch in RFC and Entra forms incl. string booleans and path-less ops, delete, get, list with `eq` filters on `userName`/`externalId`/`displayName`, paging), `ServiceProviderConfig`, `ResourceTypes`; `application/scim+json` and SCIM error bodies. Authenticated with per-tenant SCIM tokens (`scim_…`, stored as SHA-256, shown once, revocable by tenant administrators). Provisioning links an existing account only when its email is verified (an unverified self-registration can't capture a provisioned identity), otherwise creates one; deprovisioning removes the tenant membership and disables only accounts provisioning created. Memberships go through the new `ITenantMembershipProvisioner` port (host-owned).
+- **Groups → roles:** group changes publish `auth.group.membership_changed.v1` / `auth.group.deleted.v1` (full member list + added/removed). Authorization mirrors membership (`GroupSync`) and supports **group role assignments** (`authorization/admin/group-assignments`) with the same scope, expiry and escalation checks (a group the caller is in counts as granting to themselves; break-glass roles never go to groups). Decisions and held-permission checks include group-derived assignments; every affected member's cached assignments are invalidated. The token server's default event publisher now delivers in-process, so co-hosted authorization receives these events without a broker.
+- **SAML 2.0** (`JeffOps.Authentication.Federation.Saml`, ITfoxtec.Identity.Saml2, BSD-3-Clause): `AddSamlProvider(name)` per IdP (entity id, SSO URL, signing certificates for rollover, attribute names, MFA authn contexts). SP-initiated only: `signin/saml/{name}` sends an AuthnRequest (HTTP-Redirect) and sets a Data-Protected, SameSite=None cookie with the request id; the ACS (HTTP-POST) requires a successful, correctly signed response from the expected issuer and audience, answering *this browser's* request (`InResponseTo`), not seen before (replay cache). Links on (IdP entity id, NameID); MFA from configured authn context classes. SP metadata at `signin/saml/{name}/metadata`. A new `IExternalProviderChallenge` port routes `signin/{provider}` to non-OIDC providers.
+- **Not yet:** signed AuthnRequests and encrypted assertions, SAML single logout, IdP metadata download/refresh, per-tenant SAML/OIDC provider registration at runtime, SCIM bulk and ETags.
+
 ### 8.5 Local accounts
 
 - Passwords: PBKDF2-SHA256 100k (source format v1) → **v2 target: PBKDF2-SHA512 600k or Argon2id (D10)**, with transparent rehash on successful login.
@@ -998,7 +1008,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **5 — Management & governance** ✅ | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
 | **6 — Delegation** ✅ | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
 | **7 — Local accounts** ✅ | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
-| **8 — Enterprise** | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
+| **8 — Enterprise** ✅ | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
 | **9 — Hardening** | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
 
 ---

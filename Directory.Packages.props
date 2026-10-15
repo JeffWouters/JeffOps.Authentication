@@ -33,6 +33,8 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.13" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13" />
     <PackageVersion Include="Yarp.ReverseProxy" Version="2.3.0" />
+    <!-- SAML 2.0 service provider (BSD-3-Clause). -->
+    <PackageVersion Include="ITfoxtec.Identity.Saml2" Version="4.20.1" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.2" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.13" />

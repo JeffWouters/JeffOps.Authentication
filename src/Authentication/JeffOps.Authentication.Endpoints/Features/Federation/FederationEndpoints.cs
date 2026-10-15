@@ -50,11 +50,21 @@ internal static class FederationEndpoints
             : Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(local)}&email={Uri.EscapeDataString(email ?? string.Empty)}");
     }
 
-    private static IResult Challenge(string provider, string? returnUrl, string? login_hint, IEnumerable<IExternalIdentityMapper> mappers)
+    private static IResult Challenge(
+        string provider,
+        string? returnUrl,
+        string? login_hint,
+        IEnumerable<IExternalIdentityMapper> mappers,
+        IEnumerable<IExternalProviderChallenge> challenges)
     {
         if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal)))
         {
             return TypedResults.NotFound();
+        }
+
+        if (challenges.FirstOrDefault(challenge => challenge.Handles(provider)) is { } other)
+        {
+            return Results.Redirect(other.ChallengePath(provider, LocalOrRoot(returnUrl), login_hint));
         }
 
         var properties = new AuthenticationProperties(new Dictionary<string, string?>

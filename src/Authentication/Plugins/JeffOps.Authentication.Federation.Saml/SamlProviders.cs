@@ -1,0 +1,117 @@
+using System.Security.Claims;
+using System.Security.Cryptography.X509Certificates;
+using ITfoxtec.Identity.Saml2;
+using ITfoxtec.Identity.Saml2.Claims;
+using JeffOps.Authentication.Application;
+using JeffOps.Authentication.Application.Federation;
+using JeffOps.Authentication.Domain.Accounts;
+using JeffOps.Authentication.Domain.Sessions;
+using JeffOps.Authentication.SharedKernel.Results;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
+
+namespace JeffOps.Authentication.Federation.Saml;
+
+/// <summary>The SAML providers this server knows, by name.</summary>
+public sealed record SamlProviderRegistration(string Name);
+
+/// <summary>
+/// Lists the SAML providers on the login page, starts their sign-in, and turns a validated SAML assertion into an
+/// <see cref="ExternalIdentity"/> linked by (IdP entity id, NameID).
+/// </summary>
+internal sealed class SamlProviders(
+    IEnumerable<SamlProviderRegistration> registrations,
+    IOptionsMonitor<SamlProviderOptions> options) : IExternalIdentityMapper, IExternalProviderChallenge
+{
+    /// <summary>The claim the ACS endpoint adds with the authentication context class reference.</summary>
+    public const string AuthnContextClaim = "jeffops:saml:authn_context";
+
+    public IReadOnlyCollection<ExternalProviderInfo> Providers =>
+        [.. registrations.Select(registration => new ExternalProviderInfo(registration.Name, options.Get(registration.Name).DisplayName ?? registration.Name))];
+
+    public bool Handles(string provider) => registrations.Any(registration => string.Equals(registration.Name, provider, StringComparison.Ordinal));
+
+    public string ChallengePath(string provider, string returnUrl, string? loginHint) =>
+        $"/{SamlEndpoints.Prefix}/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(returnUrl)}"
+        + (string.IsNullOrWhiteSpace(loginHint) ? string.Empty : $"&login_hint={Uri.EscapeDataString(loginHint)}");
+
+    public Result<ExternalIdentity> Map(string provider, ClaimsPrincipal providerClaims)
+    {
+        ArgumentNullException.ThrowIfNull(providerClaims);
+        var settings = options.Get(provider);
+
+        var nameId = providerClaims.FindFirst(Saml2ClaimTypes.NameId)?.Value ?? providerClaims.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrWhiteSpace(nameId) || string.IsNullOrWhiteSpace(settings.IdpEntityId))
+        {
+            return Error.Failure("provider_error", "The SAML assertion has no subject.");
+        }
+
+        var email = settings.EmailAttributes.Select(attribute => providerClaims.FindFirst(attribute)?.Value).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+            ?? (nameId.Contains('@', StringComparison.Ordinal) ? nameId : null);
+        var name = settings.NameAttributes.Select(attribute => providerClaims.FindFirst(attribute)?.Value).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+        var context = providerClaims.FindFirst(AuthnContextClaim)?.Value;
+        var strength = context is not null && settings.MultiFactorAuthnContexts.Contains(context, StringComparer.Ordinal)
+            ? new AuthenticationStrength(["pwd", "mfa"])
+            : AuthenticationStrength.Password;
+
+        return new ExternalIdentity(provider, new ExternalLoginKey(settings.IdpEntityId, nameId), email, settings.EmailVerified && email is not null, name, strength);
+    }
+
+    /// <summary>The ITfoxtec configuration of a provider, with this server as the relying party.</summary>
+    public Saml2Configuration Configuration(string provider, string serviceProviderEntityId, ITokenReplayCache replayCache)
+    {
+        var settings = options.Get(provider);
+        var configuration = new Saml2Configuration
+        {
+            Issuer = serviceProviderEntityId,
+            SingleSignOnDestination = settings.IdpSingleSignOnUrl,
+            AllowedIssuer = settings.IdpEntityId,
+            CertificateValidationMode = System.ServiceModel.Security.X509CertificateValidationMode.None,
+            RevocationMode = X509RevocationMode.NoCheck,
+            AudienceRestricted = true,
+            DetectReplayedTokens = true,
+            TokenReplayCache = replayCache,
+        };
+        configuration.AllowedAudienceUris.Add(serviceProviderEntityId);
+        foreach (var certificate in settings.IdpSigningCertificates)
+        {
+            configuration.SignatureValidationCertificates.Add(Load(certificate));
+        }
+
+        return configuration;
+    }
+
+    public string ServiceProviderEntityId(string provider, IOptions<TokenServerOptions> tokenServer, Uri requestOrigin) =>
+        options.Get(provider).ServiceProviderEntityId
+        ?? new Uri(tokenServer.Value.Issuer ?? requestOrigin, $"{SamlEndpoints.Prefix}/{provider}").AbsoluteUri;
+
+    private static X509Certificate2 Load(string encoded)
+    {
+        var trimmed = encoded.Trim();
+        return trimmed.StartsWith("-----BEGIN", StringComparison.Ordinal)
+            ? X509Certificate2.CreateFromPem(trimmed)
+            : X509CertificateLoader.LoadCertificate(Convert.FromBase64String(trimmed));
+    }
+}
+
+/// <summary>
+/// Remembers seen assertion ids until they expire, so a captured SAML response can't be posted twice. In memory: with several
+/// token server replicas, the per-browser request binding (cookie + InResponseTo) still stops cross-browser replay.
+/// </summary>
+internal sealed class MemoryTokenReplayCache(IMemoryCache cache) : ITokenReplayCache
+{
+    public bool TryAdd(string securityToken, DateTime expiresOn)
+    {
+        var key = "jeffops:saml:replay:" + securityToken;
+        if (cache.TryGetValue(key, out _))
+        {
+            return false;
+        }
+
+        cache.Set(key, true, new DateTimeOffset(DateTime.SpecifyKind(expiresOn, DateTimeKind.Utc)));
+        return true;
+    }
+
+    public bool TryFind(string securityToken) => cache.TryGetValue("jeffops:saml:replay:" + securityToken, out _);
+}

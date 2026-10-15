@@ -43,6 +43,18 @@ public interface IExternalIdentityMapper
 }
 
 /// <summary>
+/// Starts a sign-in at a provider that is not an OpenID Connect provider of the OpenIddict client, for example SAML. The
+/// federation endpoints send <c>signin/{provider}</c> to <see cref="ChallengePath"/> when a challenge handles the provider.
+/// </summary>
+public interface IExternalProviderChallenge
+{
+    bool Handles(string provider);
+
+    /// <summary>The local path that starts the sign-in; it must come back to <paramref name="returnUrl"/> (already local).</summary>
+    string ChallengePath(string provider, string returnUrl, string? loginHint);
+}
+
+/// <summary>
 /// Lets a host react to external sign-ins, for example to create a tenant for a new directory the first time one of its users
 /// signs in. Optional; called after the account is created or linked and before the session starts.
 /// </summary>

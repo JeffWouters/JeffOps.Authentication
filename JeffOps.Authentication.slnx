@@ -25,6 +25,7 @@
   <Folder Name="/src/Authentication/Plugins/">
     <Project Path="src/Authentication/Plugins/JeffOps.Authentication.Federation.Entra/JeffOps.Authentication.Federation.Entra.csproj" />
     <Project Path="src/Authentication/Plugins/JeffOps.Authentication.Federation.Oidc/JeffOps.Authentication.Federation.Oidc.csproj" />
+    <Project Path="src/Authentication/Plugins/JeffOps.Authentication.Federation.Saml/JeffOps.Authentication.Federation.Saml.csproj" />
     <Project Path="src/Authentication/Plugins/JeffOps.Authentication.KeyVault/JeffOps.Authentication.KeyVault.csproj" />
   </Folder>
   <Folder Name="/src/Authorization/">

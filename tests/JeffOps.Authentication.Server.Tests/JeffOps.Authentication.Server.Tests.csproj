@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Enterprise\JeffOps.Authentication.Enterprise.csproj" />
     <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Oidc\JeffOps.Authentication.Federation.Oidc.csproj" />
     <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Entra\JeffOps.Authentication.Federation.Entra.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Saml\JeffOps.Authentication.Federation.Saml.csproj" />
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff\JeffOps.Authentication.Bff.csproj" />
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff.Yarp\JeffOps.Authentication.Bff.Yarp.csproj" />
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Client\JeffOps.Authentication.Client.csproj" />
