@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <Description>Reference host of the JeffOps token server. Shows the composition; not a product.</Description>
+    <IsPackable>false</IsPackable>
+    <UserSecretsId>jeffops-authentication-token-server</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Infrastructure\JeffOps.Authentication.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Persistence.SqlServer\JeffOps.Authentication.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />
+    <ProjectReference Include="..\..\src\Common\JeffOps.Security.AspNetCore\JeffOps.Security.AspNetCore.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -60,14 +60,45 @@ public static class HandlerServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Wraps every handler registered so far in a decorator that runs its <see cref="IValidator{T}"/>s first.
-    /// Call after all handlers of the module are registered.
+    /// Wraps every handler registered so far in a decorator that runs its <see cref="IValidator{T}"/>s first. Call after all
+    /// handlers of the module are registered. Handlers already wrapped by an earlier call (another module's) are skipped, so
+    /// every module can call it.
     /// </summary>
-    public static IServiceCollection AddHandlerValidation(this IServiceCollection services) =>
+    public static IServiceCollection AddHandlerValidation(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        var alreadyValidated = services
+            .Select(descriptor => descriptor.ImplementationInstance)
+            .OfType<ValidatedService>()
+            .Select(marker => marker.ServiceType)
+            .ToHashSet();
+
+        var toValidate = services
+            .Where(IsHandler)
+            .Select(descriptor => descriptor.ServiceType)
+            .Where(serviceType => !alreadyValidated.Contains(serviceType))
+            .ToHashSet();
+
+        bool ShouldDecorate(ServiceDescriptor descriptor) => toValidate.Contains(descriptor.ServiceType);
+
         services
-            .DecorateOpenGeneric(typeof(ICommandHandler<>), typeof(ValidatingCommandHandler<>))
-            .DecorateOpenGeneric(typeof(ICommandHandler<,>), typeof(ValidatingCommandHandler<,>))
-            .DecorateOpenGeneric(typeof(IQueryHandler<,>), typeof(ValidatingQueryHandler<,>));
+            .DecorateOpenGeneric(typeof(ICommandHandler<>), typeof(ValidatingCommandHandler<>), ShouldDecorate)
+            .DecorateOpenGeneric(typeof(ICommandHandler<,>), typeof(ValidatingCommandHandler<,>), ShouldDecorate)
+            .DecorateOpenGeneric(typeof(IQueryHandler<,>), typeof(ValidatingQueryHandler<,>), ShouldDecorate);
+
+        foreach (var serviceType in toValidate)
+        {
+            services.AddSingleton(new ValidatedService(serviceType));
+        }
+
+        return services;
+    }
+
+    private static bool IsHandler(ServiceDescriptor descriptor) =>
+        !descriptor.IsKeyedService
+        && descriptor.ServiceType.IsGenericType
+        && HandlerInterfaces.Contains(descriptor.ServiceType.GetGenericTypeDefinition());
 
     /// <summary>
     /// Replaces every registration of a closed <paramref name="openServiceType"/> with
@@ -75,7 +106,11 @@ public static class HandlerServiceCollectionExtensions
     /// The decorator's constructor takes the inner service plus any other registered dependencies.
     /// Keyed registrations are left alone.
     /// </summary>
-    public static IServiceCollection DecorateOpenGeneric(this IServiceCollection services, Type openServiceType, Type openDecoratorType)
+    public static IServiceCollection DecorateOpenGeneric(
+        this IServiceCollection services,
+        Type openServiceType,
+        Type openDecoratorType,
+        Func<ServiceDescriptor, bool>? filter = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(openServiceType);
@@ -88,7 +123,8 @@ public static class HandlerServiceCollectionExtensions
             var original = services[i];
             if (original.IsKeyedService
                 || !original.ServiceType.IsGenericType
-                || original.ServiceType.GetGenericTypeDefinition() != openServiceType)
+                || original.ServiceType.GetGenericTypeDefinition() != openServiceType
+                || (filter is not null && !filter(original)))
             {
                 continue;
             }
@@ -144,6 +180,9 @@ public static class HandlerServiceCollectionExtensions
         return services;
     }
 }
+
+/// <summary>Marks a handler service type already wrapped by the validation decorator.</summary>
+internal sealed record ValidatedService(Type ServiceType);
 
 /// <summary>
 /// Records the original implementation behind a decorated registration, so tooling (and the architecture tests)

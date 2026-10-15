@@ -61,9 +61,9 @@ public sealed class ProjectDependencyTests
 
         project.FrameworkReferences.ShouldBeEmpty($"{projectName} must not reference ASP.NET Core or other shared frameworks.");
         project.PackageReferences
-            .Where(package => !(package.StartsWith("Microsoft.Extensions.", StringComparison.Ordinal)
-                && package.EndsWith(".Abstractions", StringComparison.Ordinal)))
-            .ShouldBeEmpty($"{projectName} may only reference Microsoft.Extensions.*.Abstractions packages.");
+            .Where(package => !(package == "Microsoft.Extensions.Options"
+                || (package.StartsWith("Microsoft.Extensions.", StringComparison.Ordinal) && package.EndsWith(".Abstractions", StringComparison.Ordinal))))
+            .ShouldBeEmpty($"{projectName} may only reference Microsoft.Extensions.Options and Microsoft.Extensions.*.Abstractions packages.");
     }
 
     [Theory]

@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/hosts/">
+    <Project Path="hosts/TokenServer/TokenServer.csproj" />
+  </Folder>
   <Folder Name="/src/" />
   <Folder Name="/src/Authentication/">
     <Project Path="src/Authentication/JeffOps.Authentication.Application/JeffOps.Authentication.Application.csproj" />
@@ -43,6 +46,9 @@
   <Folder Name="/tests/">
     <Project Path="tests/JeffOps.Authentication.Architecture.Tests/JeffOps.Authentication.Architecture.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Client.Tests/JeffOps.Authentication.Client.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authentication.Domain.Tests/JeffOps.Authentication.Domain.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authentication.KeyVault.Tests/JeffOps.Authentication.KeyVault.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authentication.Server.Tests/JeffOps.Authentication.Server.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.SharedKernel.Tests/JeffOps.Authentication.SharedKernel.Tests.csproj" />
     <Project Path="tests/JeffOps.Authorization.AspNetCore.Tests/JeffOps.Authorization.AspNetCore.Tests.csproj" />
     <Project Path="tests/JeffOps.Authorization.Domain.Tests/JeffOps.Authorization.Domain.Tests.csproj" />

@@ -52,3 +52,8 @@ dotnet_diagnostic.IDE0005.severity = warning
 # Test names read as sentences: Handle_returns_validation_error_when_name_is_empty
 dotnet_diagnostic.CA1707.severity = none
 dotnet_naming_rule.async_methods_end_in_async.severity = none
+
+[**/Migrations/*.cs]
+# EF Core migrations are generated; analyzers and code style don't apply.
+generated_code = true
+dotnet_analyzer_diagnostic.severity = none

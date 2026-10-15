@@ -491,7 +491,18 @@ The `external` token-exchange grant is **kept** as an optional extension for cli
 | `{urn}:tenant-switch` | extension | Delegation | MSP acting session. |
 | `password` | standard (deprecated in OAuth 2.1) | LocalAccounts | **Development only**, as in source. |
 
-`{urn}` is configurable (`AuthServerOptions.ExtensionGrantNamespace`, default `urn:jeffops`).
+`{urn}` is configurable (`TokenServerOptions.ExtensionGrantNamespace`, default `urn:jeffops:grant-type`).
+
+### 7.3.1 As built (phase 2)
+
+- **Routes:** `connect/authorize`, `connect/token`, `connect/userinfo`, `connect/endsession` (passthrough to the use cases), `connect/revoke`, `connect/introspect`, `.well-known/openid-configuration` and `.well-known/jwks` (served by OpenIddict). The caller's PATs at `account/pats`; operators at `admin/accounts/{id}/disable|enable`; services at `directory/accounts` (I8).
+- **Options** bind from `JeffOps:TokenServer` (`TokenServerOptions`): issuer (required outside Development), lifetimes, API scopes and their audiences, MFA policy, PAT policy, clients, the sign-in scheme the authorize endpoint challenges, and the permissions for account administration and directory lookups.
+- **Sign-in contract:** the login UI or a federation callback signs the user into the sign-in scheme (default `JeffOps.SignIn`) with `SignInPrincipal.Create(accountId, strength, signedInAt, …)`. The authorize endpoint honours `prompt=login|none` and `max_age`, and strips them from the return URL so the user isn't asked again forever.
+- **Refusals** at the token endpoint are `invalid_grant` with a `code` parameter (`mfa_required`, `account_inactive`, `session_expired`, `no_membership`, `tenant_inactive`, `token_invalid`); a tenant-directory outage is `server_error` with `directory_unavailable`, so clients retry instead of signing the user out.
+- **Refresh token reuse:** OpenIddict's reuse leeway is exposed as `RefreshTokenReuseLeeway` (default 30 s, so concurrent refreshes don't sign the user out); outside it, reuse revokes the token chain. Refresh tokens never outlive the session's absolute lifetime.
+- **MFA defaults:** `RequireForSignIn` is off (whether MFA is available depends on the provider); `RequireForSensitiveActions` is on.
+- **Clients** are seeded from configuration at startup and kept in sync; confidential clients need a secret of at least 32 characters outside Development; PKCE is required for every code-flow client.
+- **`AuthenticationBuilder`** lives in Application (it is only the service collection and configuration), so plug-ins that may reference Application only can extend it. EF-specific extensions (`UseDatabase`) live in Infrastructure.
 
 ### 7.4 Tokens
 
@@ -513,7 +524,8 @@ All lifetimes are options. Sender-constrained tokens (DPoP, RFC 9449; mTLS, RFC 
   - `DatabaseTokenKeyProvider` — RSA-2048 (configurable 3072), private key encrypted with Data Protection, self-healing on first start.
   - `KeyVaultTokenKeyProvider` — sign-in-HSM, key never exported.
   - `CertificateTokenKeyProvider` — **new**, for PKCS#12 / cert store deployments.
-- Rotation: interval 30 d, overlap 7 d. **Change from source:** new key becomes active without restart (provider exposes a key set with `NotBefore`; OpenIddict credentials refreshed via `IOptionsMonitor`).
+- Rotation: interval 30 d, overlap 7 d, **activation delay** 1 d (a new key is published before it signs). The server reloads its credentials without a restart when the key set changes or a pending key activates (I4): the provider raises `KeysChanged`, which invalidates the cached OpenIddict server and validation options.
+- `ITokenKeyProvider` is an Application port in pure BCL terms (`RSA`), so the Key Vault plug-in implements it with an `RSA` whose signing happens in the vault. Encryption keys (refresh tokens, codes) always come from the database store.
 - Encryption keys (refresh tokens) are separate from signing keys and always rotate with overlap.
 - Dev keys are refused outside `Development`.
 
@@ -868,6 +880,7 @@ Non-negotiable defaults. Each has a test.
 - [ ] Tenant headers stripped at the edge, trusted only from service tokens.
 - [ ] Rate limiting partitions: preflight → stream → tenant → auth → session → IP.
 - [ ] Failed sign-ins audited with a rate budget.
+- [x] NuGet audit covers transitive packages; vulnerable transitive versions are pinned centrally (`CentralPackageTransitivePinningEnabled`).
 
 ---
 
@@ -921,9 +934,9 @@ These requirements differ from the origin implementation. They are listed here s
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **0 — Scaffold** | Solution and projects (§6.6); CPM and build props; banned-package guard and licence scan (§6.5); `BannedSymbols.txt`; SharedKernel (`Result`, handler interfaces, decorators, domain events); architecture tests for layering, slice isolation and handler registration (§6.3) | Empty projects build; architecture tests green; a deliberately banned package fails the build |
-| **1 — Port core** | Abstractions, Authorization.Domain, Authorization.AspNetCore, Authentication.Client, Security.AspNetCore; port tests | Ported tests green; I1, I2, I3, I6, I7 done |
-| **2 — Token server** | Authentication Domain / Application / Infrastructure / Persistence.SqlServer / Endpoints; key providers, PATs, revalidation, client registry as slices; **add authorization code + PKCE, userinfo, end-session** | Standard OIDC conformance smoke test passes; I4, I8, I9 done |
+| **0 — Scaffold** ✅ | Solution and projects (§6.6); CPM and build props; banned-package guard and licence scan (§6.5); `BannedSymbols.txt`; SharedKernel (`Result`, handler interfaces, decorators, domain events); architecture tests for layering, slice isolation and handler registration (§6.3) | Empty projects build; architecture tests green; a deliberately banned package fails the build |
+| **1 — Port core** ✅ | Abstractions, Authorization.Domain, Authorization.AspNetCore, Authentication.Client, Security.AspNetCore; port tests | Ported tests green; I1, I2, I3, I6, I7 done |
+| **2 — Token server** ✅ | Authentication Domain / Application / Infrastructure / Persistence.SqlServer / Endpoints; key providers, PATs, revalidation, client registry as slices; **add authorization code + PKCE, userinfo, end-session** | Standard OIDC conformance smoke test passes; I4, I8, I9 done |
 | **3 — Federation** | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
 | **4 — BFF** | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
 | **5 — Management & governance** | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
