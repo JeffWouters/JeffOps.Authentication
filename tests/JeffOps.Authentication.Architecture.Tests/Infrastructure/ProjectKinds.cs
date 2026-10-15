@@ -48,10 +48,11 @@ internal static class ProjectKinds
         SharedKernel or Abstractions => ProjectKind.Kernel,
         "JeffOps.Authentication.KeyVault" => ProjectKind.Plugin,
         _ when name.StartsWith("JeffOps.Authentication.Federation.", StringComparison.Ordinal) => ProjectKind.Plugin,
-        "JeffOps.Authentication.LocalAccounts" or "JeffOps.Authentication.Delegation" => ProjectKind.FeatureModule,
+        "JeffOps.Authentication.LocalAccounts" or "JeffOps.Authentication.Delegation" or "JeffOps.Authentication.Enterprise" => ProjectKind.FeatureModule,
         // A feature module's provider package (migrations), for example JeffOps.Authentication.Delegation.SqlServer.
         _ when name.StartsWith("JeffOps.Authentication.LocalAccounts.", StringComparison.Ordinal)
-            || name.StartsWith("JeffOps.Authentication.Delegation.", StringComparison.Ordinal) => ProjectKind.FeatureModule,
+            || name.StartsWith("JeffOps.Authentication.Delegation.", StringComparison.Ordinal)
+            || name.StartsWith("JeffOps.Authentication.Enterprise.", StringComparison.Ordinal) => ProjectKind.FeatureModule,
         "JeffOps.Authentication.Client" or "JeffOps.Authentication.Bff" or "JeffOps.Authentication.Bff.Yarp"
             or "JeffOps.Authorization.AspNetCore" => ProjectKind.ClientAdapter,
         "JeffOps.Security.AspNetCore" or "JeffOps.Entitlements" or "JeffOps.Authentication.Testing" => ProjectKind.Common,

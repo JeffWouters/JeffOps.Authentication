@@ -61,4 +61,5 @@ public static class LocalAccountErrors
     public const string InvalidCode = "invalid_code";
     public const string NotFound = "not_found";
     public const string AlreadyEnabled = "already_enabled";
+    public const string SsoRequired = "sso_required";
 }

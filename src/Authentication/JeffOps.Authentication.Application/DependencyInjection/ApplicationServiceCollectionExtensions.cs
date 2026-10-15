@@ -28,6 +28,7 @@ public static class ApplicationServiceCollectionExtensions
         services.TryAddSingleton(ClaimNames.Default);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<ITenantDirectory, NoTenantDirectory>();
+        services.TryAddScoped<Federation.IHomeRealmDirectory, Federation.NoHomeRealms>();
         services.TryAddScoped<SessionBuilder>();
 
         services

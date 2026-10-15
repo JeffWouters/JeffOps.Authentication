@@ -145,6 +145,8 @@ public static class LocalAccountEndpointRouteBuilderExtensions
                 return BackToLogin(returnUrl, email, "email_not_verified");
             case LocalSignInStatus.AccountInactive:
                 return BackToLogin(returnUrl, email, "account_inactive");
+            case LocalSignInStatus.SsoRequired:
+                return BackToLogin(returnUrl, email, "sso_required");
             default:
                 return BackToLogin(returnUrl, email, "invalid_credentials");
         }
@@ -210,6 +212,11 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         }
 
         var result = await handler.HandleAsync(new PasskeySignInCommand(accountId, ToData(assertion.Passkey)), context.RequestAborted).ConfigureAwait(false);
+        if (result.IsSuccess && result.Value.Status == LocalSignInStatus.SsoRequired)
+        {
+            return Problem(StatusCodes.Status403Forbidden, LocalAccountErrors.SsoRequired, "Your organization requires signing in with its identity provider.");
+        }
+
         if (result.IsFailure || result.Value.Status != LocalSignInStatus.SignedIn)
         {
             return Problem(StatusCodes.Status401Unauthorized, LocalAccountErrors.InvalidCredentials, "The passkey sign-in didn't work.");

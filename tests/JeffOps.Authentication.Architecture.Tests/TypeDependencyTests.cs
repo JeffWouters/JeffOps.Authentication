@@ -22,6 +22,7 @@ public sealed class TypeDependencyTests
     [
         "JeffOps.Authentication.LocalAccounts",
         "JeffOps.Authentication.Delegation",
+        "JeffOps.Authentication.Enterprise",
     ];
 
     /// <summary>Allowed layer-to-layer use inside a feature module's single project (D17).</summary>

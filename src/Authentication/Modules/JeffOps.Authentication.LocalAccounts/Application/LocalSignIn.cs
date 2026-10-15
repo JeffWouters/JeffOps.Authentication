@@ -10,6 +10,9 @@ public enum LocalSignInStatus
     LockedOut,
     EmailNotVerified,
     AccountInactive,
+
+    /// <summary>The email's organization requires signing in with its identity provider.</summary>
+    SsoRequired,
 }
 
 /// <summary>

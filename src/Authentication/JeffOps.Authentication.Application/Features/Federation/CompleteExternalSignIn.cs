@@ -22,6 +22,7 @@ public static class FederationErrors
     public const string DomainNotAllowed = "domain_not_allowed";
     public const string RegistrationClosed = "registration_closed";
     public const string EmailRequired = "email_required";
+    public const string SsoRequired = "sso_required";
 }
 
 /// <summary>
@@ -35,6 +36,7 @@ public sealed class CompleteExternalSignInHandler(
     IUnitOfWork unitOfWork,
     SessionBuilder sessions,
     IEnumerable<IExternalSignInObserver> observers,
+    IHomeRealmDirectory realms,
     IAuditSink audit,
     IOptions<FederationOptions> options,
     IHostEnvironment environment,
@@ -47,7 +49,18 @@ public sealed class CompleteExternalSignInHandler(
         var settings = options.Value;
         var now = time.GetUtcNow();
 
-        if (!DomainAllowed(identity.Email, settings))
+        var domain = HomeRealm.DomainOf(identity.Email);
+        var realm = domain is null ? null : await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false);
+        if (realm is { SsoOnly: true } && !string.Equals(realm.Provider, identity.Provider, StringComparison.OrdinalIgnoreCase))
+        {
+            await AuditRefusalAsync(identity, FederationErrors.SsoRequired, now, cancellationToken).ConfigureAwait(false);
+            return Error.Forbidden(FederationErrors.SsoRequired, "Your organization requires signing in with its own identity provider.");
+        }
+
+        // A tenant's verified domain admits its members through the tenant's own provider.
+        var admittedByTenant = realm is { Provider: { } realmProvider } && identity.EmailVerified
+            && string.Equals(realmProvider, identity.Provider, StringComparison.OrdinalIgnoreCase);
+        if (!admittedByTenant && !DomainAllowed(identity.Email, settings))
         {
             await AuditRefusalAsync(identity, FederationErrors.DomainNotAllowed, now, cancellationToken).ConfigureAwait(false);
             return Error.Forbidden(FederationErrors.DomainNotAllowed, "This account's email domain is not permitted to sign in.");

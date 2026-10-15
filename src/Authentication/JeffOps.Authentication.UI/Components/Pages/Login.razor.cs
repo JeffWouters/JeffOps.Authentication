@@ -25,6 +25,7 @@ public sealed partial class Login
         ["locked_out"] = "Too many attempts. Wait a moment and try again.",
         ["email_not_verified"] = "Confirm your email address first: use the link we sent you.",
         ["signin_expired"] = "That took too long. Sign in again.",
+        ["sso_required"] = "Your organization requires signing in with its identity provider.",
     };
 
     [SupplyParameterFromQuery(Name = "returnUrl")]

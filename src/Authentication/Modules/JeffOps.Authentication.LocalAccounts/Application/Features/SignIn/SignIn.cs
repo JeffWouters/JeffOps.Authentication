@@ -1,4 +1,5 @@
 using JeffOps.Authentication.Application.Abstractions;
+using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.LocalAccounts.Domain;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
@@ -15,6 +16,7 @@ public sealed record PasswordSignInCommand(string Email, string Password);
 
 public sealed class PasswordSignInHandler(
     IAccountRepository accounts,
+    IHomeRealmDirectory realms,
     ILocalCredentialRepository credentials,
     ILocalUnitOfWork unitOfWork,
     IOptions<LocalAccountOptions> options,
@@ -25,6 +27,12 @@ public sealed class PasswordSignInHandler(
         ArgumentNullException.ThrowIfNull(command);
         var settings = options.Value;
         var now = time.GetUtcNow();
+
+        if (HomeRealm.DomainOf(command.Email) is { } domain
+            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true })
+        {
+            return new LocalSignInResult(LocalSignInStatus.SsoRequired);
+        }
 
         var account = string.IsNullOrWhiteSpace(command.Email) ? null : await accounts.FindByEmailAsync(command.Email, cancellationToken).ConfigureAwait(false);
         var credential = account is null ? null : await credentials.FindAsync(account.Id, cancellationToken).ConfigureAwait(false);

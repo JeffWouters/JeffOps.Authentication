@@ -1,4 +1,5 @@
 using JeffOps.Authentication.Application.Abstractions;
+using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.LocalAccounts.Domain;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
@@ -63,7 +64,12 @@ public sealed class AddPasskeyHandler(ILocalCredentialRepository credentials, IA
 /// </summary>
 public sealed record PasskeySignInCommand(Guid AccountId, PasskeyData Passkey);
 
-public sealed class PasskeySignInHandler(ILocalCredentialRepository credentials, IAccountRepository accounts, ILocalUnitOfWork unitOfWork, TimeProvider time)
+public sealed class PasskeySignInHandler(
+    ILocalCredentialRepository credentials,
+    IAccountRepository accounts,
+    IHomeRealmDirectory realms,
+    ILocalUnitOfWork unitOfWork,
+    TimeProvider time)
     : ICommandHandler<PasskeySignInCommand, LocalSignInResult>
 {
     public async Task<Result<LocalSignInResult>> HandleAsync(PasskeySignInCommand command, CancellationToken cancellationToken)
@@ -81,9 +87,15 @@ public sealed class PasskeySignInHandler(ILocalCredentialRepository credentials,
             data.IsUserVerified, data.IsBackupEligible, data.IsBackedUp, data.AttestationObject, data.ClientDataJson, time.GetUtcNow());
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        if (await accounts.FindAsync(command.AccountId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true })
+        if (await accounts.FindAsync(command.AccountId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true } account)
         {
             return new LocalSignInResult(LocalSignInStatus.AccountInactive);
+        }
+
+        if (HomeRealm.DomainOf(account.Email) is { } domain
+            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true })
+        {
+            return new LocalSignInResult(LocalSignInStatus.SsoRequired);
         }
 
         List<string> methods = [data.IsBackupEligible ? "swk" : "hwk"];

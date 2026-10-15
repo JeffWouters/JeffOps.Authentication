@@ -1,4 +1,5 @@
 using JeffOps.Authentication.Application.Abstractions;
+using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Domain.Accounts;
 using JeffOps.Authentication.LocalAccounts.Domain;
 using JeffOps.Authentication.SharedKernel.Handlers;
@@ -15,6 +16,7 @@ public sealed record RegisterLocalAccountCommand(string Email, string Password, 
 
 public sealed class RegisterLocalAccountHandler(
     IAccountRepository accounts,
+    IHomeRealmDirectory realms,
     IUnitOfWork accountUnitOfWork,
     ILocalCredentialRepository credentials,
     IAccountTokenRepository tokens,
@@ -41,6 +43,12 @@ public sealed class RegisterLocalAccountHandler(
         if (PasswordRules.Problem(command.Password, settings.MinimumPasswordLength) is { } problem)
         {
             return Error.Validation([new ValidationFailure(nameof(command.Password), problem)]);
+        }
+
+        if (HomeRealm.DomainOf(command.Email) is { } domain
+            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true })
+        {
+            return Error.Forbidden(LocalAccountErrors.SsoRequired, "Your organization requires signing in with its identity provider.");
         }
 
         var now = time.GetUtcNow();

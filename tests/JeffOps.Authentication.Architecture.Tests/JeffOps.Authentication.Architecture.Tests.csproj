@@ -20,6 +20,8 @@
     <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.Delegation.SqlServer/JeffOps.Authentication.Delegation.SqlServer.csproj" />
     <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.LocalAccounts.SqlServer/JeffOps.Authentication.LocalAccounts.SqlServer.csproj" />
     <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.LocalAccounts/JeffOps.Authentication.LocalAccounts.csproj" />
+    <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.Enterprise/JeffOps.Authentication.Enterprise.csproj" />
+    <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.Enterprise.SqlServer/JeffOps.Authentication.Enterprise.SqlServer.csproj" />
     <ProjectReference Include="../../src/Authentication/Plugins/JeffOps.Authentication.Federation.Entra/JeffOps.Authentication.Federation.Entra.csproj" />
     <ProjectReference Include="../../src/Authentication/Plugins/JeffOps.Authentication.Federation.Oidc/JeffOps.Authentication.Federation.Oidc.csproj" />
     <ProjectReference Include="../../src/Authentication/Plugins/JeffOps.Authentication.KeyVault/JeffOps.Authentication.KeyVault.csproj" />

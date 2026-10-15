@@ -33,12 +33,19 @@ internal static class FederationEndpoints
     }
 
     /// <summary>Sends the user to the provider for their email domain, or back to the login page to choose one.</summary>
-    private static IResult Discover(string? email, string? returnUrl, IEnumerable<IExternalIdentityMapper> mappers, IOptions<FederationOptions> options)
+    private static async Task<IResult> Discover(
+        string? email,
+        string? returnUrl,
+        string? idp,
+        IEnumerable<IExternalIdentityMapper> mappers,
+        IHomeRealmDirectory realms,
+        IOptions<FederationOptions> options,
+        HttpContext context)
     {
         var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name).ToList();
         var local = LocalOrRoot(returnUrl);
 
-        return HomeRealm.Discover(email, options.Value, known) is { } provider
+        return await HomeRealm.DiscoverAsync(email, idp, options.Value, known, realms, context.RequestAborted).ConfigureAwait(false) is { } provider
             ? Results.Redirect($"/signin/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(local)}&login_hint={Uri.EscapeDataString(email ?? string.Empty)}")
             : Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(local)}&email={Uri.EscapeDataString(email ?? string.Empty)}");
     }

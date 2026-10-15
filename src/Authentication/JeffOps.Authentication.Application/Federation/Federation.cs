@@ -81,18 +81,59 @@ public sealed class FederationOptions
     public IList<string> MultiFactorAuthenticationContexts { get; } = [];
 }
 
+/// <summary>
+/// What a tenant decided for an email domain it verified (docs/DESIGN.md §8.4): which provider its members sign in with, and
+/// whether that is the only way in.
+/// </summary>
+/// <param name="TenantId">The tenant that verified the domain.</param>
+/// <param name="Provider">The provider its members use; null when the tenant has none configured.</param>
+/// <param name="SsoOnly">Whether every other sign-in method (passwords, passkeys, other providers) is refused for the domain.</param>
+public sealed record RealmPolicy(Guid TenantId, string? Provider, bool SsoOnly);
+
+/// <summary>Tenants' verified email domains and their sign-in policy. The Enterprise module provides one; the default knows none.</summary>
+public interface IHomeRealmDirectory
+{
+    Task<RealmPolicy?> FindByDomainAsync(string domain, CancellationToken cancellationToken);
+}
+
+public sealed class NoHomeRealms : IHomeRealmDirectory
+{
+    public Task<RealmPolicy?> FindByDomainAsync(string domain, CancellationToken cancellationToken) => Task.FromResult<RealmPolicy?>(null);
+}
+
 /// <summary>Home realm discovery: which provider an email address signs in with (docs/DESIGN.md §8.4).</summary>
 public static class HomeRealm
 {
-    /// <summary>The provider for <paramref name="email"/>, or null when the user must choose.</summary>
-    public static string? Discover(string? email, FederationOptions options, IReadOnlyCollection<string> knownProviders)
+    /// <summary>
+    /// The provider for a sign-in, in order: an explicit <paramref name="idpHint"/>, the host's domain mapping, the tenant's
+    /// verified domain, the default provider. Null when the user must choose (or use a local method).
+    /// </summary>
+    public static async Task<string?> DiscoverAsync(
+        string? email, string? idpHint, FederationOptions options, IReadOnlyCollection<string> knownProviders, IHomeRealmDirectory realms, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(knownProviders);
+        ArgumentNullException.ThrowIfNull(realms);
+
+        bool Known(string? provider) => provider is not null && knownProviders.Contains(provider, StringComparer.OrdinalIgnoreCase);
+
+        if (Known(idpHint))
+        {
+            return idpHint;
+        }
 
         var domain = DomainOf(email);
-        var provider = domain is not null && options.DomainProviders.TryGetValue(domain, out var mapped) ? mapped : options.DefaultProvider;
-        return provider is not null && knownProviders.Contains(provider, StringComparer.OrdinalIgnoreCase) ? provider : null;
+        if (domain is not null && options.DomainProviders.TryGetValue(domain, out var mapped) && Known(mapped))
+        {
+            return mapped;
+        }
+
+        if (domain is not null && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { Provider: { } tenantProvider } && Known(tenantProvider))
+        {
+            return tenantProvider;
+        }
+
+        return Known(options.DefaultProvider) ? options.DefaultProvider : null;
     }
 
     public static string? DomainOf(string? email)
