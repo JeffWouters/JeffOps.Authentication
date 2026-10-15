@@ -61,6 +61,15 @@ public sealed record ClaimNames
     /// <summary>The display name of a user.</summary>
     public string Name { get; init; } = "name";
 
+    /// <summary>The actor of an impersonation token (RFC 8693 §4.1): a JSON object whose <c>sub</c> is the acting user.</summary>
+    public string Actor { get; init; } = "act";
+
+    /// <summary>Who the actor of an impersonation token is: <c>Platform</c> staff or a <c>Partner</c>.</summary>
+    public string ActorKind { get; init; } = "act_kind";
+
+    /// <summary>The delegation grant an impersonation token was minted against.</summary>
+    public string DelegationGrant { get; init; } = "grant_id";
+
     /// <summary>
     /// Claims that mark an impersonation token (RFC 8693 actor and its companions). Any one present marks the token.
     /// </summary>

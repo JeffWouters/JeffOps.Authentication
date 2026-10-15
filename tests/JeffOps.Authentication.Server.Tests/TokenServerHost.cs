@@ -72,7 +72,8 @@ internal sealed class TokenServerHost : IAsyncDisposable
         Dictionary<string, string?>? overrides = null,
         string environment = "Testing",
         Action<WebApplicationBuilder>? configure = null,
-        bool cookieSignIn = false)
+        bool cookieSignIn = false,
+        Action<WebApplication>? map = null)
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var tenants = new FakeTenantDirectory();
@@ -116,6 +117,7 @@ internal sealed class TokenServerHost : IAsyncDisposable
         app.UseAntiforgery();
         app.MapJeffOpsAuthentication();
         app.MapJeffOpsAuthenticationUI();
+        map?.Invoke(app);
         await app.StartAsync(TestContext.Current.CancellationToken);
 
         return new TokenServerHost(app, databaseFile, time, tenants);

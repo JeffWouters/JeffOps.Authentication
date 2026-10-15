@@ -25,7 +25,7 @@ public sealed class ProjectDependencyTests
         var context = ProjectKinds.BoundedContextOf(project.Name);
         var closure = Repository.TransitiveReferences(project);
 
-        var violations = closure.Where(reference => !IsAllowed(kind, context, reference)).ToList();
+        var violations = closure.Where(reference => !IsAllowed(project.Name, kind, context, reference)).ToList();
 
         violations.ShouldBeEmpty($"{project.Name} ({kind}) may not depend on these projects (docs/DESIGN.md §6.3).");
     }
@@ -83,7 +83,7 @@ public sealed class ProjectDependencyTests
             .ShouldBeEmpty($"{projectName} ({kind}) must not reference EF Core.");
     }
 
-    private static bool IsAllowed(ProjectKind kind, string? context, string reference)
+    private static bool IsAllowed(string projectName, ProjectKind kind, string? context, string reference)
     {
         var referenceKind = ProjectKinds.KindOf(reference);
         var sameContext = ProjectKinds.BoundedContextOf(reference) == context;
@@ -104,7 +104,9 @@ public sealed class ProjectDependencyTests
             ProjectKind.Plugin => referenceKind is ProjectKind.Kernel or ProjectKind.Plugin
                 || (reference.StartsWith("JeffOps.Authentication.", StringComparison.Ordinal)
                     && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
+            // A module's provider package builds on its module.
             ProjectKind.FeatureModule => referenceKind == ProjectKind.Kernel
+                || (referenceKind == ProjectKind.FeatureModule && projectName.StartsWith(reference + ".", StringComparison.Ordinal))
                 || (reference.StartsWith("JeffOps.Authentication.", StringComparison.Ordinal)
                     && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
             ProjectKind.ClientAdapter or ProjectKind.Common => referenceKind is ProjectKind.Kernel

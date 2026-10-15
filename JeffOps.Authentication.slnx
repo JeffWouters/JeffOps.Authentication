@@ -16,6 +16,7 @@
   </Folder>
   <Folder Name="/src/Authentication/Modules/">
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.Delegation/JeffOps.Authentication.Delegation.csproj" />
+    <Project Path="src/Authentication/Modules/JeffOps.Authentication.Delegation.SqlServer/JeffOps.Authentication.Delegation.SqlServer.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.LocalAccounts/JeffOps.Authentication.LocalAccounts.csproj" />
   </Folder>
   <Folder Name="/src/Authentication/Plugins/">
@@ -49,6 +50,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/JeffOps.Authentication.Architecture.Tests/JeffOps.Authentication.Architecture.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Client.Tests/JeffOps.Authentication.Client.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authentication.Delegation.Tests/JeffOps.Authentication.Delegation.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Domain.Tests/JeffOps.Authentication.Domain.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.KeyVault.Tests/JeffOps.Authentication.KeyVault.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Server.Tests/JeffOps.Authentication.Server.Tests.csproj" />

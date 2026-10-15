@@ -1,11 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Delegated and privileged access for the JeffOps token server: impersonation, lockbox tenant access, tenant switch.</Description>
+    <Description>Delegated access for the JeffOps token server: impersonation with target approval and break-glass, lockbox tenant access, and tenant switch.</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="OpenIddict.Validation.AspNetCore" />
   </ItemGroup>
 
   <ItemGroup>

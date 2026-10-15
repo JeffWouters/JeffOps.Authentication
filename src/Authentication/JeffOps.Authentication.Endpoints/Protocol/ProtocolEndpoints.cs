@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
 using OpenIddict.Server.AspNetCore;
@@ -126,6 +127,18 @@ internal static class ProtocolEndpoints
                 new ExchangePatCommand((string?)request["pat"] ?? string.Empty, request.GetScopes()),
                 cancellationToken).ConfigureAwait(false);
         }
+        else if (context.RequestServices.GetServices<IExtensionGrantHandler>().FirstOrDefault(handler => options.Value.ExtensionGrantType(handler.Name) == request.GrantType) is { } extension)
+        {
+            var actor = await ActorAsync(context, request).ConfigureAwait(false);
+            if (actor.IsFailure)
+            {
+                return TokenIssuance.Refuse(actor.Error);
+            }
+
+            result = await extension.HandleAsync(
+                new ExtensionGrantRequest(request.ClientId!, request.GetScopes(), ParametersOf(request), actor.Value),
+                cancellationToken).ConfigureAwait(false);
+        }
         else
         {
             return TokenIssuance.Refuse(Error.Failure(Errors.UnsupportedGrantType, "The grant type is not supported."), Errors.UnsupportedGrantType);
@@ -175,6 +188,38 @@ internal static class ProtocolEndpoints
         // OpenIddict redirects to the validated post_logout_redirect_uri, or to the RedirectUri below without one.
         return Results.SignOut(new AuthenticationProperties { RedirectUri = "/" }, [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme]);
     }
+
+    /// <summary>
+    /// Validates the request's <c>actor_token</c> (RFC 8693 §2.1), which must be an access token issued by this server. A
+    /// missing actor token is not an error here; the grant decides whether it needs one.
+    /// </summary>
+    private static async Task<Result<System.Security.Claims.ClaimsPrincipal?>> ActorAsync(HttpContext context, OpenIddictRequest request)
+    {
+        if (string.IsNullOrEmpty(request.ActorToken))
+        {
+            return Result.Success<System.Security.Claims.ClaimsPrincipal?>(null);
+        }
+
+        if (request.ActorTokenType is { } type && type != TokenTypeIdentifiers.AccessToken)
+        {
+            return Error.Unauthorized(GrantErrors.TokenInvalid, "The actor token must be an access token.");
+        }
+
+        try
+        {
+            var validation = context.RequestServices.GetRequiredService<OpenIddict.Validation.OpenIddictValidationService>();
+            return await validation.ValidateAccessTokenAsync(request.ActorToken, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (OpenIddict.Abstractions.OpenIddictExceptions.ProtocolException)
+        {
+            return Error.Unauthorized(GrantErrors.TokenInvalid, "The actor token is invalid or expired.");
+        }
+    }
+
+    private static Dictionary<string, string?> ParametersOf(OpenIddictRequest request) =>
+        request.GetParameters()
+            .Where(pair => pair.Key is not (Parameters.ClientSecret or Parameters.ActorToken or Parameters.SubjectToken))
+            .ToDictionary(pair => pair.Key, pair => (string?)pair.Value, StringComparer.Ordinal);
 
     private static Guid? TenantHintOf(OpenIddictRequest request) =>
         Guid.TryParse((string?)request["tenant_hint"], out var tenant) ? tenant : null;

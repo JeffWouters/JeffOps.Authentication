@@ -2,6 +2,7 @@ using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.Abstractions.Messaging;
 using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Abstractions;
+using JeffOps.Authentication.Application.Sessions;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Infrastructure.Defaults;
 using JeffOps.Authentication.Infrastructure.Keys;
@@ -111,7 +112,14 @@ public static class AuthenticationServiceCollectionExtensions
 
         // Settings that depend on bound options and the environment.
         services.AddOptions<OpenIddictServerOptions>()
-            .Configure<IOptions<TokenServerOptions>>((server, tokenServer) => ApplyOptions(server, tokenServer.Value));
+            .Configure<IOptions<TokenServerOptions>, IEnumerable<ExtensionGrantRegistration>>((server, tokenServer, extensions) =>
+            {
+                ApplyOptions(server, tokenServer.Value);
+                foreach (var extension in extensions)
+                {
+                    server.GrantTypes.Add(tokenServer.Value.ExtensionGrantType(extension.Name));
+                }
+            });
         services.AddOptions<OpenIddict.Server.AspNetCore.OpenIddictServerAspNetCoreOptions>()
             .Configure<IHostEnvironment>((aspNetCore, environment) => aspNetCore.DisableTransportSecurityRequirement = environment.IsDevelopment());
         services.AddSingleton<IConfigureOptions<OpenIddictServerOptions>, ServerCredentialsSetup>();

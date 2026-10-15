@@ -44,6 +44,9 @@ public sealed class TokenServerOptions
     public string DirectoryLookupPermission { get; set; } = "auth.accounts.lookup";
 
     public string PatGrantType => $"{ExtensionGrantNamespace}:pat";
+
+    /// <summary>The grant type of the extension grant <paramref name="name"/>.</summary>
+    public string ExtensionGrantType(string name) => $"{ExtensionGrantNamespace}:{name}";
 }
 
 /// <summary>The strong-authentication policy (docs/DESIGN.md §8.1).</summary>
