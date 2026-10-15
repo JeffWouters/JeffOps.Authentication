@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>JWT bearer authentication, current user and service-to-service tokens for resource services using JeffOps.Authentication.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\JeffOps.Authentication.Abstractions\JeffOps.Authentication.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

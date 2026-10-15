@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Authorization management use cases (vertical slices): roles, assignments, approvals, policies, scopes, governance.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authorization.Domain\JeffOps.Authorization.Domain.csproj" />
+    <ProjectReference Include="..\..\Shared\JeffOps.Authentication.Abstractions\JeffOps.Authentication.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

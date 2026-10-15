@@ -1,0 +1,20 @@
+<Project>
+
+  <!-- BANNED PACKAGES (docs/DESIGN.md §6.5). Fails restore and build when a project references a package listed
+       in BannedPackages.txt directly. Transitive references are caught by the architecture tests, which read
+       every project.assets.json (BannedPackageTests). This lives in .targets because the PackageReference items
+       must already be evaluated. -->
+  <Target Name="JeffOpsGuardBannedPackages" BeforeTargets="CollectPackageReferences;ResolvePackageAssets">
+    <ReadLinesFromFile File="$(MSBuildThisFileDirectory)BannedPackages.txt">
+      <Output TaskParameter="Lines" ItemName="_JeffOpsBannedLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_JeffOpsBannedPackage Include="@(_JeffOpsBannedLine)" Condition="!$([System.String]::Copy('%(Identity)').Trim().StartsWith('#'))" />
+      <_JeffOpsAllowedReference Include="@(PackageReference)" Exclude="@(_JeffOpsBannedPackage)" />
+      <_JeffOpsBannedReference Include="@(PackageReference)" Exclude="@(_JeffOpsAllowedReference)" />
+    </ItemGroup>
+    <Error Condition="'@(_JeffOpsBannedReference)' != ''"
+           Text="Banned package referenced: @(_JeffOpsBannedReference). Only free, permissively licensed packages are allowed (MIT, Apache-2.0, BSD). See docs/DESIGN.md section 6.5." />
+  </Target>
+
+</Project>

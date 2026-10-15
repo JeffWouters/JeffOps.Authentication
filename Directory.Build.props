@@ -1,0 +1,45 @@
+<Project>
+
+  <!-- Common build settings for every project in JeffOps.Authentication. See docs/DESIGN.md §6.6. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NuGet audit fails the build on a vulnerable package (NU1904 + TreatWarningsAsErrors). Mode `all`
+         audits TRANSITIVE packages too: a dependency nobody chose is where an unnoticed advisory lives. -->
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- CS1591: missing XML doc on public members. Relaxed for now; revisit before 1.0 (public packages). -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <RestoreUseStaticGraphEvaluation>true</RestoreUseStaticGraphEvaluation>
+  </PropertyGroup>
+
+  <!-- Local-dev build speed: in Debug skip analyzers, code-style and XML docs. CI builds Release, which keeps
+       full strictness (analyzers, code-style, warnings-as-errors, XML docs). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <RunAnalyzers>false</RunAnalyzers>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Banned APIs in production code (BannedSymbols.txt): wall-clock time, System.Random, MVC controllers.
+       RS0030 is a warning, so TreatWarningsAsErrors fails the Release build on any new usage. Tests are exempt. -->
+  <ItemGroup Condition="!$(MSBuildProjectName.EndsWith('Tests'))">
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" PrivateAssets="all" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <Authors>JeffOps</Authors>
+    <Company>JeffOps</Company>
+    <Product>JeffOps.Authentication</Product>
+    <Copyright>Copyright (c) JeffOps</Copyright>
+    <RepositoryType>git</RepositoryType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

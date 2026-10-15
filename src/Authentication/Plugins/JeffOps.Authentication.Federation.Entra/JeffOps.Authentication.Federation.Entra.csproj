@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Microsoft Entra ID identity provider for the JeffOps token server.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
+  </ItemGroup>
+
+</Project>

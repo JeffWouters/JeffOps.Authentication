@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Public contracts of JeffOps.Authentication: ICurrentUser, claim names, host ports, HTTP contracts and integration events.</Description>
+  </PropertyGroup>
+
+</Project>

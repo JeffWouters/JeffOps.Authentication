@@ -1,0 +1,39 @@
+# Packages that must never be referenced, directly or transitively. See docs/DESIGN.md §6.5.
+# One package id per line (exact match, case-insensitive). Lines starting with # are comments.
+# Read by Directory.Build.targets (direct references) and BannedPackageTests (transitive references).
+
+# Commercial licence from v8 (Xceed). Use Shouldly.
+FluentAssertions
+FluentAssertions.Json
+FluentAssertions.Web
+FluentAssertions.Analyzers
+
+# Commercial licence from v13. Use plain handler interfaces (DESIGN §6.1).
+MediatR
+MediatR.Contracts
+MediatR.Extensions.Microsoft.DependencyInjection
+
+# Commercial licence from v15. Map by hand.
+AutoMapper
+AutoMapper.Extensions.Microsoft.DependencyInjection
+AutoMapper.Collection
+
+# Commercial licence from v9. Use IEventPublisher + official broker clients.
+MassTransit
+MassTransit.Abstractions
+MassTransit.RabbitMQ
+MassTransit.Azure.ServiceBus.Core
+MassTransit.EntityFrameworkCore
+
+# Commercial licence. Use OpenIddict and JeffOps.Authentication.Bff.
+Duende.IdentityServer
+Duende.IdentityServer.Storage
+Duende.IdentityServer.EntityFramework
+Duende.IdentityServer.EntityFramework.Storage
+Duende.IdentityServer.AspNetIdentity
+Duende.BFF
+Duende.BFF.Yarp
+Duende.BFF.EntityFramework
+
+# Free, but excluded after the SponsorLink incident. Use NSubstitute.
+Moq

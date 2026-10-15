@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+artifacts/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Test output
+TestResults/
+*.trx
+*.coverage
+
+# Verify: received files are never committed, only *.verified.*
+*.received.*

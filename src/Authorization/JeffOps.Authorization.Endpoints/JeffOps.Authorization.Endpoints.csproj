@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Minimal API endpoints of JeffOps authorization management.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authorization.Application\JeffOps.Authorization.Application.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Use cases (vertical slices) of the JeffOps token server: grants, accounts, personal access tokens, sessions, federation.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authentication.Domain\JeffOps.Authentication.Domain.csproj" />
+    <ProjectReference Include="..\..\Shared\JeffOps.Authentication.Abstractions\JeffOps.Authentication.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

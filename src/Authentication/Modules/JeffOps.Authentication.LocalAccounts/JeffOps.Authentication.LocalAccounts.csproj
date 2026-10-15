@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Local accounts for the JeffOps token server: passwords, passkeys, TOTP, lockout, reset and verification.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
+  </ItemGroup>
+
+</Project>

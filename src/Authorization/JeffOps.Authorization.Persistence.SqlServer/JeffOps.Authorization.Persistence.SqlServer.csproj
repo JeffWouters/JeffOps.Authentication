@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>SQL Server persistence and migrations for JeffOps authorization management.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authorization.Infrastructure\JeffOps.Authorization.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,979 @@
+# JeffOps.Authentication — Design
+
+| | |
+|---|---|
+| Status | Draft v0.1 |
+| Date | 2026-10-15 |
+| Owner | Jeff Wouters |
+| Target | .NET 10, C# |
+| Solution | `JeffOps.Authentication` (part of the public JeffOps library family) |
+
+This document is the reference design for a generic, reusable authentication and authorization solution built as a set of .NET class libraries. It records what exists today in the origin implementation (§2), what we keep, what we generalise, and where we are going. When in doubt during implementation, this document wins; when this document is wrong, update it in the same change.
+
+All packages use the `JeffOps.` prefix. `JeffOps.Authentication` is the solution name. Authentication packages are named `JeffOps.Authentication.*`, authorization packages `JeffOps.Authorization.*`, and the shared hardening package is `JeffOps.Security.AspNetCore`. The packages will be published publicly under the JeffOps brand, alongside future JeffOps solutions.
+
+> Origin-specific material is kept outside this repository (§2, D14).
+
+---
+
+## Contents
+
+1. [Purpose and scope](#1-purpose-and-scope)
+2. [Origin](#2-origin)
+3. [Goals and non-goals](#3-goals-and-non-goals)
+4. [Design principles](#4-design-principles)
+5. [Architecture overview](#5-architecture-overview)
+6. [Architecture and package map](#6-architecture-and-package-map)
+7. [Authentication server](#7-authentication-server)
+8. [Identity providers (upstream)](#8-identity-providers-upstream)
+9. [Client hosting models](#9-client-hosting-models)
+10. [Claims contract](#10-claims-contract)
+11. [Authorization](#11-authorization)
+12. [Delegated and privileged access module](#12-delegated-and-privileged-access-module)
+13. [Extension points](#13-extension-points)
+14. [Data model](#14-data-model)
+15. [Events](#15-events)
+16. [Security baseline](#16-security-baseline)
+17. [Improvements over the origin implementation](#17-improvements-over-the-origin-implementation)
+18. [Open decisions](#18-open-decisions)
+19. [Roadmap](#19-roadmap)
+20. [Testing strategy](#20-testing-strategy)
+21. [Glossary](#21-glossary)
+
+---
+
+## 1. Purpose and scope
+
+Provide a self-hostable identity and access layer for multi-tenant .NET SaaS products:
+
+- **Authentication**: an OpenID Connect / OAuth 2.x token server that federates to upstream identity providers (Entra ID and others) and issues its own platform tokens.
+- **Authorization**: permission-based RBAC over a scope hierarchy, with ABAC policies and subtractive ceilings, evaluated locally inside each resource service.
+- **Client integration**: libraries that let SPAs, server-rendered web apps, native apps, CLIs and services obtain and use those tokens, with the BFF pattern as the default for browsers.
+
+In scope: libraries, a reference host for the token server, a reference host for authorization management, and a reference BFF host.
+
+Out of scope for v1: a hosted admin UI, billing/entitlement *management* (we only consume entitlement checks), SCIM server (roadmap), SAML (roadmap).
+
+---
+
+## 2. Origin
+
+The design is extracted from a private multi-tenant SaaS platform where these capabilities run in production: an OpenIddict token server federating to Entra ID, permission-based authorization with local evaluation, and a BFF gateway. Sections 7–12 describe what is kept, generalised or added. Wherever this document says "source", "kept" or "ported", it refers to that origin implementation.
+
+Origin-specific material is kept privately and is deliberately not part of this repository (D14). That covers the file-level source map, the capabilities and gaps inherited from the origin, and the origin's known issues.
+
+---
+
+## 3. Goals and non-goals
+
+### Goals
+
+- **G1 — Standards first.** Every client talks standard OIDC/OAuth. Custom grants exist only where no standard fits (and are named in a configurable URN namespace).
+- **G2 — Pluggable upstream identity.** Entra is one provider among many; adding Google, Okta or a customer's own IdP is configuration, not code.
+- **G3 — Pluggable client hosting.** BFF is the default for browsers, not a requirement.
+- **G4 — Product-agnostic.** No hard-coded product names, permission codes, role names, claim names or client ids. Everything product-specific comes from options or providers.
+- **G5 — Modular.** Consumers reference only what they use. Delegation (impersonation, lockbox, tenant switch), entitlements and governance are optional modules.
+- **G6 — Secure by default, fail closed.** Missing secrets, dev keys outside Development, or unreachable dependencies refuse rather than degrade.
+- **G7 — Keep what works.** Preserve the hardened behaviour and tests of the source; don't regress during extraction.
+
+### Non-goals
+
+- Replacing a commercial IdP for workforce identity. We federate to one; we don't compete with one.
+- Carrying permissions in tokens. Tokens carry identity and context; permissions are resolved at the resource.
+- Supporting .NET versions older than 10.
+
+---
+
+## 4. Design principles
+
+1. **The token server owns the login.** Clients never present upstream IdP tokens directly to resource services. Upstream tokens are exchanged at the token server, which issues platform tokens. (Today the SPA owns the Entra login via MSAL; this changes — see §7.2.)
+2. **Revalidate from live state.** Every refresh rebuilds claims from current account, membership, tenant and MFA state. Never re-sign a stored principal.
+3. **Identity in the token, authority at the resource.** Tokens carry `sub`, tenant context and ceilings. Permissions are resolved locally from cached role assignments.
+4. **Ceilings only narrow.** PAT, delegation, step-up and impersonation rules can remove access, never add it.
+5. **Deny overrides.** An ABAC Deny beats every Permit, including Root.
+6. **Immutable account keys.** External accounts are linked on `(issuer, subject)`, never on email.
+7. **Secrets never in the browser.** Under BFF, no platform token reaches the browser.
+8. **Abstractions in, products out.** Anything that names a product concept is an option, a provider interface, or lives in an optional module.
+9. **Drift tests guard invariants.** Security invariants are enforced by architecture tests, not code review.
+10. **Clean Architecture, vertical slices, minimal APIs.** Dependencies point inward. Code is organised by use case. Every HTTP endpoint is a minimal API. No mediator library (§6.1).
+11. **Free and permissive dependencies only.** No paid, dual-licensed or licence-key-gated packages (§6.5).
+
+---
+
+## 5. Architecture overview
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    SPA[SPA]
+    Web[Server web app]
+    Native[Native / mobile]
+    CLI[CLI / device]
+    Svc[Service / daemon]
+  end
+
+  subgraph Edge
+    BFF["BFF host<br/>JeffOps.Authentication.Bff"]
+  end
+
+  subgraph Identity
+    AS["Token server<br/>JeffOps.Authentication.*"]
+    UI[Hosted login UI]
+  end
+
+  subgraph Upstream IdPs
+    Entra[Entra ID]
+    OIDC[Generic OIDC<br/>Google, Okta, Keycloak…]
+    SAML[SAML 2.0]
+    Local[Local accounts<br/>password, passkeys]
+  end
+
+  subgraph Resource services
+    API["API<br/>JeffOps.Authentication.Client<br/>JeffOps.Authorization.AspNetCore"]
+    AM["Authorization management<br/>JeffOps.Authorization.*"]
+  end
+
+  SPA -- cookie --> BFF
+  BFF -- code+PKCE / refresh --> AS
+  BFF -- bearer --> API
+  Web -- code+PKCE --> AS
+  Native -- code+PKCE --> AS
+  CLI -- device grant --> AS
+  Svc -- client_credentials / jwt-bearer --> AS
+  AS --- UI
+  UI -- federate --> Entra & OIDC & SAML
+  UI --> Local
+  API -- cache miss --> AM
+  AM -- invalidation events --> API
+```
+
+Three deployable roles, all optional and composable:
+
+| Role | Built from | Notes |
+|---|---|---|
+| Token server | `Authentication.{Domain, Application, Infrastructure, Persistence.*, Endpoints, UI}` + one or more `Federation.*` plug-ins + optional `LocalAccounts` / `Delegation` | Hosts OIDC endpoints and the login UI. |
+| Authorization management | `Authorization.{Domain, Application, Infrastructure, Persistence.*, Endpoints}` | Roles, assignments, policies, scopes, governance. May be co-hosted with the token server. |
+| BFF | `Bff` + optional `Bff.Yarp` | Only needed for the BFF browser model. |
+
+Resource services only reference `Authentication.Client` and `Authorization.AspNetCore`. The latter brings in `Authorization.Domain`, which is pure code.
+
+---
+
+## 6. Architecture and package map
+
+### 6.1 Architecture style
+
+Three rules apply together everywhere in the solution:
+
+1. **Clean Architecture** decides the *direction of dependencies*. A module is split into Domain → Application → Infrastructure / Endpoints, and dependencies only point inward:
+   - Domain depends on nothing except the SharedKernel.
+   - Application depends on Domain, the SharedKernel and Abstractions.
+   - ASP.NET Core, EF Core, OpenIddict and Azure SDKs appear only in Infrastructure, Endpoints and plug-ins.
+2. **Vertical slices** decide *how code is organised inside a layer*. Code is grouped by use case, not by technical type: a project has `Features/PersonalAccessTokens/CreatePat/`, not top-level `Services/`, `Repositories/` or `Dtos/` folders. A slice owns its input, output, handler, validation and endpoint. Slices share only Domain types and ports. A slice never references another slice.
+3. **Minimal APIs** for the whole HTTP surface. There are no MVC controllers.
+   - Each slice has one endpoint class with a static `Map` method.
+   - Each module exposes one `MapJeffOps{Module}()` extension method that the host calls.
+   - Endpoints return `TypedResults`, report errors as RFC 9457 ProblemDetails, and declare their authorization and OpenAPI metadata explicitly.
+   - The hosted login UI (§8) uses Razor components with static server-side rendering (`MapRazorComponents`), which needs no controllers either.
+
+**How the rules combine.** A slice's folder path is mirrored in each layer project, so a use case sits in the same place everywhere:
+
+```
+JeffOps.Authentication.Domain/PersonalAccessTokens/
+    PersonalAccessToken.cs          // aggregate: expiry caps, revoke rules, ceiling invariants
+JeffOps.Authentication.Application/Features/PersonalAccessTokens/CreatePat/
+    CreatePatCommand.cs             // input record
+    CreatePatResult.cs              // output record
+    CreatePatHandler.cs             // use case: ICommandHandler<CreatePatCommand, CreatePatResult>
+    CreatePatValidator.cs           // rules beyond DataAnnotations (only if needed)
+JeffOps.Authentication.Endpoints/Features/PersonalAccessTokens/
+    CreatePatEndpoint.cs            // POST /pat: HTTP contract → command → TypedResults
+```
+
+**Handlers without a mediator.** The solution uses no MediatR and no other dispatcher library. The SharedKernel defines:
+
+```csharp
+public interface ICommandHandler<in TCommand, TResult>
+{
+    Task<Result<TResult>> HandleAsync(TCommand command, CancellationToken cancellationToken);
+}
+
+public interface IQueryHandler<in TQuery, TResult>
+{
+    Task<Result<TResult>> HandleAsync(TQuery query, CancellationToken cancellationToken);
+}
+```
+
+- Endpoints inject the handler interface directly:
+
+  ```csharp
+  static async Task<IResult> Handle(
+      CreatePatRequest request,
+      ICommandHandler<CreatePatCommand, CreatePatResult> handler,
+      CancellationToken ct)
+      => (await handler.HandleAsync(request.ToCommand(), ct)).ToHttpResult();
+  ```
+
+- Each module's `AddJeffOps{Module}()` registers its handlers explicitly. There is no runtime assembly scanning, so the code is trim/AOT-friendly and every registration is visible in review. An architecture test fails if a handler exists that isn't registered.
+- Cross-cutting concerns in the application (logging, validation, audit, unit of work) are **decorators** around the handler interfaces. A small hand-written helper in the SharedKernel applies them, so there's no Scrutor dependency.
+- HTTP concerns (step-up, impersonation refusal, entitlement checks, rate limiting) are **endpoint filters** and route conventions.
+- **Domain events:** aggregates raise them; the unit of work collects them on save. An in-process dispatcher in the SharedKernel (`IDomainEventHandler<T>`, about 50 lines) runs them. Handlers that must reach other systems translate them into integration events through `IEventPublisher` and the outbox.
+
+**Results and errors.**
+- Expected failures never throw. Handlers return `Result<T>` / `Error(Code, Message, Type)` from the SharedKernel.
+- Endpoints map `ErrorType` to a status code: Validation 400, Unauthorized 401, PaymentRequired 402, Forbidden 403, NotFound 404, Conflict 409.
+- Errors are returned as ProblemDetails with a `code` extension. The source's error codes (`step_up_required`, `impersonation_not_allowed`, `mfa_required`, …) are kept.
+
+**Validation**, in three levels:
+- Shape: .NET 10's built-in minimal API validation (`AddValidation()`, DataAnnotations on request records).
+- Rules that need logic: plain slice validators implementing the SharedKernel's `IValidator<T>`, run by the validation decorator.
+- Invariants: enforced inside the domain entities.
+
+No validation library is added, so consumers' dependency graphs stay small.
+
+**Mapping** is hand-written: static `ToCommand()` / `ToResponse()` methods next to the slice. No AutoMapper or Mapster.
+
+**OpenIddict inside this structure.**
+- OpenIddict owns the protocol: routing, OAuth parameter validation, token serialization, client authentication. It runs in passthrough mode.
+- A single minimal API endpoint receives the validated OpenIddict request and dispatches by grant type to one application handler per grant: `Features/Grants/ExchangePat`, `Features/Grants/RefreshSession`, `Features/Grants/ClientCredentials`, `Features/Grants/AuthorizationCode`, and so on.
+- Each grant handler returns an `IssuedIdentity` (subject, claims, destinations, lifetimes). The endpoint turns it into an OpenIddict `SignIn`.
+- Protocol details stay in Infrastructure and Endpoints; business rules stay in Application.
+
+### 6.2 Modules and projects
+
+There are three kinds of project:
+- **Layered modules** (Authentication, Authorization): one project per layer.
+- **Plug-ins**: implement a port of a layered module.
+- **Adapters and optional feature modules**: a single project each.
+
+A layered module also ships a separate persistence project per database provider. Migrations are provider-specific (D3).
+
+**Shared**
+
+| Project | Contents | Depends on |
+|---|---|---|
+| `JeffOps.Authentication.SharedKernel` | `Result`/`Error`, handler and validator interfaces, decorator helper, domain event base and dispatcher, `Entity`/`AggregateRoot` base, strongly-typed id base | Microsoft.Extensions.DependencyInjection.Abstractions only |
+| `JeffOps.Authentication.Abstractions` | Public surface for hosts and consumers: `ICurrentUser`, `IClaimNames` and claim defaults, host ports (`ITenantDirectory`, `IAuditSink`, `IEventPublisher`, `INotifier`, `IDomainPolicy`), HTTP contracts, integration events | — |
+
+**Authentication module (token server)**
+
+| Project | Layer | Contents | Depends on |
+|---|---|---|---|
+| `JeffOps.Authentication.Domain` | Domain | `Account`, `ExternalLogin`, `LocalCredential`, `PersonalAccessToken`, `TokenKey`, `AccountErasure`; value objects (`Issuer`, `Subject`, `PatHash`, `SessionLifetime`); domain events; invariants (PAT expiry caps, status transitions) | SharedKernel |
+| `JeffOps.Authentication.Application` | Application | Slices: `Grants/*`, `Accounts/*`, `PersonalAccessTokens/*`, `Sessions/Revalidate`, `Federation/*` (account linking on `(issuer, subject)`, home realm discovery, per-tenant provider registry). Ports: `IAccountRepository`, `IPatRepository`, `ITokenKeyProvider`, `IExternalIdentityProvider`, `IPasswordHasher`, `IUnitOfWork`. Time comes from `TimeProvider`. | Domain, Abstractions |
+| `JeffOps.Authentication.Infrastructure` | Infrastructure | OpenIddict server configuration, key providers (database, certificate) and rotation, hashing, provider-neutral EF Core `DbContext` and repositories, client seeder, background sweepers | Application, OpenIddict, EF Core |
+| `JeffOps.Authentication.Persistence.SqlServer` | Infrastructure | SQL Server provider registration and migrations | Infrastructure |
+| `JeffOps.Authentication.Endpoints` | Presentation | Minimal API endpoint per slice, `MapJeffOpsAuthentication()`, ProblemDetails mapping | Application, ASP.NET Core |
+| `JeffOps.Authentication.UI` | Presentation | Hosted login, provider picker, MFA prompt, consent (Razor components, static SSR) | Application, ASP.NET Core |
+
+**Authentication plug-ins** (each implements an Application port)
+
+| Project | Implements | Depends on |
+|---|---|---|
+| `JeffOps.Authentication.KeyVault` | `ITokenKeyProvider` (Key Vault / Managed HSM, non-exportable) | Application, Azure SDK |
+| `JeffOps.Authentication.Federation.Entra` | `IExternalIdentityProvider` (Entra ID, `amr`/`acrs` mapping) | Application, OpenIddict.Client |
+| `JeffOps.Authentication.Federation.Oidc` | `IExternalIdentityProvider` (generic OIDC/OAuth2, OpenIddict WebIntegration catalog) | Application, OpenIddict.Client |
+| `JeffOps.Authentication.Federation.Saml` | `IExternalIdentityProvider` (SAML 2.0, roadmap) | Application, SAML library (D5) |
+
+**Optional feature modules** (single project, one folder per layer; D17)
+
+| Project | Contents | Depends on |
+|---|---|---|
+| `JeffOps.Authentication.LocalAccounts` | Passwords, passkeys, TOTP, email OTP / magic links, lockout, reset, verification | Authentication.Application |
+| `JeffOps.Authentication.Delegation` | Impersonation, lockbox tenant access, tenant switch (§12) | Authentication.Application |
+
+Inside these projects the `Domain/`, `Application/`, `Infrastructure/` and `Endpoints/` folders follow the same rules as separate projects. Architecture tests enforce this by namespace.
+
+**Authorization module**
+
+| Project | Layer | Contents | Depends on |
+|---|---|---|---|
+| `JeffOps.Authorization.Domain` | Domain | `Permission` matching, `Role`, `Assignment`, `Scope` / `ScopeHierarchy`, `AttributePolicy` and condition model, `PolicyDecisionEngine`, ceilings, decision pipeline. Pure code. **Also referenced by resource services.** | SharedKernel |
+| `JeffOps.Authorization.Application` | Application | Slices: `Roles/*`, `Assignments/*`, `RoleChanges/*` (4-eyes), `Policies/*`, `Scopes/*`, `Permissions/Register`, `Decisions/Simulate`, `Governance/SweepExpired`. Ports: repositories, `IGroupMembershipProvider`, catalog and role providers. | Domain, Abstractions |
+| `JeffOps.Authorization.Infrastructure` | Infrastructure | EF Core context, change interceptor (emits invalidation events), sweepers, seeding from providers | Application, EF Core |
+| `JeffOps.Authorization.Persistence.SqlServer` | Infrastructure | SQL Server registration and migrations | Infrastructure |
+| `JeffOps.Authorization.Endpoints` | Presentation | Minimal APIs, `MapJeffOpsAuthorization()` | Application, ASP.NET Core |
+| `JeffOps.Authorization.AspNetCore` | Adapter for resource services | Policy provider, requirement handler, step-up/impersonation result handler, endpoint conventions, `IAuthorizer`, cached resolver, sealed cache, read client for management endpoints | Authorization.Domain, Abstractions, ASP.NET Core |
+
+**Client and edge adapters** (single project each, organised by feature, no business rules)
+
+| Project | Contents |
+|---|---|
+| `JeffOps.Authentication.Client` | JwtBearer setup for resource services, audience rules, fallback policy, `ICurrentUser` implementation, `ServiceTokenProvider` / `ServiceTokenHandler` |
+| `JeffOps.Authentication.Bff` | Slices as minimal API endpoints (`Login`, `Callback`, `Logout`, `Me`, `SessionContext`); `Sessions/` (store, manager, single-flight refresh); cookie→bearer and CSRF middleware |
+| `JeffOps.Authentication.Bff.Yarp` | YARP transforms: strip cookie, attach bearer, PAT→JWT edge exchange |
+| `JeffOps.Security.AspNetCore` | Security headers, forwarded-headers hardening, CORS defaults, Data Protection (Redis + KEK), origin lock, rate-limit partitions |
+| `JeffOps.Entitlements` | `IEntitlementChecker`, `RequireEntitlement` endpoint filter, 402 responses (optional) |
+| `JeffOps.Authentication.Testing` | Test token issuer, fake `ICurrentUser`, architecture-test helpers |
+
+### 6.3 Dependency rules
+
+```
+Domain          → SharedKernel
+Application     → Domain, SharedKernel, Abstractions, Microsoft.Extensions.*.Abstractions
+Infrastructure  → Application (+ EF Core, OpenIddict, …)
+Endpoints / UI  → Application (+ ASP.NET Core)        never → Infrastructure
+Plug-ins        → Application                         never → Infrastructure, Endpoints
+Hosts           → everything (composition root)
+```
+
+- Endpoints never reference Infrastructure. Only the host composes the two.
+- No slice references another slice: no type in `Features.X` may use a type in `Features.Y`. Shared rules belong in Domain, shared I/O behind a port.
+- `JeffOps.Authorization.*` never depends on `JeffOps.Authentication.*` Domain, Application or Infrastructure. Authorization works with any token issuer that satisfies the claims contract (§10).
+- Client-side packages (`Authentication.Client`, `Bff`, `Bff.Yarp`, `Authorization.AspNetCore`) never reference a server Application or Infrastructure project.
+- No project references a message broker. Events go through `IEventPublisher`; adapters ship as separate packages (D7).
+- No MVC: `Microsoft.AspNetCore.Mvc.Core` controllers and `ControllerBase` are banned via `BannedSymbols.txt`.
+- All of the above is enforced by architecture tests (§20).
+
+### 6.4 Hosts are composition roots
+
+Hosts contain no logic. A token server host looks like this:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services
+    .AddJeffOpsAuthentication(builder.Configuration)   // Application + Infrastructure + Endpoints
+    .AddSqlServerPersistence(builder.Configuration)
+    .AddKeyVaultSigning(builder.Configuration)
+    .AddEntra(builder.Configuration)
+    .AddOidcProvider("google", builder.Configuration)
+    .AddLocalAccounts(builder.Configuration);
+
+var app = builder.Build();
+
+app.UseJeffOpsSecurity();
+app.MapJeffOpsAuthentication();
+app.MapJeffOpsLocalAccounts();
+app.Run();
+```
+
+### 6.5 Third-party dependency policy
+
+**Rules**
+1. Only permissive OSI licences are allowed, anywhere in the solution (shipped packages, tests, tools, samples): **MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause**.
+2. No commercial, dual-licensed, source-available or licence-key-gated packages. This includes "free for small companies" community tiers.
+3. Prefer the BCL and `Microsoft.Extensions.*` over third-party libraries. Every dependency of a shipped package becomes a transitive dependency for consumers.
+4. Re-check the licence on every major version bump. Several popular .NET libraries moved to commercial licences in a major version.
+5. Enforcement:
+   - `Directory.Build.targets` fails the build when a banned package id is referenced.
+   - A licence scan in CI fails on any licence not on the allow-list. The scanning tool is chosen in phase 0 and must itself be under an allowed licence.
+
+**Banned** (non-exhaustive)
+
+| Package | Reason | Use instead |
+|---|---|---|
+| FluentAssertions (v8+) | Commercial licence | Shouldly |
+| MediatR (v13+) | Commercial licence | Plain handler interfaces (§6.1) |
+| AutoMapper (v15+) | Commercial licence | Hand-written mapping |
+| MassTransit (v9+) | Commercial licence | `IEventPublisher` + thin adapters on official broker clients |
+| Duende IdentityServer, Duende.BFF | Commercial licence | OpenIddict; own BFF (`JeffOps.Authentication.Bff`) |
+| Moq | Free, but excluded after the SponsorLink incident (it collected data in the build) | NSubstitute |
+
+**Approved baseline.** Licences are as of 2026-10; re-verify at adoption.
+
+| Purpose | Package | Licence |
+|---|---|---|
+| OIDC server and client | OpenIddict | Apache-2.0 |
+| ORM | EF Core | MIT |
+| Reverse proxy | YARP | MIT |
+| Cache | `Microsoft.Extensions.Caching.Hybrid`; FusionCache (optional adapter) | MIT; MIT |
+| Redis | StackExchange.Redis | MIT |
+| Azure | Azure.Identity, Azure.Security.KeyVault.Keys | MIT |
+| Test framework | xUnit v3 | Apache-2.0 |
+| Assertions | Shouldly | BSD-3-Clause |
+| Test doubles | NSubstitute | BSD-3-Clause |
+| Containers | Testcontainers | MIT |
+| Fake time | Microsoft.Extensions.TimeProvider.Testing | MIT |
+| Snapshot tests | Verify (Verify.XunitV3) | MIT |
+| Public API approval | PublicApiGenerator | MIT |
+| Architecture tests | ArchUnitNET or NetArchTest.Rules (D18) | Apache-2.0 / MIT |
+| SAML (roadmap) | ITfoxtec.Identity.Saml2 or Sustainsys.Saml2 (D5) | Verify at selection |
+
+### 6.6 Solution layout
+
+```
+Z:\Authentication\
+  docs\DESIGN.md
+  src\
+    Shared\
+      JeffOps.Authentication.SharedKernel\
+      JeffOps.Authentication.Abstractions\
+    Authentication\
+      JeffOps.Authentication.Domain\
+      JeffOps.Authentication.Application\
+      JeffOps.Authentication.Infrastructure\
+      JeffOps.Authentication.Persistence.SqlServer\
+      JeffOps.Authentication.Endpoints\
+      JeffOps.Authentication.UI\
+      Plugins\
+        JeffOps.Authentication.KeyVault\
+        JeffOps.Authentication.Federation.Entra\
+        JeffOps.Authentication.Federation.Oidc\
+      Modules\
+        JeffOps.Authentication.LocalAccounts\
+        JeffOps.Authentication.Delegation\
+    Authorization\
+      JeffOps.Authorization.Domain\
+      JeffOps.Authorization.Application\
+      JeffOps.Authorization.Infrastructure\
+      JeffOps.Authorization.Persistence.SqlServer\
+      JeffOps.Authorization.Endpoints\
+      JeffOps.Authorization.AspNetCore\
+    Clients\
+      JeffOps.Authentication.Client\
+      JeffOps.Authentication.Bff\
+      JeffOps.Authentication.Bff.Yarp\
+    Common\
+      JeffOps.Security.AspNetCore\
+      JeffOps.Entitlements\
+      JeffOps.Authentication.Testing\
+  hosts\
+    TokenServer\  AuthorizationService\  Bff\
+  samples\
+    Spa.Bff\  WebApp\  Cli.Device\  Worker.ClientCredentials\
+  tests\
+    {Project}.Tests\                         # one per src project
+    JeffOps.Authentication.Architecture.Tests\
+    JeffOps.Authentication.Security.Tests\
+    JeffOps.Authentication.Integration.Tests\
+  Directory.Build.props  Directory.Build.targets  Directory.Packages.props
+  BannedSymbols.txt  JeffOps.Authentication.slnx
+  README.md  LICENSE  SECURITY.md  CONTRIBUTING.md
+```
+
+Build settings match the source repo: central package management, `net10.0`, warnings as errors, `NuGetAudit` mode `all`, nullable enabled. Additions for public packages: deterministic builds, SourceLink, package validation.
+
+---
+
+## 7. Authentication server
+
+### 7.1 Endpoints
+
+| Endpoint | Standard | Status in source | Target |
+|---|---|---|---|
+| `/.well-known/openid-configuration`, JWKS | OIDC Discovery | implicit | explicit, tested |
+| `/connect/authorize` | OAuth 2.1 code + PKCE | **missing** | **required** |
+| `/connect/token` | RFC 6749 | present | present |
+| `/connect/revoke` | RFC 7009 | present | present |
+| `/connect/introspect` | RFC 7662 | missing | optional (for opaque-token resource servers) |
+| `/connect/userinfo` | OIDC Core | missing | required |
+| `/connect/endsession` | OIDC RP-Initiated Logout | missing | required |
+| `/connect/device`, `/connect/verify` | RFC 8628 | missing | roadmap |
+| `/connect/par` | RFC 9126 (PAR) | missing | roadmap |
+| `/account/*` | — | `/auth/register` only | hosted UI (login, register, MFA, reset, passkeys) |
+
+Routes are configurable; the `/auth` prefix of the source becomes an option.
+
+### 7.2 Login ownership change
+
+**Today:** SPA runs MSAL → gets Entra ID token → BFF posts it to `/connect/token` with grant `urn:platform:external`.
+
+**Target:** every interactive client uses authorization code + PKCE against `/connect/authorize`. The token server's login UI picks the upstream provider (home realm discovery), runs the federation server-side through OpenIddict.Client, links the account and issues the platform code. Clients no longer embed any IdP SDK.
+
+The `external` token-exchange grant is **kept** as an optional extension for clients that already hold an upstream token (e.g. native apps using a platform broker), but it is no longer the primary path.
+
+### 7.3 Grants
+
+| Grant | Type | Package | Notes |
+|---|---|---|---|
+| `authorization_code` + PKCE | standard | Authentication (slice `Grants/AuthorizationCode`) | S256 only; plain PKCE refused. |
+| `refresh_token` | standard | Authentication (slice `Grants/RefreshSession`) | Rotation on; claims rebuilt from live state; absolute lifetime from `auth_time`. |
+| `client_credentials` | standard | Authentication (slice `Grants/ClientCredentials`) | Non-Root only; per-client permission claims from client registry. |
+| `urn:ietf:params:oauth:grant-type:device_code` | standard | Authentication (slice `Grants/DeviceCode`) | Roadmap. |
+| `urn:ietf:params:oauth:grant-type:jwt-bearer` | standard (RFC 7523) | Authentication (slice `Grants/JwtBearer`) | Roadmap: workload identity federation (managed identity, GitHub OIDC, K8s SA). |
+| `urn:ietf:params:oauth:grant-type:token-exchange` | standard (RFC 8693) | Delegation | Impersonation and on-behalf-of. Replaces `urn:platform:impersonation`. |
+| `{urn}:external` | extension | Authentication (slice `Grants/ExchangeExternal`) | Upstream token exchange (legacy/native path). |
+| `{urn}:pat` | extension | Authentication (slice `Grants/ExchangePat`) | PAT → short-lived JWT. |
+| `{urn}:tenant-switch` | extension | Delegation | MSP acting session. |
+| `password` | standard (deprecated in OAuth 2.1) | LocalAccounts | **Development only**, as in source. |
+
+`{urn}` is configurable (`AuthServerOptions.ExtensionGrantNamespace`, default `urn:jeffops`).
+
+### 7.4 Tokens
+
+| Token | Format | Lifetime (default) | Notes |
+|---|---|---|---|
+| Access token | JWT, RS256 (ES256 optional), not encrypted | 15 min | Audience = shared API audience + per-service audiences. |
+| Refresh token | Opaque reference, encrypted | sliding none; absolute 8 h | Rotation; reuse detection revokes the family. |
+| ID token | JWT | 5 min | Only for code flow clients. |
+| PAT exchange token | JWT | 15 min | Carries `pat_id`, `cred=pat`, ceiling claims. |
+| Tenant-switch token | JWT | 10 min | `act_tid`, delegation ceiling. |
+| Impersonation token | JWT | 3 min, no refresh | `act` claim chain. |
+| PAT | `{prefix}_` + 256-bit base64url | 30 d default, 90 d max | SHA-256 at rest; prefix configurable. |
+
+All lifetimes are options. Sender-constrained tokens (DPoP, RFC 9449; mTLS, RFC 8705) are roadmap items and must be opt-in per client.
+
+### 7.5 Keys
+
+- `ITokenKeyProvider` with implementations:
+  - `DatabaseTokenKeyProvider` — RSA-2048 (configurable 3072), private key encrypted with Data Protection, self-healing on first start.
+  - `KeyVaultTokenKeyProvider` — sign-in-HSM, key never exported.
+  - `CertificateTokenKeyProvider` — **new**, for PKCS#12 / cert store deployments.
+- Rotation: interval 30 d, overlap 7 d. **Change from source:** new key becomes active without restart (provider exposes a key set with `NotBefore`; OpenIddict credentials refreshed via `IOptionsMonitor`).
+- Encryption keys (refresh tokens) are separate from signing keys and always rotate with overlap.
+- Dev keys are refused outside `Development`.
+
+### 7.6 Session revalidation (kept as-is, generalised)
+
+On every refresh and every derived-token mint:
+
+1. Absolute lifetime from `auth_time`.
+2. Account status Active.
+3. Domain allow-list (if configured).
+4. MFA policy still satisfied.
+5. Tenant membership still present for the stamped tenant (`ITenantDirectory`).
+6. Tenant lifecycle allows sign-in (`ITenantDirectory`).
+7. Claims rebuilt from current state via `IClaimsBuilder`.
+
+Upstream dependency failure → `server_error` (5xx), **not** `invalid_grant`, so clients retry instead of signing users out.
+
+### 7.7 Client registry
+
+- Clients are OpenIddict applications stored in the DB, seeded from configuration (`AuthServer:Clients[]`).
+- Each client declares: type (public / confidential), allowed grants, redirect URIs, audiences, permissions (for `client_credentials`), PKCE required, DPoP required (roadmap), token lifetimes override.
+- Seeder refuses well-known dev secrets outside Development (kept from source `ClientSeeder`).
+- Confidential client auth: `client_secret_basic` today; `private_key_jwt` (RFC 7523) is the recommended target and removes shared secrets.
+
+---
+
+## 8. Identity providers (upstream)
+
+### 8.1 Provider abstraction
+
+```csharp
+public interface IExternalIdentityProvider
+{
+    string Name { get; }                       // "entra", "google", "acme-okta"
+    ExternalProviderKind Kind { get; }         // Oidc, OAuth2, Saml, Local
+    Task<ExternalIdentity> CompleteAsync(ExternalCallbackContext context, CancellationToken ct);
+}
+
+public sealed record ExternalIdentity(
+    string Issuer,                // stable issuer identifier
+    string Subject,               // immutable subject within issuer
+    string? Email,
+    bool EmailVerified,
+    string? DisplayName,
+    string? DirectoryId,          // e.g. Entra tid; used for tenant mapping
+    AuthenticationStrength Strength,  // derived from amr/acr/acrs by the provider
+    IReadOnlyDictionary<string, string> RawClaims);
+```
+
+Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acrs`, SAML `AuthnContextClassRef`) to `AuthenticationStrength`. The server never inspects provider-specific claims.
+
+### 8.2 Account linking
+
+- Key: `(Issuer, Subject)`, unique filtered index. Replaces the Entra-specific `(tid, oid)`.
+- Entra provider sets `Issuer = https://login.microsoftonline.com/{tid}/v2.0` and `Subject = oid` so existing links migrate 1:1.
+- Email is **never** a link key. Linking an additional provider to an existing account requires the user to be signed in with the first one (explicit link), or a verified-email match that the tenant admin has opted into (D8).
+- JIT provisioning on first sign-in is an option per provider.
+
+### 8.3 Supported provider families
+
+| Family | Package | Examples | Status |
+|---|---|---|---|
+| Entra ID | `Federation.Entra` | Work/school accounts, multi-tenant | port from source |
+| Microsoft personal / Entra External ID | `Federation.Entra` | MSA, CIAM | config of same package |
+| Generic OIDC | `Federation.Oidc` | Google, Okta, Auth0, Ping, Keycloak, Cognito, Apple | new |
+| OAuth2 social (non-OIDC) | `Federation.Oidc` (WebIntegration) | GitHub, LinkedIn | new |
+| SAML 2.0 | `Federation.Saml` | ADFS, Shibboleth, gov/edu | roadmap |
+| Local accounts | `LocalAccounts` | password, passkeys, TOTP, email OTP | partial in source |
+| Directory | — | LDAP, Kerberos | not planned |
+
+### 8.4 Per-tenant SSO and home realm discovery
+
+- Provider configurations are data (`ExternalProviderRegistration`): global (platform-wide) or tenant-owned.
+- Tenant-owned providers are loaded as dynamic schemes at runtime (OpenIddict.Client supports dynamic registrations).
+- **Home realm discovery** order: explicit `idp` hint → login hint email domain → tenant's verified domains → provider picker.
+- Domain ownership must be verified (DNS TXT) before a tenant can claim a domain for HRD. Unverified claims are ignored.
+- Tenant can enforce "SSO only" (disable local and global providers for its members).
+- SCIM 2.0 provisioning/deprovisioning is a roadmap companion (D9).
+
+### 8.5 Local accounts
+
+- Passwords: PBKDF2-SHA256 100k (source format v1) → **v2 target: PBKDF2-SHA512 600k or Argon2id (D10)**, with transparent rehash on successful login.
+- Passkeys / WebAuthn via ASP.NET Core Identity's passkey support (.NET 10).
+- TOTP and email OTP as second factors; recovery codes.
+- Lockout: progressive delay + temporary lock (I5).
+- Password reset, email verification, change password with re-auth.
+- Registration stays enumeration-safe (same response, same work on both paths).
+- Production gate: local accounts disabled by default outside Development unless explicitly enabled.
+
+---
+
+## 9. Client hosting models
+
+All models consume the same token server. The library provides a package or documented sample for each.
+
+| Model | Use for | Package / sample | Token storage | Security notes |
+|---|---|---|---|---|
+| **BFF** (default for browsers) | SPA | `Bff`, `Bff.Yarp`, sample `Spa.Bff` | Server-side session; `__Host-` HttpOnly SameSite cookie | Strongest browser option. CSRF header required on state-changing requests. |
+| Token-mediating backend | SPA without proxy | `Bff` (mode `TokenMediating`) | Access token in browser memory; refresh token on server | XSS can steal short-lived access token. |
+| Browser-only SPA | static SPA | sample only | Memory; rotating refresh token | Public client, PKCE mandatory. Recommend DPoP once available. |
+| Server-rendered web app | MVC / Razor / Blazor Server | sample `WebApp` (standard ASP.NET Core OIDC handler) | Auth cookie + server-side tokens | Confidential client. |
+| Native / desktop / mobile | MAUI, WPF, iOS, Android | sample | OS keychain | RFC 8252: system browser, loopback or claimed-HTTPS redirect, PKCE. |
+| CLI / device | CLI, TV, IoT | sample `Cli.Device` | OS keychain / file with ACL | Device grant (RFC 8628). |
+| Service / daemon | backend jobs | `Authentication.Client` (`ServiceTokenHandler`) | In-memory cache | `client_credentials`; target `private_key_jwt` or workload identity federation. |
+| API credential | scripts, integrations | PAT + `Bff.Yarp` edge exchange or direct `{urn}:pat` grant | Caller-managed | Ceiling-limited, expiring, revocable. |
+
+### 9.1 BFF changes vs source
+
+- BFF becomes an OIDC **confidential client** using code + PKCE (`/bff/login` redirects; `/bff/callback` completes). The "post an Entra ID token" login is retained only behind a compatibility flag.
+- Session store, single-flight refresh (striped semaphores), outage grace, cookie→bearer with anti-smuggling and derived sessions are ported unchanged.
+- Cookie name, CSRF header name, session lifetimes, Redis key prefixes become options.
+- Back-channel logout (OIDC Back-Channel Logout) support so the token server can end BFF sessions.
+
+---
+
+## 10. Claims contract
+
+Claim names are configurable through `IClaimNames` with these defaults. The origin's names are kept as defaults so the origin platform can adopt the library without a token migration.
+
+| Concept | Default claim | Source name | Notes |
+|---|---|---|---|
+| Subject (user or client) | `sub` | `sub` | standard |
+| Tenant | `tid` | `tid` | effective tenant |
+| Organization | `org` | `org` | optional |
+| Workspace | `wid` | `wid` | optional |
+| Access level | `lvl` | `lvl` | `Service`, `Workspace`, `Tenant`, `Organization`, `Delegated`, `Root` |
+| Acting tenant | `act_tid` | `act_tid` | Delegation module |
+| Actor (impersonation) | `act` | `act` | RFC 8693 structure |
+| Service permissions | `perm` | `perm` | `client_credentials` only |
+| PAT ceiling | `pat_perm` | `pat_perm` | |
+| Delegation ceiling | `dlg_scope` | `dlg_scope` | |
+| Step-up | `step_up` | `step_up` | value `mfa` |
+| Auth methods | `amr` | `amr` | RFC 8176 values |
+| Auth time | `auth_time` | `auth_time` | basis of absolute lifetime |
+| Credential type | `cred` | `cred` | `pat`, … |
+
+Rules:
+- Tenant headers (`X-Tenant-Id`, `X-Acting-Tenant-Id`) are trusted **only** from service tokens and are stripped at the edge (kept from source).
+- The access level vocabulary is an enum in Abstractions; products may not add levels without a library change.
+- **No permissions in user tokens** (principle 3).
+
+---
+
+## 11. Authorization
+
+### 11.1 Model
+
+- **Permission**: `domain.resource.action`, case-insensitive. Grants match exact, `*`, or prefix wildcard (`billing.*`).
+- **Catalog**: static definitions from `IPermissionCatalogProvider` (product-supplied) + self-registered definitions from services (`AddPermissionRegistration`), with domain ownership enforced.
+- **Role**: permission bundle; built-in or custom (tenant-scoped); flags `IsSuperAdmin`, `MinScopeKey`, `ComplianceControls`. Built-in roles come from `IBuiltInRoleProvider` — **no hard-coded role names in the library.**
+- **Assignment**: `(subject, role, tenant, scopeKey, scopeInstanceId?, expiresAt?)`.
+- **Groups**: new (D11). Assignment subject becomes `Principal { User | Group }`; group membership resolved via `IGroupMembershipProvider` (local groups or IdP group claims / SCIM).
+- **Scope hierarchy**: tree defined by data, seeded from `IScopeSeedProvider`; containment check is part of Core.
+- **ABAC policy**: Permit/Deny, target action (exact/`*`), target resource type (**now evaluated**, see §17), JSON condition tree, priority.
+
+### 11.2 Decision pipeline
+
+Order is part of the contract and covered by tests:
+
+```
+1. Authenticated?                                   → 401
+2. ABAC Deny matches?                               → deny (beats Root)
+3. Root? / RBAC grant at requested scope? / service perm? / ABAC Permit?
+                                                    → candidate allow, else deny
+4. PAT ceiling (pat_perm)                           → narrow
+5. Delegation ceiling (dlg_scope)                   → narrow
+6. Impersonation limits                             → narrow (403 impersonation_not_allowed)
+7. Step-up required and step_up != mfa              → 403 step_up_required + WWW-Authenticate (RFC 9470)
+8. Entitlement (optional module)                    → 402
+```
+
+Every decision returns an `AuthorizationDecision` with a reason code and an optional trace (trace exposed only to Root/service callers).
+
+### 11.3 ASP.NET Core integration
+
+- `[Authorize("billing.invoice.read")]` / `.RequireAuthorization("…")` — dynamic policy provider, no per-permission registration.
+- **New:** scope-aware attribute, e.g. `.RequirePermission("workspace.item.write", scope: "workspace", instanceRoute: "workspaceId")`, so non-tenant scopes work declaratively (fixes §17 #4).
+- `IAuthorizer.AuthorizeAsync(action, resource, scopeKey, instanceId)` for imperative checks.
+- Route conventions: `.RequireStepUp()`, `.AllowWithoutStepUp()`, `.RefuseUnderImpersonation()`, `.RequireEntitlement(code)`.
+- Sensitive-permission list, impersonation-blocked list and privileged list come from options/providers, not constants.
+
+### 11.4 Resolution and caching
+
+- Local evaluation; the hot path never calls the management service.
+- Three cache layers: assignments per (subject, tenant) 60 s; role→permissions map 10 min; policies 60 s. Scopes 5 min.
+- Cache abstraction: `HybridCache` (built into .NET) by default with optional FusionCache adapter (D6).
+- Entries sealed with HMAC-SHA256 (`SealedDecisionCache`), key derived from the service's own secret; fail closed with dev secret outside Development.
+- Invalidation: EF `SaveChangesInterceptor` emits change events through `IEventPublisher`; consumers evict by key. Without a bus, TTLs are the upper bound on staleness (documented).
+- Performance fixes: parse ABAC conditions once at load (compiled condition tree); index permission grants by prefix instead of linear scan.
+
+### 11.5 Governance (Management package)
+
+Ported as-is, all limits configurable:
+- 4-eyes approval for role-permission changes and break-glass assignments; per-tenant/global setting `tenant ?? global ?? true`; disabling it requires approval; no self-approval.
+- Privileged-role ceiling: to grant a privileged role (or any role to yourself) you must already hold all its permissions, checked in the target tenant from the store.
+- Break-glass: time-boxed (default ≤ 8 h), emits `PrivilegedAccessGranted` with watcher list.
+- Recertification: extend expiry ≤ 365 d, not for own access.
+- Expiry sweeper every 5 min.
+- Audit event for every write.
+- Simulate endpoint.
+
+---
+
+## 12. Delegated and privileged access module
+
+Package `JeffOps.Authentication.Delegation`. Optional; products without MSP/support scenarios don't reference it.
+
+| Feature | Behaviour (kept from source) | Changes |
+|---|---|---|
+| Impersonation | Target consents within 5 min; session 30 min; token 3 min, no refresh; `act` chain; break-glass without consent requires reason + permission; target notified, has kill switch; identity/access/outbound writes blocked. | Use standard RFC 8693 grant type. Durations as options. |
+| Lockbox tenant access | Request → approve/deny by target-tenant admin → end/revoke; 60 min window; concurrency token on status. | Approver permission from options. |
+| Tenant switch | Delegated 10 min token, `act_tid`, ceiling admin/readonly/billing. | Ceiling vocabulary becomes configurable (`IDelegationCeilingProvider`). |
+
+BFF support for derived sessions (bound to the owner's live session via `OwnerKey`) ships in `Bff` and activates only when Delegation is registered.
+
+---
+
+## 13. Extension points
+
+Everything product-specific is supplied by the host through these interfaces (all in Abstractions unless noted):
+
+| Interface | Purpose | Default |
+|---|---|---|
+| `IClaimNames` | Claim name mapping | §10 defaults |
+| `ITenantDirectory` | Memberships, tenant lifecycle, directory → tenant mapping, verified domains | single-tenant no-op |
+| `IAccountStore` | User accounts (when not using the EF store) | EF store |
+| `IClaimsBuilder` | Build platform claims from account + tenant state | default builder |
+| `IExternalIdentityProvider` (Federation) | Upstream IdPs | none registered |
+| `ITokenKeyProvider` (Server) | Signing/encryption keys | Database |
+| `IAuditSink` | Audit events | logger sink |
+| `IEventPublisher` | Integration events | in-process |
+| `INotifier` | User notifications (impersonation, break-glass) | logger |
+| `IPermissionCatalogProvider` | Static permission catalog | empty |
+| `IBuiltInRoleProvider` | Built-in roles | empty |
+| `IScopeSeedProvider` | Seeded scope tree | `system → tenant` |
+| `ISensitivePermissionProvider` | Step-up / impersonation / privileged sets | empty |
+| `IGroupMembershipProvider` | Group resolution | none |
+| `IEntitlementChecker` (Entitlements) | Licensing checks | allow-all |
+| `IDomainPolicy` | Email/domain allow-list, open registration | closed outside Development |
+
+DI entry points (illustrative):
+
+```csharp
+// Token server host (see §6.4)
+builder.Services.AddJeffOpsAuthentication(builder.Configuration)
+    .AddSqlServerPersistence(builder.Configuration)
+    .AddKeyVaultSigning(builder.Configuration)
+    .AddEntra(builder.Configuration)
+    .AddOidcProvider("google", builder.Configuration)
+    .AddLocalAccounts(builder.Configuration)
+    .AddDelegation(builder.Configuration);
+app.MapJeffOpsAuthentication();
+
+// Authorization management host
+builder.Services.AddJeffOpsAuthorization(builder.Configuration)
+    .AddSqlServerPersistence(builder.Configuration);
+app.MapJeffOpsAuthorization();
+
+// Resource service
+builder.Services.AddJeffOpsAuthenticationClient(builder.Configuration)   // JwtBearer, ICurrentUser, fallback policy
+    .AddServiceTokens();                                                  // s2s DelegatingHandler
+builder.Services.AddJeffOpsPermissionAuthorization(builder.Configuration) // policy provider, handler, resolver, cache
+    .AddPermissionRegistration("billing", definitions);
+
+// BFF host
+builder.Services.AddJeffOpsBff(builder.Configuration).AddYarpIntegration();
+app.MapJeffOpsBff();
+```
+
+---
+
+## 14. Data model
+
+### 14.1 Authentication store
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `Accounts` | `Id`, `Status`, `Email`, `DisplayName`, `CreatedAt` | Email not unique. Status: Active, Disabled, Locked, PendingErasure. |
+| `ExternalLogins` | `AccountId`, `Issuer`, `Subject`, `Provider` | **New** (was columns on User). Unique `(Issuer, Subject)`. Allows multiple providers per account. |
+| `LocalCredentials` | `AccountId`, `PasswordHash`, `HashVersion` | |
+| `Passkeys` | `AccountId`, `CredentialId`, `PublicKey`, `SignCount` | new |
+| `ExternalProviderRegistrations` | `Id`, `TenantId?`, `Kind`, `Config (encrypted)` | new, per-tenant SSO |
+| `VerifiedDomains` | `TenantId`, `Domain`, `VerifiedAt` | new, HRD |
+| `PersonalAccessTokens` | `Id`, `AccountId`, `TenantId`, `Hash`, `ExpiresAt`, `Ceiling`, `AllowSensitive` | |
+| `TokenKeys` | `Id`, `Use`, `Algorithm`, `ProtectedKey`, `NotBefore`, `NotAfter` | |
+| `ImpersonationGrants`, `TenantAccessGrants` | | Delegation module; `Status` is a concurrency token |
+| `AccountErasures` | | |
+| OpenIddict tables | | applications, authorizations, scopes, tokens |
+
+### 14.2 Authorization store
+
+`Roles`, `RolePermissions`, `Assignments` (subject = user or group), `Groups`, `GroupMembers` (local groups), `RoleChangeRequests`, `AuthzSettings`, `RegisteredPermissions`, `AttributePolicies`, `Scopes`.
+
+Both stores: soft delete, Guid ids at the boundary (typed ids internal), SQL Server first; provider-neutral EF configuration so PostgreSQL can be added (D3).
+
+---
+
+## 15. Events
+
+Published through `IEventPublisher`; names versioned, prefix configurable (`{prefix}.` defaults to none).
+
+| Event | Name |
+|---|---|
+| Account registered / signed in / sign-in failed | `auth.user.registered.v1`, `auth.user.logged_in.v1`, `auth.signin.failed.v1` |
+| Credential changed | `auth.credential.changed.v1` |
+| PAT created / revoked | `auth.pat.created.v1`, `auth.pat.revoked.v1` |
+| Impersonation lifecycle | `auth.impersonation.{requested\|approved\|denied\|started\|refreshed\|ended\|revoked}.v1` |
+| Tenant access lifecycle | `auth.tenant_access.{requested\|approved\|denied\|revoked}.v1` |
+| Role permissions changed | `authorization.role.permissions_changed.v1` |
+| Role assigned / revoked | `authorization.user_role.{assigned\|revoked}.v1` |
+| Privileged access granted | `authorization.privileged_access.granted.v1` |
+| Policy / scope changed | `authorization.policy.changed.v1`, `scopes.changed.v1` |
+
+Consumed (from the host's tenant system, via `ITenantDirectory` callbacks or events): membership revoked, tenant deleted.
+
+Optional: ECDSA P-256 signed integration events (ported from the origin platform) as an adapter concern, not a library dependency.
+
+---
+
+## 16. Security baseline
+
+Non-negotiable defaults. Each has a test.
+
+**Tokens and sessions**
+- [ ] PKCE S256 required for all code flows; implicit and hybrid flows disabled.
+- [ ] Refresh token rotation with reuse detection.
+- [ ] Claims rebuilt from live state on refresh; absolute session lifetime.
+- [ ] Root tokens cannot be minted by `client_credentials`.
+- [ ] `RequireHttpsMetadata` and audience validation always on outside Development.
+- [ ] Inbound claim mapping disabled (`MapInboundClaims = false`).
+- [ ] Fallback policy: authenticated user required on every endpoint; anonymous endpoints declared explicitly.
+
+**Accounts and credentials**
+- [ ] Accounts linked on `(issuer, subject)` only.
+- [ ] Registration and reset are enumeration-safe.
+- [ ] Lockout / throttling on local sign-in.
+- [ ] PATs hashed, prefixed, expiring, tenant-bound, ceiling-limited.
+- [ ] Dev secrets and dev keys refused outside Development.
+
+**Browser / BFF**
+- [ ] `__Host-` cookie, HttpOnly, Secure, SameSite=Lax (Strict optional).
+- [ ] CSRF header required on state-changing requests.
+- [ ] Incoming `Authorization` header stripped when a session cookie is present (anti-smuggling); `Cookie` stripped before proxying.
+- [ ] Session blob encrypted with Data Protection; Redis key is a hash of the session id.
+- [ ] Security headers: CSP `default-src 'none'` for APIs, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, HSTS.
+
+**Infrastructure**
+- [ ] Data Protection key ring persisted and wrapped by a KEK (certificate or Key Vault); fail closed outside Development.
+- [ ] Forwarded headers trusted only from configured proxies; fail closed when unconfigured outside Development.
+- [ ] Tenant headers stripped at the edge, trusted only from service tokens.
+- [ ] Rate limiting partitions: preflight → stream → tenant → auth → session → IP.
+- [ ] Failed sign-ins audited with a rate budget.
+
+---
+
+## 17. Improvements over the origin implementation
+
+These requirements differ from the origin implementation. They are listed here so the extraction doesn't port the old behaviour by accident.
+
+| # | Requirement | Where |
+|---|---|---|
+| I1 | ABAC policies evaluate `TargetResourceType`, not only the target action. | `Authorization.Domain` |
+| I2 | Declarative permission checks are scope-aware: workspace and instance scopes work without imperative code. | `Authorization.AspNetCore`, §11.3 |
+| I3 | ABAC conditions are compiled once at load; permission grants are matched through a prefix index. | `Authorization.Domain` |
+| I4 | A rotated signing key becomes active without a restart. | `Authentication.Infrastructure`, §7.5 |
+| I5 | Local accounts implement lockout, password reset and password change. | `LocalAccounts`, §8.5 |
+| I6 | Service token options have no built-in client id or secret; missing configuration fails at startup. | `Authentication.Client` |
+| I7 | Data Protection (persisted key ring + KEK) is configured in one package, not copied per host. | `Security.AspNetCore` |
+| I8 | User lookup endpoints accept only service callers that hold an explicit permission. | `Authentication.Endpoints` |
+| I9 | Local registration is only reachable when local accounts are enabled. | `LocalAccounts` |
+
+---
+
+## 18. Open decisions
+
+| ID | Decision | Options | Leaning |
+|---|---|---|---|
+| D1 | Root namespace / package prefix | — | **Decided: `JeffOps`** (solution `JeffOps.Authentication`) |
+| D2 | Token server engine | — | **Decided: OpenIddict** (Apache-2.0, already in use, has client and web integrations). Duende is ruled out by §6.5. |
+| D3 | Databases | SQL Server only / SQL Server + PostgreSQL | SQL Server first, provider-neutral mappings |
+| D4 | Distribution | private feed / public nuget.org | **Decided: public**, under the JeffOps brand. Reserve the `JeffOps.` ID prefix on nuget.org, sign packages, and use SourceLink with deterministic builds. |
+| D5 | SAML library | Sustainsys.Saml2 / ITfoxtec.Identity.Saml2 | Evaluate when SAML is scheduled. The licence must pass §6.5 for the exact version adopted. |
+| D6 | Cache | `HybridCache` / FusionCache | HybridCache default, FusionCache adapter |
+| D7 | Messaging | `IEventPublisher` only / ship RabbitMQ + Service Bus adapters | Interface in core; adapters as separate packages |
+| D8 | Cross-provider account linking by verified email | never / tenant opt-in | Tenant opt-in, off by default |
+| D9 | SCIM 2.0 server | in scope / later | Later (after per-tenant SSO) |
+| D10 | Password hash v2 | PBKDF2-SHA512 600k / Argon2id | Argon2id if a vetted managed implementation is acceptable; else PBKDF2-SHA512 |
+| D11 | Groups in authorization | add now / later | Add with per-tenant SSO (IdP group claims) |
+| D12 | Should the origin platform consume this library? | yes (migrate) / no (fork) | Yes — claim defaults chosen to make it possible |
+| D13 | Authorization management co-hosted with token server? | separate / co-hosted | Support both; reference hosts separate |
+| D14 | Origin-specific content in a public repo | — | **Decided: kept outside this repository**, moved out before the first commit |
+| D15 | Licence | — | **Decided: Apache-2.0** (explicit patent grant; matches OpenIddict). `LICENSE` at the root; `PackageLicenseExpression` set for every package. |
+| D16 | Where shared JeffOps base packages live (e.g. `JeffOps.Security.AspNetCore`, `JeffOps.Authentication.SharedKernel`) once future solutions reuse them | keep in this solution / separate `JeffOps.Common` solution (`JeffOps.SharedKernel`) | Start here; split out when a second solution needs them |
+| D17 | Optional feature modules (LocalAccounts, Delegation): project-per-layer or single project with layer folders | 4 projects each / 1 project + namespace rules | **Single project**, layering enforced by architecture tests. Keeps the NuGet surface small. |
+| D18 | Architecture test library | — | **Decided: ArchUnitNET** (Apache-2.0) for type-level rules; it reads IL, so dependencies in method bodies count. Project-level rules parse the .csproj files directly, because the compiler drops references a project doesn't use yet. |
+| D19 | Architectural style | — | **Decided: Clean Architecture + vertical slices + minimal APIs, no mediator library** (§6.1) |
+| D20 | Paid / commercial dependencies | — | **Decided: none allowed** (§6.5) |
+| D21 | Test framework | xUnit v3 / TUnit / MSTest / NUnit | **Decided: xUnit v3.** The source tests port with little change, and the ecosystem (Testcontainers, `WebApplicationFactory`) is strongest. Revisit TUnit (source-generated, AOT) after 1.0. |
+
+---
+
+## 19. Roadmap
+
+| Phase | Scope | Exit criteria |
+|---|---|---|
+| **0 — Scaffold** | Solution and projects (§6.6); CPM and build props; banned-package guard and licence scan (§6.5); `BannedSymbols.txt`; SharedKernel (`Result`, handler interfaces, decorators, domain events); architecture tests for layering, slice isolation and handler registration (§6.3) | Empty projects build; architecture tests green; a deliberately banned package fails the build |
+| **1 — Port core** | Abstractions, Authorization.Domain, Authorization.AspNetCore, Authentication.Client, Security.AspNetCore; port tests | Ported tests green; I1, I2, I3, I6, I7 done |
+| **2 — Token server** | Authentication Domain / Application / Infrastructure / Persistence.SqlServer / Endpoints; key providers, PATs, revalidation, client registry as slices; **add authorization code + PKCE, userinfo, end-session** | Standard OIDC conformance smoke test passes; I4, I8, I9 done |
+| **3 — Federation** | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
+| **4 — BFF** | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
+| **5 — Management & governance** | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
+| **6 — Delegation** | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
+| **7 — Local accounts** | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
+| **8 — Enterprise** | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
+| **9 — Hardening** | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
+
+---
+
+## 20. Testing strategy
+
+- **Stack** (D21):
+  - xUnit v3 on Microsoft.Testing.Platform; test projects are executables.
+  - Shouldly for assertions, NSubstitute for test doubles, `FakeTimeProvider` for lifetimes and expiry.
+  - Verify for snapshots, PublicApiGenerator for public API approval.
+  - No FluentAssertions, Moq or any paid library (§6.5).
+- **xUnit v3 conventions**:
+  - Integration tests skip with `Assert.SkipUnless(dockerAvailable, …)`; the `SkippableFact` package is not ported.
+  - SQL Server and Redis containers are shared per test assembly through assembly fixtures.
+  - Tests pass `TestContext.Current.CancellationToken` to async calls.
+- **Unit**: Domain tests are pure, with no mocks. Application tests run one slice at a time: the handler gets in-memory fakes of its ports, and Shouldly asserts on the `Result`.
+- **Slice / endpoint tests**: `WebApplicationFactory` per module exercises a slice end-to-end over HTTP (status codes, ProblemDetails `code`, authorization metadata).
+- **In-process token pipeline**: real OpenIddict server via TestHost (port `TokenPipelineTests`).
+- **Integration**: Testcontainers (SQL Server, Redis), skipped without Docker.
+- **Architecture / drift tests** (port and generalise):
+  - Layer dependency rules (§6.3), including namespace layering inside the single-project modules.
+  - Slice isolation: no `Features.X` type references a `Features.Y` type.
+  - Every `ICommandHandler` / `IQueryHandler` implementation is registered.
+  - No MVC controllers; every endpoint is a minimal API.
+  - No banned packages (§6.5) in any project.
+  - Every endpoint requires authorization or declares an anonymous reason.
+  - Every BFF route reaches a session check.
+  - Step-up exemption set is pinned.
+  - Impersonation-exempt GET routes don't write.
+  - Services using permission policies register the authorization client.
+  - No literal secrets in host configuration.
+- **Security tests**: audience acceptance/rejection, fallback policy, enumeration safety, CSRF, header smuggling, refresh reuse detection.
+- **Snapshot tests** (Verify): the OIDC discovery document, the JWKS shape (key ids and algorithms, never key material), ProblemDetails bodies per error code, the OpenAPI document per module, and token claim sets per grant type. Unintended protocol changes then show up as reviewable diffs.
+- **Public API approval**: every shipped package has a test that generates its public API with PublicApiGenerator and verifies it against an approved `*.verified.txt`. Changes to the public surface fail the build until they are explicitly accepted. This makes breaking changes visible before release and supports semantic versioning.
+- **Conformance**: run the OpenID Foundation conformance suite against the reference token server before 1.0.
+
+---
+
+## 21. Glossary
+
+| Term | Meaning |
+|---|---|
+| BFF | Backend-for-frontend: server holds tokens, browser holds only a session cookie. |
+| HRD | Home realm discovery: picking the upstream IdP for a user, typically by email domain. |
+| PAT | Personal access token: user-created, long-lived API credential exchanged for short-lived JWTs. |
+| Ceiling | A token-carried limit that can only narrow what RBAC/ABAC allow. |
+| Step-up | Requiring a stronger authentication (MFA) for sensitive actions. |
+| Lockbox | Customer-approved, time-boxed access to a tenant by an outside party. |
+| Break-glass | Emergency privileged access, time-boxed and heavily audited. |
+| 4-eyes | A change needs approval by a second person. |
+| Scope (authz) | Node in the resource hierarchy where a role is assigned. Not an OAuth scope. |
+| OAuth scope | `scope` parameter on token requests (e.g. `jeffops.api`). |

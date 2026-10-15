@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Domain model of the JeffOps token server: accounts, external logins, personal access tokens, signing keys.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\JeffOps.Authentication.SharedKernel\JeffOps.Authentication.SharedKernel.csproj" />
+  </ItemGroup>
+
+</Project>

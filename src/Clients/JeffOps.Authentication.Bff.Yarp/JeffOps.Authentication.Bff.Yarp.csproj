@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>YARP integration for the JeffOps BFF: cookie stripping, bearer forwarding, PAT exchange at the edge.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authentication.Bff\JeffOps.Authentication.Bff.csproj" />
+  </ItemGroup>
+
+</Project>

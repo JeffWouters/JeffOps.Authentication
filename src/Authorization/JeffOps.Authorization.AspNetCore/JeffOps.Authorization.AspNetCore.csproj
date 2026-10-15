@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Permission-based authorization for ASP.NET Core resource services: policy provider, handlers, cached resolver.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authorization.Domain\JeffOps.Authorization.Domain.csproj" />
+    <ProjectReference Include="..\..\Shared\JeffOps.Authentication.Abstractions\JeffOps.Authentication.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

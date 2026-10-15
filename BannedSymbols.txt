@@ -1,0 +1,7 @@
+P:System.DateTime.UtcNow;Use the injected TimeProvider: time.GetUtcNow() (tests may use FakeTimeProvider).
+P:System.DateTime.Now;Use the injected TimeProvider: time.GetLocalNow() (tests may use FakeTimeProvider).
+P:System.DateTimeOffset.UtcNow;Use the injected TimeProvider: time.GetUtcNow() (tests may use FakeTimeProvider).
+P:System.DateTimeOffset.Now;Use the injected TimeProvider: time.GetLocalNow() (tests may use FakeTimeProvider).
+T:System.Random;Security library: use System.Security.Cryptography.RandomNumberGenerator.
+T:Microsoft.AspNetCore.Mvc.ControllerBase;Minimal APIs only (docs/DESIGN.md §6.1).
+T:Microsoft.AspNetCore.Mvc.Controller;Minimal APIs only (docs/DESIGN.md §6.1).

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Minimal API endpoints of the JeffOps token server.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
+  </ItemGroup>
+
+</Project>

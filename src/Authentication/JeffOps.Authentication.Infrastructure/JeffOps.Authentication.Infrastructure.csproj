@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Infrastructure for the JeffOps token server: OpenIddict, EF Core, signing keys, hashing, background services.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- References every src project so their assemblies land in the output folder for type-level rules. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TngTech.ArchUnitNET" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Authentication/JeffOps.Authentication.Application/JeffOps.Authentication.Application.csproj" />
+    <ProjectReference Include="../../src/Authentication/JeffOps.Authentication.Domain/JeffOps.Authentication.Domain.csproj" />
+    <ProjectReference Include="../../src/Authentication/JeffOps.Authentication.Endpoints/JeffOps.Authentication.Endpoints.csproj" />
+    <ProjectReference Include="../../src/Authentication/JeffOps.Authentication.Infrastructure/JeffOps.Authentication.Infrastructure.csproj" />
+    <ProjectReference Include="../../src/Authentication/JeffOps.Authentication.Persistence.SqlServer/JeffOps.Authentication.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="../../src/Authentication/JeffOps.Authentication.UI/JeffOps.Authentication.UI.csproj" />
+    <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.Delegation/JeffOps.Authentication.Delegation.csproj" />
+    <ProjectReference Include="../../src/Authentication/Modules/JeffOps.Authentication.LocalAccounts/JeffOps.Authentication.LocalAccounts.csproj" />
+    <ProjectReference Include="../../src/Authentication/Plugins/JeffOps.Authentication.Federation.Entra/JeffOps.Authentication.Federation.Entra.csproj" />
+    <ProjectReference Include="../../src/Authentication/Plugins/JeffOps.Authentication.Federation.Oidc/JeffOps.Authentication.Federation.Oidc.csproj" />
+    <ProjectReference Include="../../src/Authentication/Plugins/JeffOps.Authentication.KeyVault/JeffOps.Authentication.KeyVault.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Application/JeffOps.Authorization.Application.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.AspNetCore/JeffOps.Authorization.AspNetCore.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Domain/JeffOps.Authorization.Domain.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Endpoints/JeffOps.Authorization.Endpoints.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Infrastructure/JeffOps.Authorization.Infrastructure.csproj" />
+    <ProjectReference Include="../../src/Authorization/JeffOps.Authorization.Persistence.SqlServer/JeffOps.Authorization.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="../../src/Clients/JeffOps.Authentication.Bff.Yarp/JeffOps.Authentication.Bff.Yarp.csproj" />
+    <ProjectReference Include="../../src/Clients/JeffOps.Authentication.Bff/JeffOps.Authentication.Bff.csproj" />
+    <ProjectReference Include="../../src/Clients/JeffOps.Authentication.Client/JeffOps.Authentication.Client.csproj" />
+    <ProjectReference Include="../../src/Common/JeffOps.Authentication.Testing/JeffOps.Authentication.Testing.csproj" />
+    <ProjectReference Include="../../src/Common/JeffOps.Entitlements/JeffOps.Entitlements.csproj" />
+    <ProjectReference Include="../../src/Common/JeffOps.Security.AspNetCore/JeffOps.Security.AspNetCore.csproj" />
+    <ProjectReference Include="../../src/Shared/JeffOps.Authentication.Abstractions/JeffOps.Authentication.Abstractions.csproj" />
+    <ProjectReference Include="../../src/Shared/JeffOps.Authentication.SharedKernel/JeffOps.Authentication.SharedKernel.csproj" />
+  </ItemGroup>
+
+</Project>

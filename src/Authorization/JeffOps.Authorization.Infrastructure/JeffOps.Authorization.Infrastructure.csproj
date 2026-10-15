@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Infrastructure for JeffOps authorization management: EF Core, change interception, sweepers, seeding.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JeffOps.Authorization.Application\JeffOps.Authorization.Application.csproj" />
+  </ItemGroup>
+
+</Project>
