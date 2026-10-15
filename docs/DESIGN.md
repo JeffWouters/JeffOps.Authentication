@@ -751,6 +751,16 @@ Ported as-is, all limits configurable:
 - Audit event for every write.
 - Simulate endpoint.
 
+#### 11.5.1 As built (phase 5)
+
+- **Packages.** `Authorization.Application` holds the slices (`Features/Roles`, `RoleChanges`, `Assignments`, `Policies`, `Scopes`, `Permissions`), the shared `ManagementGuard` / `HeldPermissions` / `RoleChangeApplier` / `ManagementAudit`, the seeder and `StoreDataSource`. `Authorization.Infrastructure` holds `AuthorizationDbContext` (schema `authz`), repositories, the unit of work (dispatches domain events after save), the startup seeder, the expiry sweeper (every 5 min) and `AddJeffOpsAuthorization(config)`. `Authorization.Persistence.SqlServer` adds `AddSqlServerPersistence(connectionStringName = "authorization", migrateOnStartup)` and the `InitialCreate` migration. `Authorization.Endpoints` adds `MapJeffOpsAuthorization(authenticationScheme?)`.
+- **Routes.** Read API (`AuthorizationRoutes`, shared with `Authorization.AspNetCore`): user assignments, role permissions, policies, scopes, for a service principal holding `authorization.decisions.read` (or Root). `POST authorization/permissions/register` for a service holding `authorization.permissions.register`, under its own name and only in its own domain(s) (`RegistrationDomains`, default `svc-x` → `x`). Admin API under `authorization/admin/*` (`ManagementRoutes`): roles, role permissions, role-change queue (approve/reject), approval setting, assignments (grant/revoke/recertify), policies (+ simulate), scopes, catalog.
+- **Answers.** A change that waits for a second approver returns `202 Accepted` with the request id; applied changes return `200`. Refusals are problem details with a stable `code` (`ManagementErrors`: `not_your_tenant`, `missing_permission`, `privilege_escalation`, `self_decision`, `already_decided`, `self_recertification`, `invalid_expiry`, `invalid_scope`, `unknown_permission`, `registration_domain`, …).
+- **Change guard.** Every management change refuses impersonation tokens (`impersonation_not_allowed`) and, by default (`RequireStepUpForChanges`), needs a stepped-up sign-in for interactive users (`step_up_required` + RFC 9470 `WWW-Authenticate`). Permission checks read the store directly, never the decision cache.
+- **Catalog.** The typo guard accepts the management permissions themselves, the host's `IPermissionCatalogProvider` and registered permissions; wildcards must cover a known code. Built-in roles (`IBuiltInRoleProvider`) are kept in sync at startup, including withdrawing permissions dropped from the definition.
+- **Co-hosting.** `AddJeffOpsAuthorization` makes `StoreDataSource` the host's `IAuthorizationDataSource`, and the default `IEventPublisher` delivers integration events to the host's own handlers, so a co-hosted decision cache is invalidated on change. A broker publisher replaces it to reach other services.
+- **Policies and scopes** are platform-administrator (Root) only; tenant administrators manage roles and assignments in the tenant their session acts in.
+
 ---
 
 ## 12. Delegated and privileged access module
@@ -961,7 +971,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **2 — Token server** ✅ | Authentication Domain / Application / Infrastructure / Persistence.SqlServer / Endpoints; key providers, PATs, revalidation, client registry as slices; **add authorization code + PKCE, userinfo, end-session** | Standard OIDC conformance smoke test passes; I4, I8, I9 done |
 | **3 — Federation** ✅ | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
 | **4 — BFF** ✅ | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
-| **5 — Management & governance** | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
+| **5 — Management & governance** ✅ | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
 | **6 — Delegation** | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
 | **7 — Local accounts** | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
 | **8 — Enterprise** | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |

@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using JeffOps.Authorization.AspNetCore.Data;
 using JeffOps.Authorization.AspNetCore.DependencyInjection;
 using JeffOps.Authorization.Contracts;
 using Microsoft.AspNetCore.Authentication;

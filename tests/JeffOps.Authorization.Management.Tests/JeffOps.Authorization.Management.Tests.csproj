@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Infrastructure\JeffOps.Authorization.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Endpoints\JeffOps.Authorization.Endpoints.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.AspNetCore\JeffOps.Authorization.AspNetCore.csproj" />
+  </ItemGroup>
+
+</Project>
