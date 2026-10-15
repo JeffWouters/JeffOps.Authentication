@@ -107,6 +107,12 @@ internal static class ProtocolEndpoints
             ?? throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
         var cancellationToken = context.RequestAborted;
 
+        var dpop = Dpop.Check(context, request, options.Value, time);
+        if (dpop.IsFailure)
+        {
+            return TokenIssuance.Refuse(dpop.Error, Dpop.InvalidProof);
+        }
+
         Result<IssuedIdentity> result;
         if (request.IsClientCredentialsGrantType())
         {
@@ -118,6 +124,12 @@ internal static class ProtocolEndpoints
             if (stored is null)
             {
                 return TokenIssuance.Refuse(Error.Unauthorized(GrantErrors.InvalidGrant, "The grant is no longer valid."));
+            }
+
+            // A refresh token issued with DPoP stays bound to that key (RFC 9449 section 5).
+            if (stored.FindFirst(Dpop.BindingClaim)?.Value is { } boundKey && boundKey != dpop.Value)
+            {
+                return TokenIssuance.Refuse(Error.Unauthorized(Dpop.InvalidProof, "This grant is bound to a DPoP key; prove possession of it."), Dpop.InvalidProof);
             }
 
             result = await refreshSession.HandleAsync(new RefreshSessionCommand(stored, stored.GetScopes()), cancellationToken).ConfigureAwait(false);
@@ -145,9 +157,13 @@ internal static class ProtocolEndpoints
             return TokenIssuance.Refuse(Error.Failure(Errors.UnsupportedGrantType, "The grant type is not supported."), Errors.UnsupportedGrantType);
         }
 
-        return result.IsSuccess
-            ? await TokenIssuance.SignInAsync(result.Value, names, scopeManager, time, cancellationToken).ConfigureAwait(false)
-            : TokenIssuance.Refuse(result.Error);
+        if (result.IsFailure)
+        {
+            return TokenIssuance.Refuse(result.Error);
+        }
+
+        var issued = dpop.Value is { } jkt ? Dpop.Bind(result.Value, jkt) : result.Value;
+        return await TokenIssuance.SignInAsync(issued, names, scopeManager, time, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

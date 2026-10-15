@@ -32,6 +32,16 @@ public interface IExtensionGrantHandler
     Task<Result<IssuedIdentity>> HandleAsync(ExtensionGrantRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>DPoP key binding (RFC 9449) between the token endpoint and token generation.</summary>
+public static class DpopBinding
+{
+    /// <summary>
+    /// The private claim carrying the bound key's thumbprint. It travels in codes and refresh tokens (so they stay bound) and
+    /// becomes the access token's <c>cnf.jkt</c>; it never appears in a token as itself.
+    /// </summary>
+    public const string ClaimType = "jeffops_dpop_jkt";
+}
+
 /// <summary>Declares an extension grant so the server accepts and advertises its grant type.</summary>
 public sealed record ExtensionGrantRegistration(string Name);
 

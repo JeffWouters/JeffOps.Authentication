@@ -75,6 +75,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddSingleton<IEventPublisher, InProcessEventPublisher>();
 
         services.AddDataProtection();
+        services.AddMemoryCache();
         services.TryAddSingleton<DatabaseKeyStore>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());
         services.AddHostedService<KeyRotationService>();
@@ -101,6 +102,42 @@ public static class AuthenticationServiceCollectionExtensions
 
                 server.RegisterScopes(Scopes.OpenId, Scopes.Profile, Scopes.Email, Scopes.OfflineAccess);
                 server.DisableAccessTokenEncryption();
+
+                // DPoP (RFC 9449): bound tokens are of type DPoP, and discovery says which proof algorithms are accepted.
+                server.AddEventHandler<OpenIddictServerEvents.ApplyTokenResponseContext>(handler => handler
+                    .UseInlineHandler(context =>
+                    {
+                        if (context.Response.AccessToken is not null
+                            && Microsoft.AspNetCore.OpenIddictServerAspNetCoreHelpers.GetHttpRequest(context.Transaction)?.Headers.ContainsKey(Abstractions.Dpop.DpopProofValidator.HeaderName) == true)
+                        {
+                            context.Response.TokenType = Abstractions.Dpop.DpopProofValidator.Scheme;
+                        }
+
+                        return default;
+                    })
+                    .SetOrder(int.MinValue + 100_000));
+                server.AddEventHandler<OpenIddictServerEvents.GenerateTokenContext>(handler => handler
+                    .UseInlineHandler(context =>
+                    {
+                        // Codes and refresh tokens keep the binding claim as it is; the access token gets cnf.jkt instead.
+                        if (context.TokenType == OpenIddict.Abstractions.OpenIddictConstants.TokenTypeIdentifiers.AccessToken
+                            && context.SecurityTokenDescriptor.Subject is { } subject
+                            && subject.FindFirst(Application.Sessions.DpopBinding.ClaimType) is { } binding)
+                        {
+                            subject.RemoveClaim(binding);
+                            context.SecurityTokenDescriptor.Claims ??= new Dictionary<string, object>(StringComparer.Ordinal);
+                            context.SecurityTokenDescriptor.Claims["cnf"] = new Dictionary<string, object> { ["jkt"] = binding.Value };
+                        }
+
+                        return default;
+                    })
+                    .SetOrder(OpenIddictServerHandlers.Protection.GenerateIdentityModelToken.Descriptor.Order - 500));
+                server.AddEventHandler<OpenIddictServerEvents.HandleConfigurationRequestContext>(handler => handler
+                    .UseInlineHandler(context =>
+                    {
+                        context.Metadata["dpop_signing_alg_values_supported"] = new OpenIddict.Abstractions.OpenIddictParameter([.. Abstractions.Dpop.DpopProofValidator.Algorithms]);
+                        return default;
+                    }));
 
                 server.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()

@@ -21,6 +21,7 @@ public static class AuthenticationClientServiceCollectionExtensions
     /// <item>JWT bearer against <see cref="AuthenticationClientOptions.Authority"/>, with audience validation always on,
     /// HTTPS metadata outside Development, and raw claim names (no inbound mapping).</item>
     /// <item>A fallback policy requiring an authenticated user on every endpoint; opt out with <c>AllowAnonymous()</c>.</item>
+    /// <item>DPoP (RFC 9449): proofs are checked for every DPoP-bound token (see <see cref="AuthenticationClientOptions.Dpop"/>).</item>
     /// <item><see cref="ICurrentUser"/> and <see cref="IAccessContextAccessor"/> for the current request.</item>
     /// </list>
     /// Options bind from <see cref="AuthenticationClientOptions.SectionName"/> and are validated at startup.
@@ -54,6 +55,12 @@ public static class AuthenticationClientServiceCollectionExtensions
                 jwt.TokenValidationParameters.NameClaimType = names.Name;
                 jwt.TokenValidationParameters.RoleClaimType = "role";
             });
+
+        // After the host's own configuration, so its events are kept and wrapped.
+        services.AddMemoryCache();
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+            .PostConfigure<IOptions<AuthenticationClientOptions>, TimeProvider>((jwt, client, time) => DpopValidation.Attach(jwt, client.Value.Dpop, time));
 
         services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());

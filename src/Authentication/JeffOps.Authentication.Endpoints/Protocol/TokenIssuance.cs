@@ -79,6 +79,12 @@ internal static class TokenIssuance
     {
         yield return Destinations.AccessToken;
 
+        // The DPoP binding goes to the access token only, where token generation turns it into cnf.jkt.
+        if (claim.Type == Dpop.BindingClaim)
+        {
+            yield break;
+        }
+
         var inIdentityToken =
             claim.Type == names.Subject
             || claim.Type == names.AuthenticationMethods

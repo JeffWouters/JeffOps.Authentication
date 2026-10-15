@@ -23,6 +23,13 @@ public sealed class AuthenticationClientOptions
     /// <summary>Whether the discovery document must be fetched over HTTPS. Null: required everywhere except Development.</summary>
     public bool? RequireHttpsMetadata { get; set; }
 
+    /// <summary>
+    /// DPoP (RFC 9449). <see cref="Access.DpopMode.Allowed"/> (default) accepts bearer tokens and checks the proof of every
+    /// DPoP-bound token; <see cref="Access.DpopMode.Required"/> accepts only DPoP-bound tokens. Behind a proxy, forward the
+    /// original scheme and host, or proofs (bound to the URL the client called) won't match.
+    /// </summary>
+    public Access.DpopMode Dpop { get; set; } = Access.DpopMode.Allowed;
+
     /// <summary>Which service tokens may be scoped to a tenant by trusted internal headers.</summary>
     public ServiceTokenTenantScopingOptions ServiceTokenTenantScoping { get; } = new();
 }
