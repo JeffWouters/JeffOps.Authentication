@@ -1,0 +1,121 @@
+using System.ComponentModel.DataAnnotations;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Extensions.Options;
+
+namespace JeffOps.Authentication.Client.ServiceTokens;
+
+/// <summary>
+/// The client-credentials identity of this service. Bound from <see cref="SectionName"/>. There are no defaults: a
+/// missing client id or secret fails startup instead of falling back to a well-known value (docs/DESIGN.md §17, I6).
+/// </summary>
+public sealed class ServiceTokenOptions
+{
+    public const string SectionName = "JeffOps:ServiceToken";
+
+    [Required]
+    public Uri? TokenEndpoint { get; set; }
+
+    [Required]
+    public string? ClientId { get; set; }
+
+    [Required]
+    public string? ClientSecret { get; set; }
+
+    /// <summary>Space-separated scopes to request; optional.</summary>
+    public string? Scope { get; set; }
+
+    /// <summary>How long before expiry a cached token is replaced.</summary>
+    public TimeSpan RefreshBeforeExpiry { get; set; } = TimeSpan.FromMinutes(1);
+}
+
+/// <summary>
+/// Acquires this service's access token with the client-credentials grant and caches it until shortly before it expires.
+/// One request at a time refreshes it; concurrent callers wait for that request.
+/// </summary>
+public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, IOptions<ServiceTokenOptions> options, TimeProvider time) : IDisposable
+{
+    public const string HttpClientName = "JeffOps.ServiceToken";
+
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private string? _token;
+    private DateTimeOffset _refreshAt = DateTimeOffset.MinValue;
+
+    public async Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
+    {
+        if (_token is { } cached && time.GetUtcNow() < _refreshAt)
+        {
+            return cached;
+        }
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_token is { } refreshed && time.GetUtcNow() < _refreshAt)
+            {
+                return refreshed;
+            }
+
+            var settings = options.Value;
+            var form = new Dictionary<string, string>
+            {
+                ["grant_type"] = "client_credentials",
+                ["client_id"] = settings.ClientId!,
+                ["client_secret"] = settings.ClientSecret!,
+            };
+            if (!string.IsNullOrWhiteSpace(settings.Scope))
+            {
+                form["scope"] = settings.Scope;
+            }
+
+            using var content = new FormUrlEncodedContent(form);
+            using var response = await httpClientFactory.CreateClient(HttpClientName)
+                .PostAsync(settings.TokenEndpoint, content, cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"The token endpoint refused the client-credentials request for '{settings.ClientId}' ({(int)response.StatusCode}).",
+                    inner: null,
+                    response.StatusCode);
+            }
+
+            var token = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(token?.AccessToken))
+            {
+                throw new InvalidOperationException("The token endpoint returned no access token.");
+            }
+
+            _token = token.AccessToken;
+            _refreshAt = time.GetUtcNow().AddSeconds(token.ExpiresIn).Subtract(settings.RefreshBeforeExpiry);
+            return _token;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public void Dispose() => _gate.Dispose();
+
+    private sealed record TokenResponse(
+        [property: JsonPropertyName("access_token")] string? AccessToken,
+        [property: JsonPropertyName("expires_in")] int ExpiresIn);
+}
+
+/// <summary>Attaches the service's bearer token to outgoing requests that carry no Authorization header.</summary>
+public sealed class ServiceTokenHandler(ServiceTokenProvider tokens) : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.Headers.Authorization is null)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await tokens.GetTokenAsync(cancellationToken).ConfigureAwait(false));
+        }
+
+        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+}

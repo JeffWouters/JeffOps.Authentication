@@ -289,6 +289,7 @@ Inside these projects the `Domain/`, `Application/`, `Infrastructure/` and `Endp
 | Project | Layer | Contents | Depends on |
 |---|---|---|---|
 | `JeffOps.Authorization.Domain` | Domain | `Permission` matching, `Role`, `Assignment`, `Scope` / `ScopeHierarchy`, `AttributePolicy` and condition model, `PolicyDecisionEngine`, ceilings, decision pipeline. Pure code. **Also referenced by resource services.** | SharedKernel |
+| `JeffOps.Authorization.Contracts` | Contracts | Wire contracts shared by management and resource services: read-API DTOs, route constants, integration events (cache invalidation). Pure. | Authorization.Domain, Abstractions |
 | `JeffOps.Authorization.Application` | Application | Slices: `Roles/*`, `Assignments/*`, `RoleChanges/*` (4-eyes), `Policies/*`, `Scopes/*`, `Permissions/Register`, `Decisions/Simulate`, `Governance/SweepExpired`. Ports: repositories, `IGroupMembershipProvider`, catalog and role providers. | Domain, Abstractions |
 | `JeffOps.Authorization.Infrastructure` | Infrastructure | EF Core context, change interceptor (emits invalidation events), sweepers, seeding from providers | Application, EF Core |
 | `JeffOps.Authorization.Persistence.SqlServer` | Infrastructure | SQL Server registration and migrations | Infrastructure |
@@ -321,6 +322,7 @@ Hosts           → everything (composition root)
 - No slice references another slice: no type in `Features.X` may use a type in `Features.Y`. Shared rules belong in Domain, shared I/O behind a port.
 - `JeffOps.Authorization.*` never depends on `JeffOps.Authentication.*` Domain, Application or Infrastructure. Authorization works with any token issuer that satisfies the claims contract (§10).
 - Client-side packages (`Authentication.Client`, `Bff`, `Bff.Yarp`, `Authorization.AspNetCore`) never reference a server Application or Infrastructure project.
+- `*.Contracts` projects are pure like Domain and may reference only their own Domain and the kernel. Every layer of the same context, and client adapters, may reference them.
 - No project references a message broker. Events go through `IEventPublisher`; adapters ship as separate packages (D7).
 - No MVC: `Microsoft.AspNetCore.Mvc.Core` controllers and `ControllerBase` are banned via `BannedSymbols.txt`.
 - All of the above is enforced by architecture tests (§20).
@@ -415,6 +417,7 @@ Z:\Authentication\
         JeffOps.Authentication.Delegation\
     Authorization\
       JeffOps.Authorization.Domain\
+      JeffOps.Authorization.Contracts\
       JeffOps.Authorization.Application\
       JeffOps.Authorization.Infrastructure\
       JeffOps.Authorization.Persistence.SqlServer\
@@ -689,6 +692,8 @@ Every decision returns an `AuthorizationDecision` with a reason code and an opti
 - `[Authorize("billing.invoice.read")]` / `.RequireAuthorization("…")` — dynamic policy provider, no per-permission registration.
 - **New:** scope-aware attribute, e.g. `.RequirePermission("workspace.item.write", scope: "workspace", instanceRoute: "workspaceId")`, so non-tenant scopes work declaratively (fixes §17 #4).
 - `IAuthorizer.AuthorizeAsync(action, resource, scopeKey, instanceId)` for imperative checks.
+- The endpoint handler and `IAuthorizer` run the same evaluator, so they cannot disagree. `HasPermissionAsync` is the full decision without resource attributes, so it includes subject-level ABAC policies (the origin skipped them).
+- Step-up exemptions are validated when the request pipeline is built (an `IStartupFilter`): exempting a permission that is not sensitive fails startup.
 - Route conventions: `.RequireStepUp()`, `.AllowWithoutStepUp()`, `.RefuseUnderImpersonation()`, `.RequireEntitlement(code)`.
 - Sensitive-permission list, impersonation-blocked list and privileged list come from options/providers, not constants.
 
