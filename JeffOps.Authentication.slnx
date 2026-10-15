@@ -2,6 +2,9 @@
   <Folder Name="/hosts/">
     <Project Path="hosts/TokenServer/TokenServer.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Spa.Bff/Spa.Bff.csproj" />
+  </Folder>
   <Folder Name="/src/" />
   <Folder Name="/src/Authentication/">
     <Project Path="src/Authentication/JeffOps.Authentication.Application/JeffOps.Authentication.Application.csproj" />

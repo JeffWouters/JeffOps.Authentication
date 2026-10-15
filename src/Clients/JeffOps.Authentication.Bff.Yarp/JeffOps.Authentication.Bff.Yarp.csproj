@@ -9,6 +9,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Yarp.ReverseProxy" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\JeffOps.Authentication.Bff\JeffOps.Authentication.Bff.csproj" />
   </ItemGroup>
 

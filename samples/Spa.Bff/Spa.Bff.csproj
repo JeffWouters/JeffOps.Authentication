@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <Description>Sample: a single-page app behind the JeffOps BFF. The browser holds only a session cookie; no identity SDK.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff.Yarp\JeffOps.Authentication.Bff.Yarp.csproj" />
+    <ProjectReference Include="..\..\src\Common\JeffOps.Security.AspNetCore\JeffOps.Security.AspNetCore.csproj" />
+  </ItemGroup>
+
+</Project>

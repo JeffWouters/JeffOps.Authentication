@@ -9,6 +9,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenIddict.Client.AspNetCore" />
+    <PackageReference Include="OpenIddict.Client.SystemNetHttp" />
+    <PackageReference Include="OpenIddict.Client.DataProtection" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="JeffOps.Authentication.Bff.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\Shared\JeffOps.Authentication.Abstractions\JeffOps.Authentication.Abstractions.csproj" />
   </ItemGroup>
 

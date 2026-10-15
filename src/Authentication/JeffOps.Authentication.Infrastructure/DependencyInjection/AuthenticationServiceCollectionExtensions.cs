@@ -7,6 +7,7 @@ using JeffOps.Authentication.Infrastructure.Defaults;
 using JeffOps.Authentication.Infrastructure.Keys;
 using JeffOps.Authentication.Infrastructure.Persistence;
 using JeffOps.Authentication.Infrastructure.Server;
+using JeffOps.Authentication.SharedKernel.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -118,6 +119,8 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddSingleton<IOptionsChangeTokenSource<OpenIddict.Validation.OpenIddictValidationOptions>, KeysChangeTokenSource<OpenIddict.Validation.OpenIddictValidationOptions>>();
 
         services.AddHostedService<AuthenticationStartup>();
+        services.AddHttpClient(BackchannelLogoutNotifier.HttpClientName);
+        services.AddDomainEventHandler<BackchannelLogoutNotifier>();
 
         return new AuthenticationBuilder(services, configuration);
     }

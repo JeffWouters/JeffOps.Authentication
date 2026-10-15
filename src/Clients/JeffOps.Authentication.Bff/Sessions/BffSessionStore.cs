@@ -1,0 +1,209 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Options;
+
+namespace JeffOps.Authentication.Bff.Sessions;
+
+/// <summary>A browser session: the tokens the BFF holds on the browser's behalf.</summary>
+/// <param name="Subject">The user (<c>sub</c>).</param>
+/// <param name="AccessToken">The current access token.</param>
+/// <param name="RefreshToken">The current refresh token.</param>
+/// <param name="IdentityToken">The ID token, kept for the end-session request.</param>
+/// <param name="AccessExpiresAt">When the access token expires.</param>
+/// <param name="SessionEndsAt">The session's absolute deadline, fixed at sign-in.</param>
+public sealed record BffSession(
+    string Subject,
+    string AccessToken,
+    string? RefreshToken,
+    string? IdentityToken,
+    DateTimeOffset AccessExpiresAt,
+    DateTimeOffset SessionEndsAt);
+
+/// <summary>The session store could not be reached; the request is answered 503 rather than treated as signed out.</summary>
+public sealed class SessionStoreUnavailableException : Exception
+{
+    public SessionStoreUnavailableException()
+        : base("The session store is unavailable.")
+    {
+    }
+
+    public SessionStoreUnavailableException(string message)
+        : base(message)
+    {
+    }
+
+    public SessionStoreUnavailableException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
+/// Stores sessions in <see cref="IDistributedCache"/> (Redis in production). The session id in the cookie is 256 random bits;
+/// the cache key is its SHA-256, so a cache reader can't recover cookies; the value is encrypted with Data Protection, so
+/// tokens never sit in clear in the cache. Every entry expires at the session's absolute deadline and after the idle timeout.
+/// A per-user index lets a back-channel logout end all of a user's sessions.
+/// </summary>
+public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProvider dataProtection, IOptions<BffOptions> options, TimeProvider time)
+{
+    private const string SessionPrefix = "jeffops:bff:sid:";
+    private const string SubjectPrefix = "jeffops:bff:sub:";
+
+    private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.Bff.Session");
+
+    public static string NewId() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+
+    public async Task<string> CreateAsync(BffSession session, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        var id = NewId();
+        await WriteAsync(id, session, cancellationToken).ConfigureAwait(false);
+        await IndexAsync(session.Subject, add: KeyOf(id), remove: null, cancellationToken).ConfigureAwait(false);
+        return id;
+    }
+
+    public Task UpdateAsync(string id, BffSession session, CancellationToken cancellationToken) => WriteAsync(id, session, cancellationToken);
+
+    public async Task<BffSession?> GetAsync(string id, CancellationToken cancellationToken)
+    {
+        var blob = await ReadAsync(KeyOf(id), cancellationToken).ConfigureAwait(false);
+        if (blob is null)
+        {
+            return null;
+        }
+
+        BffSession? session;
+        try
+        {
+            session = JsonSerializer.Deserialize<BffSession>(_protector.Unprotect(blob));
+        }
+        catch (CryptographicException)
+        {
+            return null; // tampered with, or protected under a key ring that is gone
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return session is not null && session.SessionEndsAt > time.GetUtcNow() ? session : null;
+    }
+
+    public async Task DeleteAsync(string id, string? subject, CancellationToken cancellationToken)
+    {
+        await RemoveAsync(KeyOf(id), cancellationToken).ConfigureAwait(false);
+        if (subject is not null)
+        {
+            await IndexAsync(subject, add: null, remove: KeyOf(id), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Ends every session of <paramref name="subject"/> (back-channel logout).</summary>
+    public async Task<int> DeleteAllAsync(string subject, CancellationToken cancellationToken)
+    {
+        var keys = await SessionKeysAsync(subject, cancellationToken).ConfigureAwait(false);
+        foreach (var key in keys)
+        {
+            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+
+        await RemoveAsync(SubjectKeyOf(subject), cancellationToken).ConfigureAwait(false);
+        return keys.Count;
+    }
+
+    private async Task WriteAsync(string id, BffSession session, CancellationToken cancellationToken)
+    {
+        var remaining = session.SessionEndsAt - time.GetUtcNow();
+        if (remaining <= TimeSpan.Zero)
+        {
+            await RemoveAsync(KeyOf(id), cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var idle = options.Value.IdleTimeout;
+        try
+        {
+            await cache.SetStringAsync(
+                KeyOf(id),
+                _protector.Protect(JsonSerializer.Serialize(session)),
+                new DistributedCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = remaining,
+                    SlidingExpiration = idle < remaining ? idle : remaining,
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new SessionStoreUnavailableException("The session could not be saved.", exception);
+        }
+    }
+
+    private async Task IndexAsync(string subject, string? add, string? remove, CancellationToken cancellationToken)
+    {
+        // Best effort under concurrency: the index only speeds up back-channel logout; each session still expires on its own.
+        var keys = await SessionKeysAsync(subject, cancellationToken).ConfigureAwait(false);
+        if (add is not null)
+        {
+            keys.Add(add);
+        }
+
+        if (remove is not null)
+        {
+            keys.Remove(remove);
+        }
+
+        try
+        {
+            await cache.SetStringAsync(
+                SubjectKeyOf(subject),
+                JsonSerializer.Serialize(keys),
+                new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = options.Value.SessionLifetime },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new SessionStoreUnavailableException("The session index could not be saved.", exception);
+        }
+    }
+
+    private async Task<HashSet<string>> SessionKeysAsync(string subject, CancellationToken cancellationToken)
+    {
+        var json = await ReadAsync(SubjectKeyOf(subject), cancellationToken).ConfigureAwait(false);
+        return json is null ? [] : JsonSerializer.Deserialize<HashSet<string>>(json) ?? [];
+    }
+
+    private async Task<string?> ReadAsync(string key, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await cache.GetStringAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new SessionStoreUnavailableException("The session store could not be read.", exception);
+        }
+    }
+
+    private async Task RemoveAsync(string key, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await cache.RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new SessionStoreUnavailableException("The session could not be removed.", exception);
+        }
+    }
+
+    private static string KeyOf(string id) => SessionPrefix + Hash(id);
+
+    private static string SubjectKeyOf(string subject) => SubjectPrefix + Hash(subject);
+
+    private static string Hash(string value) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+}

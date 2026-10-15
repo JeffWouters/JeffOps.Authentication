@@ -652,6 +652,17 @@ All models consume the same token server. The library provides a package or docu
 
 ---
 
+### 9.2 As built (phase 4)
+
+- **`JeffOps.Authentication.Bff`** is a confidential OIDC client built on the OpenIddict client (code + PKCE, state, ID token validation, refresh and revocation come from the library, not hand-written protocol code). `AddJeffOpsBff`, `UseJeffOpsBff` (CSRF, then cookie-to-bearer), `MapJeffOpsBff`.
+- **Endpoints:** `GET /bff/login?returnUrl=` (local return URLs only), `/bff/callback`, `POST /bff/logout` (CSRF header; revokes the refresh token and answers `{ endSessionUrl }` so the SPA also ends the token-server session), `GET /bff/me`, `POST /bff/backchannel-logout`.
+- **Sessions** live in `IDistributedCache` under the SHA-256 of a 256-bit id, encrypted with Data Protection, with the absolute deadline and idle timeout as cache expirations. A per-user index serves back-channel logout.
+- **Refresh** is single-flight per session; a refusal ends the session, an outage keeps it and backs off for 5 s; `StoreOutageGrace` optionally serves the last known copy to reads while the store is down (else 503).
+- **Back-channel logout:** when an operator disables an account the token server revokes all its tokens and posts a signed `logout_token` to every client with a `BackchannelLogoutUri`. The BFF validates signature, audience, event, freshness and `jti` replay, then ends every session of that user.
+- **`JeffOps.Authentication.Bff.Yarp`:** `AddBffTransforms()` strips the `Cookie` header from proxied requests; `AddJeffOpsPatExchange`/`UseJeffOpsPatExchange` swap `Bearer pat_…` for a short-lived JWT (cached encrypted under the PAT's hash; refusals cached briefly; outages not cached).
+- **Tested end to end** (token server, BFF with YARP, API with `Authentication.Client`); `samples/Spa.Bff` shows an SPA with no identity SDK.
+- **Not yet:** derived sessions for impersonation and tenant switch (phase 6), token-mediating mode, back-channel logout on end-session (needs session ids, `sid`).
+
 ## 10. Claims contract
 
 Claim names are configurable through `IClaimNames` with these defaults. The origin's names are kept as defaults so the origin platform can adopt the library without a token migration.
@@ -949,7 +960,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **1 — Port core** ✅ | Abstractions, Authorization.Domain, Authorization.AspNetCore, Authentication.Client, Security.AspNetCore; port tests | Ported tests green; I1, I2, I3, I6, I7 done |
 | **2 — Token server** ✅ | Authentication Domain / Application / Infrastructure / Persistence.SqlServer / Endpoints; key providers, PATs, revalidation, client registry as slices; **add authorization code + PKCE, userinfo, end-session** | Standard OIDC conformance smoke test passes; I4, I8, I9 done |
 | **3 — Federation** ✅ | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
-| **4 — BFF** | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
+| **4 — BFF** ✅ | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
 | **5 — Management & governance** | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
 | **6 — Delegation** | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
 | **7 — Local accounts** | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |

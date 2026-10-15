@@ -219,8 +219,10 @@ public sealed class RefreshTests
 
         var refreshed = await server.RefreshAsync(tokens.RefreshToken!);
 
+        // Disabling revokes the account's tokens at once, so the protocol layer refuses the refresh token itself; the account
+        // check behind it (code account_inactive) covers grants that were not revoked.
         refreshed.Error.ShouldBe("invalid_grant");
-        refreshed.Code.ShouldBe("account_inactive");
+        refreshed.AccessToken.ShouldBeNull();
     }
 
     [Fact]

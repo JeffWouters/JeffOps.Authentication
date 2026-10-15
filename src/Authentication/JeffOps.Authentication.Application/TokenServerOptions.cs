@@ -124,4 +124,10 @@ public sealed class ClientDefinition
 
     /// <summary>Permissions stamped on this client's client-credentials tokens (service principal grants).</summary>
     public IList<string> ServicePermissions { get; } = [];
+
+    /// <summary>
+    /// Where the server posts an OpenID Connect back-channel <c>logout_token</c> when one of the client's users is disabled,
+    /// e.g. <c>https://app.example/bff/backchannel-logout</c>.
+    /// </summary>
+    public Uri? BackchannelLogoutUri { get; set; }
 }
