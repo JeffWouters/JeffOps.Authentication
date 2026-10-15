@@ -85,7 +85,12 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
             ConsentType = ConsentTypes.Implicit,
         };
 
-        if (client.Kind == ClientKind.Confidential)
+        if (!string.IsNullOrWhiteSpace(client.JsonWebKeySet))
+        {
+            descriptor.JsonWebKeySet = Microsoft.IdentityModel.Tokens.JsonWebKeySet.Create(client.JsonWebKeySet);
+        }
+
+        if (client.Kind == ClientKind.Confidential && (descriptor.JsonWebKeySet is null || !string.IsNullOrEmpty(client.ClientSecret)))
         {
             if (string.IsNullOrEmpty(client.ClientSecret))
             {
@@ -132,6 +137,21 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
         foreach (var grant in grants.Where(grant => grant != GrantTypes.AuthorizationCode))
         {
             permissions.Add(Permissions.Prefixes.GrantType + grant);
+        }
+
+        if (grants.Contains(GrantTypes.DeviceCode))
+        {
+            permissions.Add(Permissions.Endpoints.DeviceAuthorization);
+        }
+
+        if (grants.Contains(GrantTypes.AuthorizationCode))
+        {
+            // Every code-flow client may push its requests (PAR); some must.
+            permissions.Add(Permissions.Endpoints.PushedAuthorization);
+            if (client.RequirePushedAuthorization)
+            {
+                descriptor.Requirements.Add(Requirements.Features.PushedAuthorizationRequests);
+            }
         }
 
         foreach (var scopeName in client.Scopes.Where(scopeName => !string.IsNullOrWhiteSpace(scopeName)).Select(scopeName => scopeName.Trim()))

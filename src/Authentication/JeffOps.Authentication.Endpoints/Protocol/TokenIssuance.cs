@@ -17,7 +17,13 @@ internal static class TokenIssuance
     /// <summary>The extra response parameter carrying the refusal's stable code (for example <c>mfa_required</c>).</summary>
     public const string CodeParameter = "code";
 
-    public static async Task<IResult> SignInAsync(IssuedIdentity issued, ClaimNames names, IOpenIddictScopeManager scopeManager, TimeProvider time, CancellationToken cancellationToken)
+    public static async Task<IResult> SignInAsync(
+        IssuedIdentity issued,
+        ClaimNames names,
+        IOpenIddictScopeManager scopeManager,
+        TimeProvider time,
+        CancellationToken cancellationToken,
+        AuthenticationProperties? properties = null)
     {
         var scopes = issued.AllowRefresh
             ? issued.Scopes.ToImmutableArray()
@@ -48,7 +54,7 @@ internal static class TokenIssuance
             principal.SetRefreshTokenLifetime(remaining > TimeSpan.Zero ? remaining : TimeSpan.FromSeconds(1));
         }
 
-        return Results.SignIn(principal, authenticationScheme: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+        return Results.SignIn(principal, properties, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
     }
 
     /// <summary>

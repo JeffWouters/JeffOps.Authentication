@@ -1,0 +1,27 @@
+@page "/account/device"
+
+<PageTitle>Connect a device</PageTitle>
+
+<main class="jo-login">
+    <h1>Connect a device</h1>
+
+    @if (Message is not null)
+    {
+        <p class="jo-error" role="status">@Message</p>
+    }
+
+    @if (Result is null)
+    {
+        <form method="post" action="/connect/verify" class="jo-device">
+            <AntiforgeryToken />
+            <label for="user_code">Code shown on the device</label>
+            <input id="user_code" name="user_code" value="@UserCode" autocomplete="off" autocapitalize="characters" required />
+            @if (Client is not null)
+            {
+                <p>Allow <strong>@Client</strong> to use your account? Only continue if you started this on your own device.</p>
+            }
+            <button type="submit" name="decision" value="approve">Allow</button>
+            <button type="submit" name="decision" value="deny">Deny</button>
+        </form>
+    }
+</main>

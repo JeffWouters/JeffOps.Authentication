@@ -34,6 +34,7 @@ internal static class ProtocolEndpoints
         endpoints.MapPost("connect/token", TokenAsync).AllowAnonymous().ExcludeFromDescription();
         endpoints.MapMethods("connect/userinfo", [HttpMethods.Get, HttpMethods.Post], UserInfoAsync).AllowAnonymous().ExcludeFromDescription();
         endpoints.MapMethods("connect/endsession", [HttpMethods.Get, HttpMethods.Post], EndSessionAsync).AllowAnonymous().ExcludeFromDescription();
+        endpoints.MapMethods("connect/verify", [HttpMethods.Get, HttpMethods.Post], VerifyAsync).AllowAnonymous().DisableAntiforgery().ExcludeFromDescription();
     }
 
     private static async Task<IResult> AuthorizeAsync(
@@ -111,7 +112,7 @@ internal static class ProtocolEndpoints
         {
             result = await clientCredentials.HandleAsync(new ClientCredentialsCommand(request.ClientId!, request.GetScopes()), cancellationToken).ConfigureAwait(false);
         }
-        else if (request.IsAuthorizationCodeGrantType() || request.IsRefreshTokenGrantType())
+        else if (request.IsAuthorizationCodeGrantType() || request.IsRefreshTokenGrantType() || request.IsDeviceCodeGrantType())
         {
             var stored = (await context.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme).ConfigureAwait(false)).Principal;
             if (stored is null)
@@ -147,6 +148,73 @@ internal static class ProtocolEndpoints
         return result.IsSuccess
             ? await TokenIssuance.SignInAsync(result.Value, names, scopeManager, time, cancellationToken).ConfigureAwait(false)
             : TokenIssuance.Refuse(result.Error);
+    }
+
+    /// <summary>
+    /// The device flow's end-user verification (RFC 8628 §3.3): a signed-in user confirms the code shown on the device. GET
+    /// sends the user to the confirmation page; POST (from that page, with its antiforgery token) approves or denies. The
+    /// page names the client, so a user tricked into entering someone else's code sees what they would approve.
+    /// </summary>
+    private static async Task<IResult> VerifyAsync(
+        HttpContext context,
+        ICommandHandler<StartSessionCommand, IssuedIdentity> startSession,
+        IOpenIddictApplicationManager applications,
+        IOpenIddictScopeManager scopeManager,
+        Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery,
+        ClaimNames names,
+        IOptions<TokenServerOptions> options,
+        TimeProvider time)
+    {
+        const string Page = "/account/device";
+        var code = (await context.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme).ConfigureAwait(false)).Principal;
+        var request = context.GetOpenIddictServerRequest();
+        var userCode = request?.UserCode;
+
+        if (HttpMethods.IsGet(context.Request.Method))
+        {
+            if (code is null)
+            {
+                return Results.Redirect(string.IsNullOrEmpty(userCode) ? Page : $"{Page}?error=invalid_code");
+            }
+
+            var application = await applications.FindByClientIdAsync(code.GetClaim(Claims.ClientId) ?? string.Empty, context.RequestAborted).ConfigureAwait(false);
+            var client = application is null ? "an application" : await applications.GetDisplayNameAsync(application, context.RequestAborted).ConfigureAwait(false);
+            return Results.Redirect($"{Page}?user_code={Uri.EscapeDataString(userCode ?? string.Empty)}&client={Uri.EscapeDataString(client ?? "an application")}");
+        }
+
+        if (!await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
+        {
+            return TypedResults.BadRequest();
+        }
+
+        if (code is null)
+        {
+            return Results.Redirect($"{Page}?error=invalid_code");
+        }
+
+        var signInScheme = options.Value.SignInScheme;
+        var signedIn = await context.AuthenticateAsync(signInScheme).ConfigureAwait(false);
+        if (!signedIn.Succeeded || !Guid.TryParse(signedIn.Principal?.FindFirst(names.Subject)?.Value, out var accountId))
+        {
+            return Results.Challenge(new AuthenticationProperties { RedirectUri = $"{Page}?user_code={Uri.EscapeDataString(userCode ?? string.Empty)}" }, [signInScheme]);
+        }
+
+        if (!string.Equals(context.Request.Form["decision"], "approve", StringComparison.Ordinal))
+        {
+            return Results.Forbid(new AuthenticationProperties { RedirectUri = $"{Page}?result=denied" }, [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme]);
+        }
+
+        var strength = new AuthenticationStrength(signedIn.Principal!.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
+        var session = await startSession.HandleAsync(
+            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null),
+            context.RequestAborted).ConfigureAwait(false);
+        if (session.IsFailure)
+        {
+            return Results.Redirect($"{Page}?error={Uri.EscapeDataString(session.Error.Code)}");
+        }
+
+        return await TokenIssuance.SignInAsync(session.Value, names, scopeManager, time, context.RequestAborted,
+            new AuthenticationProperties { RedirectUri = $"{Page}?result=approved" }).ConfigureAwait(false);
     }
 
     private static async Task<IResult> UserInfoAsync(

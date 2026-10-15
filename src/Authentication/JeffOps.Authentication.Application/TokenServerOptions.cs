@@ -133,4 +133,38 @@ public sealed class ClientDefinition
     /// e.g. <c>https://app.example/bff/backchannel-logout</c>.
     /// </summary>
     public Uri? BackchannelLogoutUri { get; set; }
+
+    /// <summary>
+    /// The client's public keys (a JWKS document, as JSON) for <c>private_key_jwt</c> client authentication (RFC 7523): the
+    /// client signs an assertion instead of sending a secret. A confidential client with keys needs no secret.
+    /// </summary>
+    public string? JsonWebKeySet { get; set; }
+
+    /// <summary>Whether authorization requests must be pushed first (PAR, RFC 9126). Default: false.</summary>
+    public bool RequirePushedAuthorization { get; set; }
+
+    /// <summary>Whether every token request must carry a DPoP proof, so tokens are bound to the client's key (RFC 9449). Default: false.</summary>
+    public bool RequireDpop { get; set; }
+
+    /// <summary>
+    /// External identities that may act as this client (workload identity federation): a token from a trusted issuer (a CI
+    /// system, Kubernetes, a cloud) with this subject and audience is exchanged for this client's token, with no secret.
+    /// </summary>
+    public IList<FederatedCredential> FederatedCredentials { get; } = [];
+}
+
+/// <summary>
+/// A workload identity trusted to act as a client: tokens from <see cref="Issuer"/> (validated against its published keys)
+/// whose <c>sub</c> is <see cref="Subject"/> and whose <c>aud</c> contains <see cref="Audience"/>.
+/// </summary>
+public sealed class FederatedCredential
+{
+    /// <summary>The external issuer, for example <c>https://token.actions.githubusercontent.com</c>.</summary>
+    public Uri? Issuer { get; set; }
+
+    /// <summary>The exact subject, for example <c>repo:contoso/app:ref:refs/heads/main</c>.</summary>
+    public string? Subject { get; set; }
+
+    /// <summary>The audience the external token must carry. Default: this server's issuer.</summary>
+    public string? Audience { get; set; }
 }

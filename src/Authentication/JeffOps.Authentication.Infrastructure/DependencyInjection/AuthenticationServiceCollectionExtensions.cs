@@ -88,12 +88,16 @@ public static class AuthenticationServiceCollectionExtensions
                     .SetUserInfoEndpointUris("connect/userinfo")
                     .SetEndSessionEndpointUris("connect/endsession")
                     .SetRevocationEndpointUris("connect/revoke")
-                    .SetIntrospectionEndpointUris("connect/introspect");
+                    .SetIntrospectionEndpointUris("connect/introspect")
+                    .SetPushedAuthorizationEndpointUris("connect/par")
+                    .SetDeviceAuthorizationEndpointUris("connect/device")
+                    .SetEndUserVerificationEndpointUris("connect/verify");
 
                 server.AllowAuthorizationCodeFlow()
                     .RequireProofKeyForCodeExchange()
                     .AllowRefreshTokenFlow()
-                    .AllowClientCredentialsFlow();
+                    .AllowClientCredentialsFlow()
+                    .AllowDeviceAuthorizationFlow();
 
                 server.RegisterScopes(Scopes.OpenId, Scopes.Profile, Scopes.Email, Scopes.OfflineAccess);
                 server.DisableAccessTokenEncryption();
@@ -102,7 +106,8 @@ public static class AuthenticationServiceCollectionExtensions
                     .EnableAuthorizationEndpointPassthrough()
                     .EnableTokenEndpointPassthrough()
                     .EnableUserInfoEndpointPassthrough()
-                    .EnableEndSessionEndpointPassthrough();
+                    .EnableEndSessionEndpointPassthrough()
+                    .EnableEndUserVerificationEndpointPassthrough();
             })
             .AddValidation(validation =>
             {
