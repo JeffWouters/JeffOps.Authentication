@@ -40,9 +40,15 @@ public static class BffServiceCollectionExtensions
         services.AddDataProtection();
         services.TryAddSingleton<BffSessionStore>();
         services.TryAddSingleton<BffSessionManager>();
+        services.TryAddSingleton<DerivedSessionManager>();
+        services.AddHttpClient(ActingEndpoints.AuthorityClient);
 
         var client = services.AddOpenIddict().AddClient();
         client.AllowAuthorizationCodeFlow().AllowRefreshTokenFlow();
+        if (settings.Delegation.Enabled)
+        {
+            client.AllowCustomFlow(settings.Delegation.ImpersonationGrantType).AllowCustomFlow(settings.Delegation.TenantSwitchGrantType);
+        }
 
         // No server-side token store in a BFF: state tokens are short-lived and protected with Data Protection.
         client.DisableTokenStorage();
@@ -87,11 +93,20 @@ public static class BffServiceCollectionExtensions
         return app.UseMiddleware<CsrfMiddleware>().UseMiddleware<CookieToBearerMiddleware>();
     }
 
-    /// <summary>Maps <c>/bff/login</c>, <c>/bff/callback</c>, <c>/bff/logout</c>, <c>/bff/me</c> and <c>/bff/backchannel-logout</c>.</summary>
+    /// <summary>
+    /// Maps <c>/bff/login</c>, <c>/bff/callback</c>, <c>/bff/logout</c>, <c>/bff/me</c> and <c>/bff/backchannel-logout</c>; with
+    /// <see cref="DelegatedSessionOptions.Enabled"/>, also <c>/bff/acting</c>, <c>/bff/acting/stop</c>,
+    /// <c>/bff/impersonation/{grantId}/start</c> and <c>/bff/tenants/{tenantId}/switch</c>.
+    /// </summary>
     public static IEndpointRouteBuilder MapJeffOpsBff(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         BffEndpoints.Map(endpoints);
+        if (endpoints.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<BffOptions>>().Value.Delegation.Enabled)
+        {
+            ActingEndpoints.Map(endpoints);
+        }
+
         return endpoints;
     }
 }

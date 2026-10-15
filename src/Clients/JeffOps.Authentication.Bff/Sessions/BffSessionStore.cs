@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 namespace JeffOps.Authentication.Bff.Sessions;
 
 /// <summary>A browser session: the tokens the BFF holds on the browser's behalf.</summary>
-/// <param name="Subject">The user (<c>sub</c>).</param>
+/// <param name="Subject">The user (<c>sub</c>); for a derived session, the user of the own session it belongs to.</param>
 /// <param name="AccessToken">The current access token.</param>
 /// <param name="RefreshToken">The current refresh token.</param>
 /// <param name="IdentityToken">The ID token, kept for the end-session request.</param>
@@ -20,7 +20,22 @@ public sealed record BffSession(
     string? RefreshToken,
     string? IdentityToken,
     DateTimeOffset AccessExpiresAt,
-    DateTimeOffset SessionEndsAt);
+    DateTimeOffset SessionEndsAt)
+{
+    /// <summary>For a derived session: <c>impersonation</c> or <c>tenant-switch</c>; null for an own session.</summary>
+    public string? Kind { get; init; }
+
+    /// <summary>For a derived session: <see cref="BffSessionStore.KeyFor"/> of the own session it belongs to.</summary>
+    public string? OwnerKey { get; init; }
+
+    /// <summary>For impersonation: the grant minted against.</summary>
+    public string? GrantId { get; init; }
+
+    /// <summary>For tenant switch: the tenant acted in.</summary>
+    public string? ActingTenantId { get; init; }
+
+    public bool IsDerived => Kind is not null;
+}
 
 /// <summary>The session store could not be reached; the request is answered 503 rather than treated as signed out.</summary>
 public sealed class SessionStoreUnavailableException : Exception
@@ -55,6 +70,9 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
     private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.Bff.Session");
 
     public static string NewId() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+
+    /// <summary>The store key of a session id: what a derived session records as its owner, never the id itself.</summary>
+    public static string KeyFor(string id) => KeyOf(id);
 
     public async Task<string> CreateAsync(BffSession session, CancellationToken cancellationToken)
     {

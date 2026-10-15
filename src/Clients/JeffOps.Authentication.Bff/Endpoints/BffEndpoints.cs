@@ -81,6 +81,14 @@ internal static partial class BffEndpoints
 
         var id = await store.CreateAsync(session, context.RequestAborted).ConfigureAwait(false);
         context.Response.Cookies.Append(BffCookie.Name(context.Request, options.Value), id, BffCookie.Options(context.Request, session.SessionEndsAt));
+
+        // A new sign-in never inherits an acting session; it belonged to the previous own session.
+        if (context.Request.Cookies.TryGetValue(BffCookie.ActingName(context.Request, options.Value), out var acting) && !string.IsNullOrEmpty(acting))
+        {
+            await store.DeleteAsync(acting, subject: null, context.RequestAborted).ConfigureAwait(false);
+            context.Response.Cookies.Delete(BffCookie.ActingName(context.Request, options.Value), BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
+        }
+
         return Results.Redirect(returnUrl);
     }
 
@@ -88,17 +96,38 @@ internal static partial class BffEndpoints
     /// Ends the session (revoking its refresh token) and answers where the browser should go to end the session at the token
     /// server too: <c>{ "endSessionUrl": … }</c>. A POST with the CSRF header, so another site can't sign the user out.
     /// </summary>
-    private static async Task<IResult> LogoutAsync(HttpContext context, BffSessionManager sessions, BffSessionStore store, IOptions<BffOptions> options)
+    private static async Task<IResult> LogoutAsync(
+        HttpContext context,
+        BffSessionManager sessions,
+        BffSessionStore store,
+        IHttpClientFactory http,
+        IOptions<BffOptions> options,
+        ILoggerFactory loggers)
     {
         var cookie = BffCookie.Name(context.Request, options.Value);
+        var actingCookie = BffCookie.ActingName(context.Request, options.Value);
         string? idToken = null;
         if (context.Request.Cookies.TryGetValue(cookie, out var id) && !string.IsNullOrEmpty(id))
         {
-            idToken = (await store.GetAsync(id, context.RequestAborted).ConfigureAwait(false))?.IdentityToken;
+            var own = await store.GetAsync(id, context.RequestAborted).ConfigureAwait(false);
+            idToken = own?.IdentityToken;
+
+            // End an impersonation first, while the own session's token can still tell the token server.
+            if (context.Request.Cookies.TryGetValue(actingCookie, out var actingId) && !string.IsNullOrEmpty(actingId))
+            {
+                var acting = await store.GetAsync(actingId, context.RequestAborted).ConfigureAwait(false);
+                await store.DeleteAsync(actingId, acting?.Subject, context.RequestAborted).ConfigureAwait(false);
+                if (acting is { Kind: DerivedSessionManager.Impersonation, GrantId: { } grantId } && own is not null && DerivedSessionManager.BelongsTo(acting, id))
+                {
+                    await ActingEndpoints.EndGrantAsync(http, options.Value, grantId, own.AccessToken, loggers.CreateLogger("JeffOps.Authentication.Bff.Acting"), context.RequestAborted).ConfigureAwait(false);
+                }
+            }
+
             await sessions.EndAsync(id, context.RequestAborted).ConfigureAwait(false);
         }
 
         context.Response.Cookies.Delete(cookie, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
+        context.Response.Cookies.Delete(actingCookie, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
 
         var endSession = new Uri(options.Value.Authority!, "connect/endsession").AbsoluteUri;
         if (idToken is not null)

@@ -1,5 +1,6 @@
 using JeffOps.Authentication.Bff.Sessions;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.Bff.Middleware;
@@ -12,6 +13,14 @@ public static class BffCookie
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(options);
         return request.IsHttps ? "__Host-" + options.CookieName : options.CookieName;
+    }
+
+    /// <summary>The derived ("acting") session cookie.</summary>
+    public static string ActingName(HttpRequest request, BffOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(options);
+        return request.IsHttps ? "__Host-" + options.Delegation.CookieName : options.Delegation.CookieName;
     }
 
     public static CookieOptions Options(HttpRequest request, DateTimeOffset expires)
@@ -63,9 +72,11 @@ public sealed class CsrfMiddleware(RequestDelegate next, IOptions<BffOptions> op
 /// <summary>
 /// Turns the session cookie into the session's bearer token for every request outside <c>/bff/*</c>. A request with the
 /// cookie but no valid session has its Authorization header removed, so a bearer smuggled in next to a dead cookie is never
-/// forwarded. A request without the cookie (an API client with its own token) is left alone.
+/// forwarded. A request without the cookie (an API client with its own token) is left alone. With delegation enabled, a live
+/// derived session that belongs to the own session is used instead (impersonation or tenant switch); a dead one has its cookie
+/// removed.
 /// </summary>
-public sealed class CookieToBearerMiddleware(RequestDelegate next, BffSessionManager sessions, IOptions<BffOptions> options)
+public sealed class CookieToBearerMiddleware(RequestDelegate next, BffSessionManager sessions, IServiceProvider services, IOptions<BffOptions> options)
 {
     public async Task InvokeAsync(HttpContext context)
     {
@@ -96,7 +107,39 @@ public sealed class CookieToBearerMiddleware(RequestDelegate next, BffSessionMan
             }
             else
             {
-                context.Request.Headers.Authorization = "Bearer " + session.AccessToken;
+                var token = session.AccessToken;
+                var acting = BffCookie.ActingName(context.Request, options.Value);
+                if (options.Value.Delegation.Enabled
+                    && context.Request.Cookies.TryGetValue(acting, out var derivedId)
+                    && !string.IsNullOrEmpty(derivedId))
+                {
+                    BffSession? derived;
+                    try
+                    {
+                        derived = await services.GetRequiredService<DerivedSessionManager>().GetFreshAsync(derivedId, id, context.RequestAborted).ConfigureAwait(false);
+                    }
+                    catch (SessionStoreUnavailableException)
+                    {
+                        derived = null;
+                    }
+
+                    if (derived is not null)
+                    {
+                        token = derived.AccessToken;
+                    }
+                    else
+                    {
+                        // Never fall back to the own session silently mid-action: the request fails, the cookie goes.
+                        context.Response.Cookies.Delete(acting, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
+                        await TypedResults.Problem(
+                            detail: "The acting session has ended.",
+                            statusCode: StatusCodes.Status401Unauthorized,
+                            extensions: new Dictionary<string, object?> { ["code"] = "acting_session_ended" }).ExecuteAsync(context).ConfigureAwait(false);
+                        return;
+                    }
+                }
+
+                context.Request.Headers.Authorization = "Bearer " + token;
             }
         }
 
@@ -112,4 +155,8 @@ public static class BffPaths
     public const string Logout = "/bff/logout";
     public const string Me = "/bff/me";
     public const string BackchannelLogout = "/bff/backchannel-logout";
+    public const string Acting = "/bff/acting";
+    public const string StartImpersonation = "/bff/impersonation/{grantId}/start";
+    public const string SwitchTenant = "/bff/tenants/{tenantId}/switch";
+    public const string StopActing = "/bff/acting/stop";
 }

@@ -22,7 +22,7 @@ namespace JeffOps.Authentication.Server.Tests;
 /// The BFF end to end: token server, BFF with YARP, and an API validating platform tokens — the browser holds only the
 /// session cookie (docs/DESIGN.md §9.1).
 /// </summary>
-public sealed class BffTests
+public sealed partial class BffTests
 {
     private const string BffSecret = "spa-bff-secret-that-is-at-least-thirty-two-chars";
 
@@ -47,11 +47,10 @@ public sealed class BffTests
         }
     }
 
-    private static async Task<Stack> StartAsync(string accessTokenLifetime = "00:15:00")
+    private static async Task<Stack> StartAsync(string accessTokenLifetime = "00:15:00", DelegationSetup? delegation = null)
     {
         var routes = new RoutingHandler();
-        var tokenServer = await TokenServerHost.StartAsync(
-            new()
+        var tokenServerSettings = new Dictionary<string, string?>
             {
                 ["JeffOps:TokenServer:AccessTokenLifetime"] = accessTokenLifetime,
                 ["JeffOps:TokenServer:Clients:3:ClientId"] = "spa-bff",
@@ -65,8 +64,21 @@ public sealed class BffTests
                 ["JeffOps:TokenServer:Clients:3:Scopes:2"] = "email",
                 ["JeffOps:TokenServer:Clients:3:Scopes:3"] = "offline_access",
                 ["JeffOps:TokenServer:Clients:3:Scopes:4"] = "api",
+            };
+        if (delegation is not null)
+        {
+            tokenServerSettings["JeffOps:TokenServer:Clients:3:GrantTypes:2"] = "urn:jeffops:grant-type:impersonation";
+            tokenServerSettings["JeffOps:TokenServer:Clients:3:GrantTypes:3"] = "urn:jeffops:grant-type:tenant-switch";
+        }
+
+        var tokenServer = await TokenServerHost.StartAsync(
+            tokenServerSettings,
+            configure: builder =>
+            {
+                builder.Services.AddHttpClient("JeffOps.BackchannelLogout").ConfigurePrimaryHttpMessageHandler(() => routes.Clone());
+                delegation?.ConfigureTokenServer(builder);
             },
-            configure: builder => builder.Services.AddHttpClient("JeffOps.BackchannelLogout").ConfigurePrimaryHttpMessageHandler(() => routes.Clone()));
+            map: delegation is null ? null : DelegationSetup.MapTokenServer);
         routes.Add("localhost", tokenServer.CreateHandler());
 
         // The API: validates platform tokens like any resource service.
@@ -100,14 +112,26 @@ public sealed class BffTests
             ["JeffOps:Bff:Scopes:0"] = "profile",
             ["JeffOps:Bff:Scopes:1"] = "email",
             ["JeffOps:Bff:Scopes:2"] = "api",
+            ["JeffOps:Bff:Delegation:Enabled"] = delegation is null ? "false" : "true",
         });
+        if (delegation is not null)
+        {
+            bffBuilder.Services.AddSingleton<TimeProvider>(tokenServer.Time);
+        }
+
         bffBuilder.Services.AddJeffOpsBff(bffBuilder.Configuration);
         bffBuilder.Services.PostConfigureAll<HttpClientFactoryOptions>(options =>
             options.HttpMessageHandlerBuilderActions.Add(handler => handler.PrimaryHandler = routes.Clone()));
         bffBuilder.Services.AddReverseProxy()
             .LoadFromMemory(
-                [new RouteConfig { RouteId = "api", ClusterId = "api", Match = new RouteMatch { Path = "/api/{**rest}" } }],
-                [new ClusterConfig { ClusterId = "api", Destinations = new Dictionary<string, DestinationConfig> { ["api"] = new() { Address = "https://api.test/" } } }])
+                [
+                    new RouteConfig { RouteId = "api", ClusterId = "api", Match = new RouteMatch { Path = "/api/{**rest}" } },
+                    new RouteConfig { RouteId = "delegation", ClusterId = "auth", Match = new RouteMatch { Path = "/delegation/{**rest}" } },
+                ],
+                [
+                    new ClusterConfig { ClusterId = "api", Destinations = new Dictionary<string, DestinationConfig> { ["api"] = new() { Address = "https://api.test/" } } },
+                    new ClusterConfig { ClusterId = "auth", Destinations = new Dictionary<string, DestinationConfig> { ["auth"] = new() { Address = "https://localhost/" } } },
+                ])
             .AddBffTransforms();
         bffBuilder.Services.AddSingleton<IForwarderHttpClientFactory>(new TestForwarderFactory(routes));
         var bff = bffBuilder.Build();
@@ -121,9 +145,10 @@ public sealed class BffTests
         return new Stack { TokenServer = tokenServer, Bff = bff, Api = api, Browser = browser, Routes = routes };
     }
 
-    private static async Task<Guid> SignInAsync(Stack stack, string? accountEmail = null)
+    private static async Task<Guid> SignInAsync(Stack stack, string? accountEmail = null, Action<Guid>? prepare = null)
     {
         var account = await stack.TokenServer.CreateAccountAsync(accountEmail ?? "ada@example.com");
+        prepare?.Invoke(account.Id);
 
         var login = await stack.Browser.GetAsync(new Uri("bff/login?returnUrl=/app", UriKind.Relative), TestContext.Current.CancellationToken);
         login.StatusCode.ShouldBe(HttpStatusCode.Redirect, await login.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));

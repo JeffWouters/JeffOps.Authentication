@@ -661,7 +661,7 @@ All models consume the same token server. The library provides a package or docu
 - **Back-channel logout:** when an operator disables an account the token server revokes all its tokens and posts a signed `logout_token` to every client with a `BackchannelLogoutUri`. The BFF validates signature, audience, event, freshness and `jti` replay, then ends every session of that user.
 - **`JeffOps.Authentication.Bff.Yarp`:** `AddBffTransforms()` strips the `Cookie` header from proxied requests; `AddJeffOpsPatExchange`/`UseJeffOpsPatExchange` swap `Bearer pat_…` for a short-lived JWT (cached encrypted under the PAT's hash; refusals cached briefly; outages not cached).
 - **Tested end to end** (token server, BFF with YARP, API with `Authentication.Client`); `samples/Spa.Bff` shows an SPA with no identity SDK.
-- **Not yet:** derived sessions for impersonation and tenant switch (phase 6), token-mediating mode, back-channel logout on end-session (needs session ids, `sid`).
+- **Not yet:** token-mediating mode, back-channel logout on end-session (needs session ids, `sid`).
 
 ## 10. Claims contract
 
@@ -774,6 +774,17 @@ Package `JeffOps.Authentication.Delegation`. Optional; products without MSP/supp
 | Tenant switch | Delegated 10 min token, `act_tid`, ceiling admin/readonly/billing. | Ceiling vocabulary becomes configurable (`IDelegationCeilingProvider`). |
 
 BFF support for derived sessions (bound to the owner's live session via `OwnerKey`) ships in `Bff` and activates only when Delegation is registered.
+
+### 12.1 As built (phase 6)
+
+- **Packages.** `JeffOps.Authentication.Delegation` is one feature-module project (D17) with `Domain/`, `Application/`, `Infrastructure/` and `Endpoints/` folders; `JeffOps.Authentication.Delegation.SqlServer` holds its migrations (schema `delegation`). Hosts call `AddJeffOpsAuthentication(...).AddDelegation().UseDirectory<T>().AddSqlServerPersistence()` and `MapJeffOpsDelegation()`.
+- **Extension grants.** The token server gained a generic hook: modules register `IExtensionGrantHandler` + `ExtensionGrantRegistration`; grant type `{ExtensionGrantNamespace}:{name}`. Delegation adds `impersonation` (parameter `grant_id`) and `tenant-switch` (`target_tenant`). Both require an **RFC 8693 `actor_token`** — the actor's own access token from this server, validated at the token endpoint — instead of the source's trusted form fields; actor tokens from impersonation, tenant-switch or PAT sessions are refused (no chaining, no PAT escalation). See D22.
+- **Grant model.** `ImpersonationGrant` and `TenantAccessGrant` share `DelegationGrant`: PendingApproval → Approved → Active (first mint) → Ended / Revoked / Expired / Denied; `Status` is the concurrency token; every terminal transition stamps `EndedAt`. Fixes against the source: break-glass grants announce their first use (`started`) like any other; a sweeper marks overdue grants `Expired` (every 5 min); the "active" lists filter on expiry; deciding and revoking lockbox grants needs the approval policy (not merely membership of the tenant); a tenant-access request is idempotent and refused for tenants that don't require approval; nobody decides their own request.
+- **Mint checks** (every mint): grant mintable and owned by the actor; both accounts active; platform actors still Root; partner relationship still in place (`IDelegationDirectory`); target still a member of the grant's tenant; for tenant switch the actor still belongs to the managing organization, the tenant accepts sessions and, if lockbox, a live tenant-access grant exists. Directory outages answer `server_error` (retry), never a revocation.
+- **Tokens.** Impersonation: target's `sub`/`email`/`name`/tenant claims, `act` = `{"sub": actor}` (JSON, RFC 8693 §4.1), `act_kind` (`Platform`/`Partner`), `grant_id`, `step_up` only if the actor's session was stepped up; no `amr`. Tenant switch: actor's identity and home `tid`, `lvl=Delegated`, `act_tid`, one `dlg_scope` per relationship scope, actor's `amr`/`step_up`/`auth_time`. Lifetimes 3 min / 10 min (options), capped at the grant's end; never a refresh token.
+- **Authorization of the flows** uses host policies by name (`auth.impersonation.initiate`, `auth.impersonation.breakglass`, `auth.tenant-access.approve`), which the permission policy provider resolves when the token server also runs `AddJeffOpsPermissionAuthorization`. Requesting and approving need step-up (`RequireStepUp`).
+- **Events.** `auth.impersonation.{requested|approved|started|denied|ended|revoked|expired}.v1` and `auth.tenant_access.*.v1` (`Abstractions.Messaging`), an audit record per step, and `INotifier` notifications to the target (High for requests, Urgent for break-glass). `INotifier` is a new Abstractions port; the default logs a warning.
+- **BFF derived sessions.** `BffOptions.Delegation.Enabled` maps `/bff/impersonation/{grantId}/start`, `/bff/tenants/{tenantId}/switch`, `/bff/acting` and `/bff/acting/stop`. A derived session lives in the same store under the owner's subject (so back-channel logout ends it), carries `OwnerKey` = the owner session's store key (compared in constant time), and is used by cookie-to-bearer only next to its owner. Tokens are re-minted single-flight from the owner's fresh access token; a refusal ends the session (`401 acting_session_ended`, cookie removed — never a silent fall-back to the own session mid-action), an outage keeps it until its token expires. Sign-out ends an impersonation grant at the token server first; a new sign-in drops any acting session.
 
 ---
 
@@ -959,6 +970,7 @@ These requirements differ from the origin implementation. They are listed here s
 | D19 | Architectural style | — | **Decided: Clean Architecture + vertical slices + minimal APIs, no mediator library** (§6.1) |
 | D20 | Paid / commercial dependencies | — | **Decided: none allowed** (§6.5) |
 | D21 | Test framework | xUnit v3 / TUnit / MSTest / NUnit | **Decided: xUnit v3.** The source tests port with little change, and the ecosystem (Testcontainers, `WebApplicationFactory`) is strongest. Revisit TUnit (source-generated, AOT) after 1.0. |
+| D22 | Delegated token requests | RFC 8693 `token-exchange` grant / extension grants | **Extension grants with RFC 8693 `actor_token`.** OpenIddict's token exchange validates a `subject_token` it issued; an impersonation's subject is a server-side grant, not a token. The extension grants keep RFC 8693's actor semantics (`actor_token`, `act` claim) while the grant id and target tenant stay ordinary parameters. |
 
 ---
 
@@ -972,7 +984,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **3 — Federation** ✅ | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
 | **4 — BFF** ✅ | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
 | **5 — Management & governance** ✅ | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
-| **6 — Delegation** | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
+| **6 — Delegation** ✅ | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
 | **7 — Local accounts** | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
 | **8 — Enterprise** | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
 | **9 — Hardening** | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
