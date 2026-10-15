@@ -11,9 +11,10 @@ using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Domain.Accounts;
 using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.Endpoints;
-using JeffOps.Authentication.Endpoints.Protocol;
+using JeffOps.Authentication.Application.Sessions;
 using JeffOps.Authentication.Infrastructure.DependencyInjection;
 using JeffOps.Authentication.Infrastructure.Persistence;
+using JeffOps.Authentication.UI;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
@@ -58,13 +59,20 @@ internal sealed class TokenServerHost : IAsyncDisposable
 
     public HttpClient Client { get; }
 
+    /// <summary>The in-process handler, for wiring other clients (a browser with cookies, another server's back channel).</summary>
+    public HttpMessageHandler CreateHandler() => _app.GetTestServer().CreateHandler();
+
     public FakeTimeProvider Time { get; }
 
     public FakeTenantDirectory Tenants { get; }
 
     public IServiceProvider Services => _app.Services;
 
-    public static async Task<TokenServerHost> StartAsync(Dictionary<string, string?>? overrides = null, string environment = "Testing")
+    public static async Task<TokenServerHost> StartAsync(
+        Dictionary<string, string?>? overrides = null,
+        string environment = "Testing",
+        Action<WebApplicationBuilder>? configure = null,
+        bool cookieSignIn = false)
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var tenants = new FakeTenantDirectory();
@@ -82,8 +90,18 @@ internal sealed class TokenServerHost : IAsyncDisposable
         builder.Services.AddSingleton<ITenantDirectory>(tenants);
         builder.Services.AddJeffOpsAuthentication(builder.Configuration)
             .UseDatabase((_, options) => options.UseSqlite(connectionString));
-        builder.Services.AddAuthentication()
-            .AddScheme<AuthenticationSchemeOptions, HeaderSignIn>("JeffOps.SignIn", _ => { });
+        if (cookieSignIn)
+        {
+            builder.Services.AddAuthentication().AddCookie("JeffOps.SignIn", options => options.LoginPath = "/account/login");
+        }
+        else
+        {
+            builder.Services.AddAuthentication()
+                .AddScheme<AuthenticationSchemeOptions, HeaderSignIn>("JeffOps.SignIn", _ => { });
+        }
+
+        builder.Services.AddJeffOpsAuthenticationUI();
+        configure?.Invoke(builder);
         builder.Services.AddAuthorizationBuilder()
             .AddPolicy("auth.accounts.manage", policy => policy.RequireClaim("role", Operator));
 
@@ -95,7 +113,9 @@ internal sealed class TokenServerHost : IAsyncDisposable
 
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseAntiforgery();
         app.MapJeffOpsAuthentication();
+        app.MapJeffOpsAuthenticationUI();
         await app.StartAsync(TestContext.Current.CancellationToken);
 
         return new TokenServerHost(app, databaseFile, time, tenants);

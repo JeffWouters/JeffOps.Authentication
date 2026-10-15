@@ -605,6 +605,17 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - Tenant can enforce "SSO only" (disable local and global providers for its members).
 - SCIM 2.0 provisioning/deprovisioning is a roadmap companion (D9).
 
+### 8.4.1 As built (phase 3)
+
+- **Flow:** `account/login` (hosted UI) → `account/login/discover?email=` (home realm discovery from `Federation:DomainProviders`, else the provider list) → `signin/{provider}` (OpenIddict client challenge) → provider → `signin/callback/{provider}` → `CompleteExternalSignIn` (link on (issuer, subject), domain policy, just-in-time account, MFA policy, `IExternalSignInObserver` hooks) → sign-in scheme → back to the local return URL (never an absolute URL: no open redirect) → `connect/authorize` completes the code flow.
+- **Providers:** `AddOidcProvider(name, …)` (`Federation.Oidc`) for any OpenID Connect provider; `AddEntra(…)` (`Federation.Entra`, built on `Federation.Oidc` via OpenIddict's Microsoft web provider; links on `login.microsoftonline.com/{tid}` + `oid`, exposes `tid` as `DirectoryId`, treats Entra email as unverified). A plug-in may build on another plug-in, never on Infrastructure (architecture rule).
+- **Provider state** (the OpenIddict client's state tokens) is protected with Data Protection, so a callback can land on any replica sharing the key ring.
+- **Domain policy** (`Federation:AllowedEmailDomains`, `OpenRegistration`) applies to every external sign-in, not just the first. With no allowed domains, sign-in is closed outside Development unless `OpenRegistration` is set.
+- **MFA from providers:** `amr`, plus `acr`/`acrs` values listed in `Federation:MultiFactorAuthenticationContexts`.
+- **Login UI** (`JeffOps.Authentication.UI`): Razor components with static SSR and no scripts; sends its own CSP (`default-src 'none'; style-src 'self'; form-action 'self' https:`). Hosts call `UseAntiforgery()` and `MapStaticAssets()`.
+- **Tested end to end** with a second JeffOps token server as the upstream provider.
+- **Not yet:** per-tenant provider registrations and verified domains (phase 8), SAML (phase 8).
+
 ### 8.5 Local accounts
 
 - Passwords: PBKDF2-SHA256 100k (source format v1) → **v2 target: PBKDF2-SHA512 600k or Argon2id (D10)**, with transparent rehash on successful login.
@@ -937,7 +948,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **0 — Scaffold** ✅ | Solution and projects (§6.6); CPM and build props; banned-package guard and licence scan (§6.5); `BannedSymbols.txt`; SharedKernel (`Result`, handler interfaces, decorators, domain events); architecture tests for layering, slice isolation and handler registration (§6.3) | Empty projects build; architecture tests green; a deliberately banned package fails the build |
 | **1 — Port core** ✅ | Abstractions, Authorization.Domain, Authorization.AspNetCore, Authentication.Client, Security.AspNetCore; port tests | Ported tests green; I1, I2, I3, I6, I7 done |
 | **2 — Token server** ✅ | Authentication Domain / Application / Infrastructure / Persistence.SqlServer / Endpoints; key providers, PATs, revalidation, client registry as slices; **add authorization code + PKCE, userinfo, end-session** | Standard OIDC conformance smoke test passes; I4, I8, I9 done |
-| **3 — Federation** | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
+| **3 — Federation** ✅ | Federation abstraction, `(issuer, subject)` linking, Entra provider (server-side), generic OIDC provider, hosted login UI, HRD | Sign in via Entra and Google through `/connect/authorize` |
 | **4 — BFF** | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
 | **5 — Management & governance** | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
 | **6 — Delegation** | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |

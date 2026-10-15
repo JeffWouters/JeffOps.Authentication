@@ -13,6 +13,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Infrastructure\JeffOps.Authentication.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.UI\JeffOps.Authentication.UI.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Oidc\JeffOps.Authentication.Federation.Oidc.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Entra\JeffOps.Authentication.Federation.Entra.csproj" />
   </ItemGroup>
 
 </Project>

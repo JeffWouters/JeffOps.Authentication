@@ -63,6 +63,7 @@ public static class AuthenticationServiceCollectionExtensions
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<TokenServerOptions>, TokenServerOptionsValidator>();
         services.AddOptions<SigningKeyOptions>().Bind(configuration.GetSection(SigningKeyOptions.SectionName));
+        services.AddOptions<Application.Federation.FederationOptions>().Bind(configuration.GetSection(Application.Federation.FederationOptions.SectionName));
 
         services.AddJeffOpsAuthenticationApplication();
         services.TryAddScoped<IAccountRepository, AccountRepository>();

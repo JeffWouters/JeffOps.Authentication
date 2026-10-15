@@ -1,0 +1,31 @@
+@page "/account/login"
+@inject IEnumerable<IExternalIdentityMapper> Mappers
+
+<PageTitle>Sign in</PageTitle>
+
+<main class="jo-login">
+    <h1>Sign in</h1>
+
+    @if (ErrorMessage is not null)
+    {
+        <p class="jo-error" role="alert">@ErrorMessage</p>
+    }
+
+    <form method="get" action="/account/login/discover" class="jo-discover">
+        <input type="hidden" name="returnUrl" value="@SafeReturnUrl" />
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="username" value="@Email" required />
+        <button type="submit">Continue</button>
+    </form>
+
+    @if (Providers.Count > 0)
+    {
+        <p class="jo-or">or sign in with</p>
+        <ul class="jo-providers">
+            @foreach (var provider in Providers)
+            {
+                <li><a class="jo-provider" href="@ProviderUrl(provider)">@provider.DisplayName</a></li>
+            }
+        </ul>
+    }
+</main>

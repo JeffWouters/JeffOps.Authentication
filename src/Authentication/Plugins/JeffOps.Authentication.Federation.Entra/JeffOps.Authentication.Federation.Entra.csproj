@@ -5,7 +5,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenIddict.Client.WebIntegration" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
+    <ProjectReference Include="..\JeffOps.Authentication.Federation.Oidc\JeffOps.Authentication.Federation.Oidc.csproj" />
   </ItemGroup>
 
 </Project>

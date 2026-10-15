@@ -1,0 +1,12 @@
+:root { color-scheme: light dark; --jo-accent: #2557d6; --jo-error: #b42318; }
+body { margin: 0; font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; }
+.jo-login { width: min(24rem, 100% - 2rem); }
+.jo-login h1 { font-size: 1.5rem; }
+.jo-discover { display: grid; gap: .5rem; }
+.jo-discover input, .jo-discover button, .jo-provider { font: inherit; padding: .6rem .8rem; border-radius: .4rem; }
+.jo-discover input { border: 1px solid #8884; }
+.jo-discover button { border: 0; background: var(--jo-accent); color: #fff; cursor: pointer; }
+.jo-or { text-align: center; opacity: .7; }
+.jo-providers { list-style: none; padding: 0; display: grid; gap: .5rem; }
+.jo-provider { display: block; text-align: center; border: 1px solid #8886; text-decoration: none; color: inherit; }
+.jo-error { color: var(--jo-error); }

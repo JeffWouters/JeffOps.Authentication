@@ -100,7 +100,11 @@ public sealed class ProjectDependencyTests
                 || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application or ProjectKind.Infrastructure),
             ProjectKind.Presentation => referenceKind is ProjectKind.Kernel
                 || (sameContext && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
-            ProjectKind.Plugin or ProjectKind.FeatureModule => referenceKind == ProjectKind.Kernel
+            // A plug-in may build on another plug-in (Federation.Entra on Federation.Oidc), never on Infrastructure.
+            ProjectKind.Plugin => referenceKind is ProjectKind.Kernel or ProjectKind.Plugin
+                || (reference.StartsWith("JeffOps.Authentication.", StringComparison.Ordinal)
+                    && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
+            ProjectKind.FeatureModule => referenceKind == ProjectKind.Kernel
                 || (reference.StartsWith("JeffOps.Authentication.", StringComparison.Ordinal)
                     && referenceKind is ProjectKind.Domain or ProjectKind.Contracts or ProjectKind.Application),
             ProjectKind.ClientAdapter or ProjectKind.Common => referenceKind is ProjectKind.Kernel

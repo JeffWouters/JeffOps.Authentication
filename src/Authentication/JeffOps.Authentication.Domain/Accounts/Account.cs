@@ -59,12 +59,10 @@ public sealed class Account : AggregateRoot<Guid>
         return account;
     }
 
-    /// <summary>
-    /// Creates an account for a first sign-in through an external provider. The provider vouched for the email address.
-    /// </summary>
-    public static Account RegisterExternal(string email, string displayName, ExternalLoginKey login, string provider, DateTimeOffset now)
+    /// <summary>Creates an account for a first sign-in through an external provider.</summary>
+    public static Account RegisterExternal(string email, string displayName, ExternalLoginKey login, string provider, DateTimeOffset now, bool emailVerified = true)
     {
-        var account = Register(email, displayName, emailVerified: true, now);
+        var account = Register(email, displayName, emailVerified, now);
         account.LinkExternalLogin(login, provider, now);
         return account;
     }

@@ -5,6 +5,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenIddict.Client.AspNetCore" />
+    <PackageReference Include="OpenIddict.Client.SystemNetHttp" />
+    <PackageReference Include="OpenIddict.Client.DataProtection" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
   </ItemGroup>
 

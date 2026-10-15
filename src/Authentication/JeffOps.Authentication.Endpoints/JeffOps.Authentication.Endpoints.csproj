@@ -11,6 +11,11 @@
   <ItemGroup>
     <PackageReference Include="OpenIddict.Server.AspNetCore" />
     <PackageReference Include="OpenIddict.Validation.AspNetCore" />
+    <PackageReference Include="OpenIddict.Client.AspNetCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="JeffOps.Authentication.Server.Tests" />
   </ItemGroup>
 
   <ItemGroup>

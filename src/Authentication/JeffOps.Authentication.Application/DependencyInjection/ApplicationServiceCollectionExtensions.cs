@@ -2,6 +2,7 @@ using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.Events;
 using JeffOps.Authentication.Application.Features.Accounts;
+using JeffOps.Authentication.Application.Features.Federation.CompleteExternalSignIn;
 using JeffOps.Authentication.Application.Features.Grants.ClientCredentials;
 using JeffOps.Authentication.Application.Features.Grants.ExchangePat;
 using JeffOps.Authentication.Application.Features.PersonalAccessTokens;
@@ -41,6 +42,7 @@ public static class ApplicationServiceCollectionExtensions
             .AddHandler<SetAccountStatusHandler>()
             .AddHandler<GetAccountContactHandler>()
             .AddHandler<FindAccountByEmailHandler>()
+            .AddHandler<CompleteExternalSignInHandler>()
             .AddHandlerValidation();
 
         services.AddDomainEventDispatcher();
