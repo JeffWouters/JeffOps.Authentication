@@ -15,6 +15,7 @@
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.UI\JeffOps.Authentication.UI.csproj" />
     <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Delegation\JeffOps.Authentication.Delegation.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.LocalAccounts\JeffOps.Authentication.LocalAccounts.csproj" />
     <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Oidc\JeffOps.Authentication.Federation.Oidc.csproj" />
     <ProjectReference Include="..\..\src\Authentication\Plugins\JeffOps.Authentication.Federation.Entra\JeffOps.Authentication.Federation.Entra.csproj" />
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff\JeffOps.Authentication.Bff.csproj" />

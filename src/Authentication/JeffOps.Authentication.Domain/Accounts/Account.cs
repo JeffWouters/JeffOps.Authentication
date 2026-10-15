@@ -103,6 +103,19 @@ public sealed class Account : AggregateRoot<Guid>
         }
     }
 
+    /// <summary>Records that the user proved they control the email address. Returns false when it already was verified.</summary>
+    public bool MarkEmailVerified(DateTimeOffset now)
+    {
+        if (EmailVerified)
+        {
+            return false;
+        }
+
+        EmailVerified = true;
+        UpdatedAt = now;
+        return true;
+    }
+
     /// <summary>Disables the account. Returns false when it already was.</summary>
     public bool Disable(DateTimeOffset now)
     {

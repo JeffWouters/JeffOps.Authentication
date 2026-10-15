@@ -18,6 +18,7 @@
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.Delegation/JeffOps.Authentication.Delegation.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.Delegation.SqlServer/JeffOps.Authentication.Delegation.SqlServer.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.LocalAccounts/JeffOps.Authentication.LocalAccounts.csproj" />
+    <Project Path="src/Authentication/Modules/JeffOps.Authentication.LocalAccounts.SqlServer/JeffOps.Authentication.LocalAccounts.SqlServer.csproj" />
   </Folder>
   <Folder Name="/src/Authentication/Plugins/">
     <Project Path="src/Authentication/Plugins/JeffOps.Authentication.Federation.Entra/JeffOps.Authentication.Federation.Entra.csproj" />
@@ -52,6 +53,7 @@
     <Project Path="tests/JeffOps.Authentication.Client.Tests/JeffOps.Authentication.Client.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Delegation.Tests/JeffOps.Authentication.Delegation.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Domain.Tests/JeffOps.Authentication.Domain.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authentication.LocalAccounts.Tests/JeffOps.Authentication.LocalAccounts.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.KeyVault.Tests/JeffOps.Authentication.KeyVault.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Server.Tests/JeffOps.Authentication.Server.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.SharedKernel.Tests/JeffOps.Authentication.SharedKernel.Tests.csproj" />

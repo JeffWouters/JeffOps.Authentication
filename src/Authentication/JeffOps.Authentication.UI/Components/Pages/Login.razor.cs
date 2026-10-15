@@ -21,6 +21,10 @@ public sealed partial class Login
         ["email_required"] = "Your identity provider didn't share an email address.",
         ["mfa_required"] = "Sign in with multi-factor authentication to continue.",
         ["account_inactive"] = "This account is disabled.",
+        ["invalid_credentials"] = "The email or password is wrong.",
+        ["locked_out"] = "Too many attempts. Wait a moment and try again.",
+        ["email_not_verified"] = "Confirm your email address first: use the link we sent you.",
+        ["signin_expired"] = "That took too long. Sign in again.",
     };
 
     [SupplyParameterFromQuery(Name = "returnUrl")]
@@ -41,6 +45,9 @@ public sealed partial class Login
 
     private string SafeReturnUrl { get; set; } = "/";
 
+    /// <summary>Where the password form posts, when local accounts are on.</summary>
+    private string? PasswordAction { get; set; }
+
     protected override void OnInitialized()
     {
         if (HttpContext is { Response.HasStarted: false } http)
@@ -51,6 +58,7 @@ public sealed partial class Login
 
         SafeReturnUrl = IsLocal(ReturnUrl) ? ReturnUrl! : "/";
         Providers = [.. Mappers.SelectMany(mapper => mapper.Providers).DistinctBy(provider => provider.Name)];
+        PasswordAction = SignInMethods.FirstOrDefault(method => method is { Name: "password", Enabled: true })?.FormAction;
         ErrorMessage = Error is null ? null : Messages.GetValueOrDefault(Error, "Signing in didn't work. Try again.");
     }
 

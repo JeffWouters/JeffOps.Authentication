@@ -34,3 +34,12 @@ public interface IExtensionGrantHandler
 
 /// <summary>Declares an extension grant so the server accepts and advertises its grant type.</summary>
 public sealed record ExtensionGrantRegistration(string Name);
+
+/// <summary>
+/// A sign-in method the hosted login page offers next to external providers, for example local passwords: the page shows its
+/// form, which posts to <see cref="FormAction"/>. Registered by the module that implements it.
+/// </summary>
+/// <param name="Name">Stable name, for example <c>password</c>.</param>
+/// <param name="FormAction">Where the page's form posts.</param>
+/// <param name="Enabled">Whether the method is on in this environment.</param>
+public sealed record InteractiveSignInMethod(string Name, string FormAction, bool Enabled);

@@ -257,6 +257,8 @@ internal sealed class Browser : IDisposable
     public Task<HttpResponseMessage> GetAsync(TokenServerHost server, string pathAndQuery) =>
         _client.GetAsync(new Uri(pathAndQuery.TrimStart('/'), UriKind.Relative), TestContext.Current.CancellationToken);
 
+    public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request) => _client.SendAsync(request, TestContext.Current.CancellationToken);
+
     public void Dispose() => _client.Dispose();
 
     private sealed class CookieHandler(System.Net.CookieContainer cookies) : DelegatingHandler

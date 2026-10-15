@@ -14,7 +14,8 @@ internal sealed class AccountRepository(AuthenticationDbContext db) : IAccountRe
     public async Task<Account?> FindByEmailAsync(string email, CancellationToken cancellationToken)
     {
         // Ordered in memory: DateTimeOffset ordering isn't translatable on every provider, and the match set is tiny.
-        var matches = await db.Accounts.Where(account => account.Email == email).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var normalized = Account.NormalizeEmail(email ?? string.Empty);
+        var matches = await db.Accounts.Where(account => account.Email == normalized).ToListAsync(cancellationToken).ConfigureAwait(false);
         return matches.OrderBy(account => account.CreatedAt).FirstOrDefault();
     }
 

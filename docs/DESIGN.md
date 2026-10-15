@@ -626,6 +626,18 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - Registration stays enumeration-safe (same response, same work on both paths).
 - Production gate: local accounts disabled by default outside Development unless explicitly enabled.
 
+#### 8.5.1 As built (phase 7)
+
+- **Package.** `JeffOps.Authentication.LocalAccounts` (feature module, D17) + `JeffOps.Authentication.LocalAccounts.SqlServer` (schema `local`). Hosts call `.AddLocalAccounts().UseEmailSender<T>().AddSqlServerPersistence()` and `MapJeffOpsLocalAccounts()`. Every route answers 404 unless `JeffOps:LocalAccounts:Enabled` is true (default: Development only).
+- **Passwords** (D10 decided): PBKDF2-HMAC-SHA512, 210,000 iterations (OWASP 2023), 16-byte salt, format `v2.{iterations}.{salt}.{key}`; `v1` (PBKDF2-SHA256) accepted for imports; both rehashed transparently when the format or iteration count is below current. Length-only rules (NIST SP 800-63B, default ≥ 12). Unknown emails, accounts without a password and wrong passwords answer identically after identical work.
+- **Lockout** (I5): progressive — 3 free failures, then 2 s doubling per failure up to 15 min; password and second-factor failures count together; a locked account still spends the hashing work.
+- **Email flows**: verification and reset tokens are 256-bit, stored as SHA-256, single use, superseded by newer ones; registration, resend and forgot-password are enumeration-safe (an already-registered email gets an "already registered" email instead). A reset proves control of the email and lifts a lockout. `IAccountEmailSender` is the host's port; the default only logs links in Development.
+- **Second factor**: RFC 6238 TOTP (SHA-1, 30 s, 6 digits, ±1 step, replay-protected by last accepted step), secret protected with Data Protection; 10 hashed single-use recovery codes. The password step leaves a 5-minute Data-Protected cookie; the code step completes the sign-in. `amr`: `pwd` / `pwd otp mfa`.
+- **Passkeys** through ASP.NET Core Identity's WebAuthn (`PasskeyHandler<T>` with a narrow `IUserPasskeyStore` over our stores; nothing else of Identity). Registration needs a stepped-up session; sign-in is passwordless (`amr`: `hwk`/`swk` + `user mfa` when user-verified). Ceremony state lives in a 5-minute Data-Protected cookie. Configure `PasskeyServerDomain` and `PasskeyAllowedOrigins` explicitly in production.
+- **Hosted UI**: the login page shows a password form (with antiforgery) when the email has no federated provider; `account/login/code` takes the authenticator or a recovery code. Credential management is a JSON API under `account/local/manage/*` for the signed-in user's own session (never under impersonation, delegation or PAT tokens).
+- **Events**: every credential change is audited and the user is notified (`INotifier`).
+- **Not yet**: email OTP as a second factor; session revocation on password change (the security stamp is recorded, not yet checked at refresh); hosted UI pages for reset/verify (hosts render them or use the JSON API).
+
 ---
 
 ## 9. Client hosting models
@@ -958,7 +970,7 @@ These requirements differ from the origin implementation. They are listed here s
 | D7 | Messaging | `IEventPublisher` only / ship RabbitMQ + Service Bus adapters | Interface in core; adapters as separate packages |
 | D8 | Cross-provider account linking by verified email | never / tenant opt-in | Tenant opt-in, off by default |
 | D9 | SCIM 2.0 server | in scope / later | Later (after per-tenant SSO) |
-| D10 | Password hash v2 | PBKDF2-SHA512 600k / Argon2id | Argon2id if a vetted managed implementation is acceptable; else PBKDF2-SHA512 |
+| D10 | Password hash v2 | PBKDF2-SHA512 600k / Argon2id | **Decided: PBKDF2-HMAC-SHA512, 210,000 iterations** (OWASP 2023 for SHA-512): in the BCL, FIPS-friendly, no third-party crypto. Iterations are stored per hash, so raising them later rehashes at sign-in. |
 | D11 | Groups in authorization | add now / later | Add with per-tenant SSO (IdP group claims) |
 | D12 | Should the origin platform consume this library? | yes (migrate) / no (fork) | Yes — claim defaults chosen to make it possible |
 | D13 | Authorization management co-hosted with token server? | separate / co-hosted | Support both; reference hosts separate |
@@ -985,7 +997,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **4 — BFF** ✅ | Bff + Bff.Yarp as confidential code-flow client; back-channel logout | Sample SPA works with no IdP SDK in the browser |
 | **5 — Management & governance** ✅ | Authorization Application / Infrastructure / Persistence.SqlServer / Endpoints; 4-eyes, break-glass, recertification, sweeper as slices | Ported governance tests green |
 | **6 — Delegation** ✅ | Impersonation (RFC 8693), lockbox, tenant switch | Ported delegation tests green |
-| **7 — Local accounts** | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
+| **7 — Local accounts** ✅ | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
 | **8 — Enterprise** | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
 | **9 — Hardening** | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
 
