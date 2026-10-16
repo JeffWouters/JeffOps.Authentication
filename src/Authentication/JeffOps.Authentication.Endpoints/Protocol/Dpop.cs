@@ -5,7 +5,6 @@ using JeffOps.Authentication.Application.Sessions;
 using JeffOps.Authentication.SharedKernel.Results;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using OpenIddict.Abstractions;
 
@@ -64,14 +63,11 @@ internal static class Dpop
         }
 
         // Each proof works once.
-        var replay = context.RequestServices.GetRequiredService<IMemoryCache>();
-        var key = $"jeffops:dpop:{proof.Jkt}:{proof.Jti}";
-        if (replay.TryGetValue(key, out _))
+        if (!context.RequestServices.GetRequiredService<DpopReplayCache>().TryUse(proof, now + Window + Window, now))
         {
             return Error.Unauthorized(InvalidProof, "This DPoP proof was already used.");
         }
 
-        replay.Set(key, true, now + Window + Window);
         return proof.Jkt;
     }
 

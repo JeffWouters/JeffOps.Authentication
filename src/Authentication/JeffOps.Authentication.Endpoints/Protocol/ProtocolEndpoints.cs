@@ -144,7 +144,7 @@ internal static class ProtocolEndpoints
         }
         else if (context.RequestServices.GetServices<IExtensionGrantHandler>().FirstOrDefault(handler => options.Value.ExtensionGrantType(handler.Name) == request.GrantType) is { } extension)
         {
-            var actor = await ActorAsync(context, request).ConfigureAwait(false);
+            var actor = await ActorAsync(context, request, dpop.Value).ConfigureAwait(false);
             if (actor.IsFailure)
             {
                 return TokenIssuance.Refuse(actor.Error);
@@ -276,10 +276,12 @@ internal static class ProtocolEndpoints
     }
 
     /// <summary>
-    /// Validates the request's <c>actor_token</c> (RFC 8693 §2.1), which must be an access token issued by this server. A
+    /// Validates the request's <c>actor_token</c> (RFC 8693 §2.1), which must be a live access token this server issued to the
+    /// requesting client, covering every requested scope, and — when it is DPoP-bound — presented with a proof of its key on
+    /// this request. So a token that leaked to an API or another client can't be traded for a new, broader or unbound one. A
     /// missing actor token is not an error here; the grant decides whether it needs one.
     /// </summary>
-    private static async Task<Result<System.Security.Claims.ClaimsPrincipal?>> ActorAsync(HttpContext context, OpenIddictRequest request)
+    private static async Task<Result<System.Security.Claims.ClaimsPrincipal?>> ActorAsync(HttpContext context, OpenIddictRequest request, string? proofKey)
     {
         if (string.IsNullOrEmpty(request.ActorToken))
         {
@@ -294,7 +296,26 @@ internal static class ProtocolEndpoints
         try
         {
             var validation = context.RequestServices.GetRequiredService<OpenIddict.Validation.OpenIddictValidationService>();
-            return await validation.ValidateAccessTokenAsync(request.ActorToken, context.RequestAborted).ConfigureAwait(false);
+            var actor = await validation.ValidateAccessTokenAsync(request.ActorToken, context.RequestAborted).ConfigureAwait(false);
+
+            if (!string.Equals(actor.GetClaim(Claims.ClientId), request.ClientId, StringComparison.Ordinal))
+            {
+                return Error.Unauthorized(GrantErrors.TokenInvalid, "The actor token was issued to another client.");
+            }
+
+            var held = actor.GetScopes();
+            if (request.GetScopes().Any(scope => !held.Contains(scope, StringComparer.Ordinal)))
+            {
+                return Error.Unauthorized(GrantErrors.TokenInvalid, "The actor token doesn't cover the requested scopes.");
+            }
+
+            var (bound, jkt) = DpopBinding.Of(actor);
+            if (bound && (jkt is null || !string.Equals(jkt, proofKey, StringComparison.Ordinal)))
+            {
+                return Error.Unauthorized(Dpop.InvalidProof, "The actor token is DPoP-bound; prove possession of its key on this request.");
+            }
+
+            return actor;
         }
         catch (OpenIddict.Abstractions.OpenIddictExceptions.ProtocolException)
         {

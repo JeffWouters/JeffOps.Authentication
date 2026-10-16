@@ -77,6 +77,7 @@ public static class AuthenticationServiceCollectionExtensions
 
         services.AddDataProtection();
         services.AddMemoryCache();
+        services.TryAddSingleton<Abstractions.Dpop.DpopReplayCache>();
         services.TryAddSingleton<DatabaseKeyStore>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());
         services.AddHostedService<KeyRotationService>();
@@ -140,6 +141,7 @@ public static class AuthenticationServiceCollectionExtensions
                         return default;
                     }));
 
+                BoundAccessTokens.Register(server);
                 server.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()
                     .EnableTokenEndpointPassthrough()
@@ -151,6 +153,10 @@ public static class AuthenticationServiceCollectionExtensions
             {
                 validation.UseLocalServer();
                 validation.UseAspNetCore();
+
+                // A revoked token (connect/revoke, sign-out everywhere, a disabled account) stops working here at once.
+                validation.EnableTokenEntryValidation();
+                BoundAccessTokens.Register(validation);
             });
 
         // Settings that depend on bound options and the environment.

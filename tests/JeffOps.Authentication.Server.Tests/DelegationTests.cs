@@ -41,6 +41,7 @@ public sealed class DelegationTests : IAsyncLifetime
             {
                 ["JeffOps:TokenServer:Clients:0:GrantTypes:2"] = ImpersonationGrant,
                 ["JeffOps:TokenServer:Clients:0:GrantTypes:3"] = TenantSwitchGrant,
+                ["JeffOps:TokenServer:Clients:2:GrantTypes:2"] = TenantSwitchGrant,
             },
             configure: builder =>
             {
@@ -263,6 +264,63 @@ public sealed class DelegationTests : IAsyncLifetime
         (await MintTenantSwitchAsync(LockboxTenant, partnerToken)).Code.ShouldBe("grant_invalid");
     }
 
+    [Fact]
+    public async Task An_actor_token_only_counts_for_its_own_client_and_scopes()
+    {
+        var (partner, _) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        var narrow = (await _host.SignInAsync(partner, scope: "openid api")).AccessToken!;
+
+        // A token that reached another client (an API it was sent to, say) can't be traded in there.
+        var elsewhere = await _host.TokenAsync(new()
+        {
+            ["grant_type"] = TenantSwitchGrant,
+            ["target_tenant"] = CustomerTenant.ToString(),
+            ["client_id"] = TokenServerHost.GatewayClient,
+            ["client_secret"] = TokenServerHost.GatewaySecret,
+            ["scope"] = "api",
+            ["actor_token"] = narrow,
+            ["actor_token_type"] = "urn:ietf:params:oauth:token-type:access_token",
+        });
+        elsewhere.Status.ShouldNotBe(HttpStatusCode.OK);
+        elsewhere.Code.ShouldBe("token_invalid");
+
+        // Nor widened to scopes the actor token doesn't hold.
+        var wider = WithActor(new() { ["grant_type"] = TenantSwitchGrant, ["target_tenant"] = CustomerTenant.ToString() }, narrow);
+        wider["scope"] = "api email";
+        (await _host.TokenAsync(wider)).Code.ShouldBe("token_invalid");
+
+        (await MintTenantSwitchAsync(CustomerTenant, narrow)).Status.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task A_dpop_bound_actor_token_needs_its_proof()
+    {
+        var (partner, _) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        using var key = new DpopKey();
+        var (location, verifier) = await _host.AuthorizeAsync(partner, scope: "openid api");
+        var bound = await DpopTokenAsync(new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = TokenServerHost.QueryValue(location, "code")!,
+            ["redirect_uri"] = TokenServerHost.BffRedirect,
+            ["code_verifier"] = verifier,
+            ["client_id"] = TokenServerHost.BffClient,
+            ["client_secret"] = TokenServerHost.BffSecret,
+        }, key.Proof("POST", "https://localhost/connect/token"));
+        var actorToken = bound.AccessToken!;
+
+        var unproven = await MintTenantSwitchAsync(CustomerTenant, actorToken);
+        unproven.Code.ShouldBe("invalid_dpop_proof", unproven.Body.ToString());
+
+        using var thief = new DpopKey();
+        var form = WithActor(new() { ["grant_type"] = TenantSwitchGrant, ["target_tenant"] = CustomerTenant.ToString() }, actorToken);
+        (await DpopTokenAsync(form, thief.Proof("POST", "https://localhost/connect/token"))).Code.ShouldBe("invalid_dpop_proof");
+
+        var switched = await DpopTokenAsync(form, key.Proof("POST", "https://localhost/connect/token"));
+        switched.Status.ShouldBe(HttpStatusCode.OK, switched.Body.ToString());
+        switched.Body.GetProperty("token_type").GetString().ShouldBe("DPoP");
+    }
+
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
     private async Task<(Guid Id, string AccessToken)> UserAsync(string email, Guid tenant, Guid? organization, AccessLevel level = AccessLevel.Tenant, bool multiFactor = true)
@@ -304,6 +362,14 @@ public sealed class DelegationTests : IAsyncLifetime
         }
 
         return form;
+    }
+
+    private async Task<TokenResponse> DpopTokenAsync(Dictionary<string, string> form, string proof)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "connect/token") { Content = new FormUrlEncodedContent(form) };
+        request.Headers.Add("DPoP", proof);
+        var response = await _host.Client.SendAsync(request, TestContext.Current.CancellationToken);
+        return new TokenResponse(response.StatusCode, await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken));
     }
 
     private async Task<T> PostAsync<T>(string token, string path, object? body = null)

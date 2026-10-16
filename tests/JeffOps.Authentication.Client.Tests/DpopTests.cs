@@ -81,6 +81,27 @@ public sealed class DpopResourceServerTests
     private static readonly RsaSecurityKey SigningKey = new(RSA.Create(2048)) { KeyId = "dpop-test-key" };
 
     [Fact]
+    public void Configurations_that_would_skip_the_dpop_checks_are_refused()
+    {
+        Action<JwtBearerOptions>[] unsafeSettings = [jwt => jwt.EventsType = typeof(JwtBearerEvents), jwt => jwt.UseSecurityTokenValidators = true];
+        foreach (var unsafeSetting in unsafeSettings)
+        {
+            var services = new ServiceCollection();
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["JeffOps:Authentication:Authority"] = Issuer,
+                ["JeffOps:Authentication:Audiences:0"] = "api",
+            }).Build();
+            services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(new Microsoft.Extensions.Hosting.Internal.HostingEnvironment { EnvironmentName = "Production" });
+            services.AddJeffOpsAuthenticationClient(configuration);
+            services.Configure(JwtBearerDefaults.AuthenticationScheme, unsafeSetting);
+            using var provider = services.BuildServiceProvider();
+
+            Should.Throw<InvalidOperationException>(() => provider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<JwtBearerOptions>>().Get(JwtBearerDefaults.AuthenticationScheme));
+        }
+    }
+
+    [Fact]
     public async Task A_bound_token_needs_its_proof_and_the_dpop_scheme()
     {
         await using var app = await StartAsync();

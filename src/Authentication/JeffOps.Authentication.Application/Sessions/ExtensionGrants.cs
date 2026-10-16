@@ -40,6 +40,32 @@ public static class DpopBinding
     /// becomes the access token's <c>cnf.jkt</c>; it never appears in a token as itself.
     /// </summary>
     public const string ClaimType = "jeffops_dpop_jkt";
+
+    /// <summary>
+    /// The key a validated access token is bound to: <c>(true, jkt)</c> for a DPoP binding (<c>cnf.jkt</c>),
+    /// <c>(true, null)</c> for a binding this server can't check (which must be refused), <c>(false, null)</c> when unbound.
+    /// </summary>
+    public static (bool Bound, string? Jkt) Of(ClaimsPrincipal accessToken)
+    {
+        ArgumentNullException.ThrowIfNull(accessToken);
+        if (accessToken.FindFirst("cnf")?.Value is not { } cnf)
+        {
+            return (false, null);
+        }
+
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(cnf);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && document.RootElement.TryGetProperty("jkt", out var jkt) && jkt.ValueKind == System.Text.Json.JsonValueKind.String
+                ? (true, jkt.GetString())
+                : (true, null);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return (true, null);
+        }
+    }
 }
 
 /// <summary>Declares an extension grant so the server accepts and advertises its grant type.</summary>

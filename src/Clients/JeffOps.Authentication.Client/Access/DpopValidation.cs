@@ -1,7 +1,6 @@
 using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Dpop;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 
@@ -30,6 +29,18 @@ internal static class DpopValidation
 
     public static void Attach(JwtBearerOptions jwt, DpopMode mode, TimeProvider time)
     {
+        // The checks live in JwtBearerOptions.Events and need the token as a JsonWebToken; configurations that bypass either
+        // would let a bound token through without its proof, so they are refused.
+        if (jwt.EventsType is not null)
+        {
+            throw new InvalidOperationException("JwtBearerOptions.EventsType is not supported with JeffOps authentication: DPoP checks run in JwtBearerOptions.Events. Set Events instead.");
+        }
+
+        if (jwt.UseSecurityTokenValidators)
+        {
+            throw new InvalidOperationException("JwtBearerOptions.UseSecurityTokenValidators is not supported with JeffOps authentication: DPoP checks need JsonWebTokenHandler.");
+        }
+
         var events = jwt.Events ?? new JwtBearerEvents();
         var received = events.OnMessageReceived;
         var validated = events.OnTokenValidated;
@@ -80,13 +91,19 @@ internal static class DpopValidation
         var usedDpopScheme = http.Items.ContainsKey(SchemeItem);
         if (context.SecurityToken is not JsonWebToken token)
         {
-            return mode == DpopMode.Required ? "A DPoP-bound token is required." : null;
+            // Can't read cnf: fail closed rather than accept a token that may be bound.
+            return "The token could not be checked for a DPoP binding.";
         }
 
         string? jkt = null;
-        if (token.TryGetPayloadValue<JsonElement>("cnf", out var cnf) && cnf.ValueKind == JsonValueKind.Object
-            && cnf.TryGetProperty("jkt", out var thumbprint) && thumbprint.ValueKind == JsonValueKind.String)
+        if (token.TryGetPayloadValue<JsonElement>("cnf", out var cnf))
         {
+            if (cnf.ValueKind != JsonValueKind.Object || !cnf.TryGetProperty("jkt", out var thumbprint) || thumbprint.ValueKind != JsonValueKind.String)
+            {
+                // Bound some other way (mTLS x5t#S256, …), which this service can't check.
+                return "The token's key binding is not supported.";
+            }
+
             jkt = thumbprint.GetString();
         }
 
@@ -121,14 +138,8 @@ internal static class DpopValidation
             return "The DPoP proof is signed by another key than the token is bound to.";
         }
 
-        var replay = http.RequestServices.GetRequiredService<IMemoryCache>();
-        var key = $"jeffops:dpop:rs:{proof.Jkt}:{proof.Jti}";
-        if (replay.TryGetValue(key, out _))
-        {
-            return "This DPoP proof was already used.";
-        }
-
-        replay.Set(key, true, now + Window + Window);
-        return null;
+        return http.RequestServices.GetRequiredService<DpopReplayCache>().TryUse(proof, now + Window + Window, now)
+            ? null
+            : "This DPoP proof was already used.";
     }
 }

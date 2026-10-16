@@ -130,6 +130,76 @@ public sealed class DpopServerTests
         JsonDocument.Parse(json).RootElement.GetProperty("dpop_signing_alg_values_supported").EnumerateArray().Select(value => value.GetString()).ShouldContain("ES256");
     }
 
+    [Fact]
+    public async Task The_server_s_own_apis_need_the_proof_of_a_bound_token()
+    {
+        await using var host = await StartAsync();
+        using var key = new DpopKey();
+        var token = (await BoundSessionAsync(host, key)).AccessToken!;
+
+        (await host.SendAsync(HttpMethod.Get, "account/pats", token)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized, "a bound token sent as a bearer token");
+        (await SendDpopAsync(host, "account/pats", token, proof: null)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        var proof = key.Proof("GET", "https://localhost/account/pats", token);
+        (await SendDpopAsync(host, "account/pats", token, proof)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await SendDpopAsync(host, "account/pats", token, proof)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized, "proofs work once");
+
+        using var thief = new DpopKey();
+        (await SendDpopAsync(host, "account/pats", token, thief.Proof("GET", "https://localhost/account/pats", token))).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        (await host.SendAsync(HttpMethod.Get, "connect/userinfo", token)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        var userInfo = await SendDpopAsync(host, "connect/userinfo", token, key.Proof("GET", "https://localhost/connect/userinfo", token));
+        userInfo.StatusCode.ShouldBe(HttpStatusCode.OK, await userInfo.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task A_revoked_access_token_stops_working_at_once()
+    {
+        await using var host = await StartAsync();
+        var account = await host.CreateAccountAsync();
+        var token = (await host.SignInAsync(account.Id)).AccessToken!;
+        (await host.SendAsync(HttpMethod.Get, "account/pats", token)).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var revoked = await host.Client.PostAsync(new Uri("connect/revoke", UriKind.Relative), new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["token"] = token,
+            ["client_id"] = TokenServerHost.BffClient,
+            ["client_secret"] = TokenServerHost.BffSecret,
+        }), TestContext.Current.CancellationToken);
+        revoked.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        (await host.SendAsync(HttpMethod.Get, "account/pats", token)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    private static async Task<TokenResponse> BoundSessionAsync(TokenServerHost host, DpopKey key)
+    {
+        var account = await host.CreateAccountAsync();
+        var (location, verifier) = await host.AuthorizeAsync(account.Id, scope: "openid api");
+        var issued = await TokenAsync(host, new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = TokenServerHost.QueryValue(location, "code")!,
+            ["redirect_uri"] = TokenServerHost.BffRedirect,
+            ["code_verifier"] = verifier,
+            ["client_id"] = TokenServerHost.BffClient,
+            ["client_secret"] = TokenServerHost.BffSecret,
+        }, key.Proof("POST", TokenUrl));
+        issued.Status.ShouldBe(HttpStatusCode.OK, issued.Body.ToString());
+        return issued;
+    }
+
+    private static async Task<HttpResponseMessage> SendDpopAsync(TokenServerHost host, string path, string token, string? proof)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("DPoP", token);
+        if (proof is not null)
+        {
+            request.Headers.Add("DPoP", proof);
+        }
+
+        return await host.Client.SendAsync(request, TestContext.Current.CancellationToken);
+    }
+
     private static Task<TokenServerHost> StartAsync() => TokenServerHost.StartAsync(new()
     {
         ["JeffOps:TokenServer:Clients:3:ClientId"] = DpopClient,

@@ -33,6 +33,9 @@ public static class DpopProofValidator
     /// <summary>The signature algorithms accepted (and advertised as <c>dpop_signing_alg_values_supported</c>).</summary>
     public static IReadOnlyList<string> Algorithms { get; } = ["ES256", "ES384", "ES512", "PS256", "RS256"];
 
+    /// <summary>The longest <c>jti</c> accepted; replay caches hold every one for the proof's lifetime.</summary>
+    public const int MaxJtiLength = 128;
+
     /// <summary>
     /// Validates <paramref name="proof"/> for a request of <paramref name="method"/> to <paramref name="uri"/> at
     /// <paramref name="now"/>. With <paramref name="accessToken"/>, the proof must carry its hash (<c>ath</c>).
@@ -74,15 +77,10 @@ public static class DpopProofValidator
                 return (null, "The DPoP proof must carry a public jwk.");
             }
 
-            var signed = Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]);
-            if (!Verify(alg, jwk, signed, signature))
+            // The cheap checks first: signature verification is the expensive part.
+            if (Text(p, "jti") is not { Length: > 0 and <= MaxJtiLength } jti)
             {
-                return (null, "The DPoP proof's signature is invalid.");
-            }
-
-            if (Text(p, "jti") is not { Length: > 0 } jti)
-            {
-                return (null, "The DPoP proof has no jti.");
+                return (null, "The DPoP proof has no jti, or one that is too long.");
             }
 
             if (!string.Equals(Text(p, "htm"), method, StringComparison.Ordinal))
@@ -95,21 +93,30 @@ public static class DpopProofValidator
                 return (null, "The DPoP proof is for another URL.");
             }
 
-            if (!p.TryGetProperty("iat", out var iatElement) || !iatElement.TryGetInt64(out var iat))
+            if (!p.TryGetProperty("iat", out var iatElement) || iatElement.ValueKind != JsonValueKind.Number || !iatElement.TryGetInt64(out var iat))
             {
                 return (null, "The DPoP proof has no iat.");
             }
 
-            var issuedAt = DateTimeOffset.FromUnixTimeSeconds(iat);
-            if (issuedAt > now + window || issuedAt < now - window)
+            var nowSeconds = now.ToUnixTimeSeconds();
+            var windowSeconds = (long)window.TotalSeconds;
+            if (iat > nowSeconds + windowSeconds || iat < nowSeconds - windowSeconds)
             {
                 return (null, "The DPoP proof is too old or from the future.");
             }
+
+            var issuedAt = DateTimeOffset.FromUnixTimeSeconds(iat);
 
             if (accessToken is not null
                 && !string.Equals(Text(p, "ath"), Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(accessToken))), StringComparison.Ordinal))
             {
                 return (null, "The DPoP proof is not for this access token.");
+            }
+
+            var signed = Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]);
+            if (!Verify(alg, jwk, signed, signature))
+            {
+                return (null, "The DPoP proof's signature is invalid.");
             }
 
             var jkt = Thumbprint(jwk);
@@ -154,7 +161,9 @@ public static class DpopProofValidator
                         "P-521" when alg == "ES512" => ECCurve.NamedCurves.nistP521,
                         _ => (ECCurve?)null,
                     };
-                    if (curve is null || Text(jwk, "kty") != "EC" || !TryBase64Url(Text(jwk, "x"), out var x) || !TryBase64Url(Text(jwk, "y"), out var y))
+                    var size = alg switch { "ES384" => 48, "ES512" => 66, _ => 32 };
+                    if (curve is null || Text(jwk, "kty") != "EC" || !TryBase64Url(Text(jwk, "x"), out var x) || !TryBase64Url(Text(jwk, "y"), out var y)
+                        || x.Length != size || y.Length != size || signature.Length != 2 * size)
                     {
                         return false;
                     }
@@ -166,7 +175,8 @@ public static class DpopProofValidator
                     }
 
                 default:
-                    if (Text(jwk, "kty") != "RSA" || !TryBase64Url(Text(jwk, "n"), out var n) || !TryBase64Url(Text(jwk, "e"), out var e) || n.Length < 256)
+                    if (Text(jwk, "kty") != "RSA" || !TryBase64Url(Text(jwk, "n"), out var n) || !TryBase64Url(Text(jwk, "e"), out var e)
+                        || e.Length > 4 || ModulusBits(n) is < 2048 or > 4096)
                     {
                         return false;
                     }
@@ -177,10 +187,23 @@ public static class DpopProofValidator
                     }
             }
         }
-        catch (CryptographicException)
+        catch (Exception exception) when (exception is CryptographicException or PlatformNotSupportedException or ArgumentException)
         {
+            // Not a valid key: the platform's crypto refuses it in several ways.
             return false;
         }
+    }
+
+    /// <summary>The modulus size in bits, ignoring leading zero bytes (which would otherwise pass off a small key as a large one).</summary>
+    private static int ModulusBits(byte[] modulus)
+    {
+        var start = 0;
+        while (start < modulus.Length && modulus[start] == 0)
+        {
+            start++;
+        }
+
+        return start == modulus.Length ? 0 : ((modulus.Length - start - 1) * 8) + (32 - System.Numerics.BitOperations.LeadingZeroCount((uint)modulus[start]));
     }
 
     /// <summary>Same scheme, host, port and path (RFC 9449 §4.3: query and fragment are ignored).</summary>
@@ -190,8 +213,23 @@ public static class DpopProofValidator
         && proof.Port == request.Port
         && string.Equals(proof.AbsolutePath, request.AbsolutePath, StringComparison.Ordinal);
 
-    private static string? Text(JsonElement element, string property) =>
-        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    private static string? Text(JsonElement element, string property)
+    {
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        try
+        {
+            return value.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            // Not valid UTF-16 (a lone surrogate escape): treated as absent.
+            return null;
+        }
+    }
 
     private static bool TryJson(string segment, out JsonDocument document)
     {

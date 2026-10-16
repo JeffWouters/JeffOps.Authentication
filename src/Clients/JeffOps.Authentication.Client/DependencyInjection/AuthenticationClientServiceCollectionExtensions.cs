@@ -60,6 +60,7 @@ public static class AuthenticationClientServiceCollectionExtensions
         // After the host's own configuration, so its events are kept and wrapped.
         services.AddMemoryCache();
         services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<Abstractions.Dpop.DpopReplayCache>();
         services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
             .PostConfigure<IOptions<AuthenticationClientOptions>, TimeProvider>((jwt, client, time) => DpopValidation.Attach(jwt, client.Value.Dpop, time));
 
