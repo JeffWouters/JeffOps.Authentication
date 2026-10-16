@@ -9,10 +9,11 @@ using JeffOps.Authorization.Domain.Permissions;
 using JeffOps.Authorization.Endpoints;
 using JeffOps.Authorization.Infrastructure.DependencyInjection;
 using JeffOps.Authorization.Infrastructure.Persistence;
+using JeffOps.Authorization.Persistence.SqlServer;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,12 +37,12 @@ internal sealed class ManagementHost : IAsyncDisposable
     public const string BreakGlass = "Break glass";
 
     private readonly WebApplication _app;
-    private readonly string _databaseFile;
+    private readonly string _connectionString;
 
-    private ManagementHost(WebApplication app, string databaseFile, FakeTimeProvider time)
+    private ManagementHost(WebApplication app, string connectionString, FakeTimeProvider time)
     {
         _app = app;
-        _databaseFile = databaseFile;
+        _connectionString = connectionString;
         Time = time;
         Client = app.GetTestClient();
     }
@@ -55,8 +56,22 @@ internal sealed class ManagementHost : IAsyncDisposable
     public static async Task<ManagementHost> StartAsync(Dictionary<string, string?>? overrides = null)
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
-        var databaseFile = Path.Combine(Path.GetTempPath(), $"jeffops-authz-{Guid.NewGuid():N}.db");
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = databaseFile, Pooling = false }.ToString();
+        var connectionString = TestDatabase.SqlServer
+            ? await TestDatabase.CreateSqlServerAsync("authz", TestContext.Current.CancellationToken)
+            : TestDatabase.SqliteFile("authz");
+        try
+        {
+            return await StartAsync(connectionString, time, overrides);
+        }
+        catch
+        {
+            await TestDatabase.DeleteAsync(connectionString);
+            throw;
+        }
+    }
+
+    private static async Task<ManagementHost> StartAsync(string connectionString, FakeTimeProvider time, Dictionary<string, string?>? overrides)
+    {
 
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseTestServer();
@@ -71,14 +86,22 @@ internal sealed class ManagementHost : IAsyncDisposable
         }
 
         builder.Configuration.AddInMemoryCollection(settings);
+        builder.Configuration["ConnectionStrings:authorization"] = connectionString;
 
         builder.Services.AddSingleton<TimeProvider>(time);
         builder.Services.AddSingleton<IPermissionCatalogProvider, TestCatalog>();
         builder.Services.AddSingleton<IBuiltInRoleProvider, TestCatalog>();
-        builder.Services.AddScoped<IAuthorizationDatabaseInitializer, CreateDatabase>();
         builder.Services.AddJeffOpsPermissionAuthorization(builder.Configuration);
-        builder.Services.AddJeffOpsAuthorization(builder.Configuration)
-            .UseDatabase((_, options) => options.UseSqlite(connectionString));
+        var authorization = builder.Services.AddJeffOpsAuthorization(builder.Configuration);
+        if (TestDatabase.SqlServer)
+        {
+            authorization.AddSqlServerPersistence(migrateOnStartup: true);
+        }
+        else
+        {
+            builder.Services.AddScoped<IAuthorizationDatabaseInitializer, CreateDatabase>();
+            authorization.UseDatabase((_, options) => options.UseSqlite(connectionString));
+        }
         builder.Services.AddAuthentication(TestAuthentication.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, TestAuthentication>(TestAuthentication.SchemeName, _ => { });
 
@@ -89,22 +112,14 @@ internal sealed class ManagementHost : IAsyncDisposable
         app.MapGet("/invoices", () => "ok").RequireAuthorization("billing.invoices.read");
         await app.StartAsync(TestContext.Current.CancellationToken);
 
-        return new ManagementHost(app, databaseFile, time);
+        return new ManagementHost(app, connectionString, time);
     }
 
     public async ValueTask DisposeAsync()
     {
         Client.Dispose();
         await _app.DisposeAsync();
-        SqliteConnection.ClearAllPools();
-        try
-        {
-            File.Delete(_databaseFile);
-        }
-        catch (IOException)
-        {
-            // Best effort.
-        }
+        await TestDatabase.DeleteAsync(_connectionString);
     }
 
     // ---- Callers -------------------------------------------------------------------------------------------------------

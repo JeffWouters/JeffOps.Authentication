@@ -166,4 +166,17 @@ internal sealed class EfUnitOfWork(AuthorizationDbContext db, IDomainEventDispat
 
         await dispatcher.DispatchAsync(events, cancellationToken).ConfigureAwait(false);
     }
+
+    public async Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return false;
+        }
+    }
 }

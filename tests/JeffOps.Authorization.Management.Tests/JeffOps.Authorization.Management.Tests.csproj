@@ -12,8 +12,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Infrastructure\JeffOps.Authorization.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Persistence.SqlServer\JeffOps.Authorization.Persistence.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Endpoints\JeffOps.Authorization.Endpoints.csproj" />
     <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.AspNetCore\JeffOps.Authorization.AspNetCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\TestDatabase.cs" Link="Shared\TestDatabase.cs" />
   </ItemGroup>
 
 </Project>

@@ -18,7 +18,8 @@ using JeffOps.Authentication.UI;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.TestHost;
-using Microsoft.Data.Sqlite;
+using JeffOps.Authentication.Persistence.SqlServer;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -45,12 +46,12 @@ internal sealed class TokenServerHost : IAsyncDisposable
     public const string Operator = "operator";
 
     private readonly WebApplication _app;
-    private readonly string _databaseFile;
+    private readonly string _connectionString;
 
-    private TokenServerHost(WebApplication app, string databaseFile, FakeTimeProvider time, FakeTenantDirectory tenants)
+    private TokenServerHost(WebApplication app, string connectionString, FakeTimeProvider time, FakeTenantDirectory tenants)
     {
         _app = app;
-        _databaseFile = databaseFile;
+        _connectionString = connectionString;
         Time = time;
         Tenants = tenants;
         Client = app.GetTestClient();
@@ -77,20 +78,50 @@ internal sealed class TokenServerHost : IAsyncDisposable
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var tenants = new FakeTenantDirectory();
-        // A file per test: every DbContext opens its own connection, as in production. (One shared in-memory connection
-        // used from several contexts at once is not thread-safe.)
-        var databaseFile = Path.Combine(Path.GetTempPath(), $"jeffops-auth-{Guid.NewGuid():N}.db");
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = databaseFile, Pooling = false }.ToString();
+        // A database per test (TestDatabase): a SQLite file, or a SQL Server database migrated as in production. Every
+        // DbContext opens its own connection. Modules a test adds use the same database ("authentication").
+        var connectionString = TestDatabase.SqlServer
+            ? await TestDatabase.CreateSqlServerAsync("auth", TestContext.Current.CancellationToken)
+            : TestDatabase.SqliteFile("auth");
+        try
+        {
+            return await StartAsync(connectionString, time, tenants, overrides, environment, configure, cookieSignIn, map);
+        }
+        catch
+        {
+            // A host that fails to start (a startup validation test, say) leaves no database behind.
+            await TestDatabase.DeleteAsync(connectionString);
+            throw;
+        }
+    }
 
+    private static async Task<TokenServerHost> StartAsync(
+        string connectionString,
+        FakeTimeProvider time,
+        FakeTenantDirectory tenants,
+        Dictionary<string, string?>? overrides,
+        string environment,
+        Action<WebApplicationBuilder>? configure,
+        bool cookieSignIn,
+        Action<WebApplication>? map)
+    {
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { EnvironmentName = environment });
         builder.WebHost.UseTestServer();
         builder.Logging.ClearProviders();
         builder.Configuration.AddInMemoryCollection(Settings(overrides));
+        builder.Configuration["ConnectionStrings:authentication"] = connectionString;
 
         builder.Services.AddSingleton<TimeProvider>(time);
         builder.Services.AddSingleton<ITenantDirectory>(tenants);
-        builder.Services.AddJeffOpsAuthentication(builder.Configuration)
-            .UseDatabase((_, options) => options.UseSqlite(connectionString));
+        var authentication = builder.Services.AddJeffOpsAuthentication(builder.Configuration);
+        if (TestDatabase.SqlServer)
+        {
+            authentication.AddSqlServerPersistence(migrateOnStartup: true);
+        }
+        else
+        {
+            authentication.UseDatabase((_, options) => options.UseSqlite(connectionString));
+        }
         if (cookieSignIn)
         {
             builder.Services.AddAuthentication().AddCookie("JeffOps.SignIn", options => options.LoginPath = "/account/login");
@@ -107,8 +138,9 @@ internal sealed class TokenServerHost : IAsyncDisposable
             .AddPolicy("auth.accounts.manage", policy => policy.RequireClaim("role", Operator));
 
         var app = builder.Build();
-        using (var scope = app.Services.CreateScope())
+        if (!TestDatabase.SqlServer)
         {
+            using var scope = app.Services.CreateScope();
             var database = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>().Database;
             await database.EnsureCreatedAsync(TestContext.Current.CancellationToken);
 
@@ -125,24 +157,14 @@ internal sealed class TokenServerHost : IAsyncDisposable
         map?.Invoke(app);
         await app.StartAsync(TestContext.Current.CancellationToken);
 
-        return new TokenServerHost(app, databaseFile, time, tenants);
+        return new TokenServerHost(app, connectionString, time, tenants);
     }
 
     public async ValueTask DisposeAsync()
     {
         Client.Dispose();
         await _app.DisposeAsync();
-        SqliteConnection.ClearAllPools();
-        try
-        {
-            File.Delete(_databaseFile);
-            File.Delete(_databaseFile + "-wal");
-            File.Delete(_databaseFile + "-shm");
-        }
-        catch (IOException)
-        {
-            // Best effort: the temp directory is cleaned eventually.
-        }
+        await TestDatabase.DeleteAsync(_connectionString);
     }
 
     public static Dictionary<string, string?> Settings(Dictionary<string, string?>? overrides = null)

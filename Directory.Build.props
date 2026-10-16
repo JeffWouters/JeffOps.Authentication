@@ -47,8 +47,15 @@
        turns it on). The licence test fails for any other project that ships it (docs/DESIGN.md §6.5, D24). -->
   <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.SqlServer'))
       Or '$(MSBuildProjectName)' == 'TokenServer'
-      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Architecture.Tests'">
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Architecture.Tests'
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Server.Tests'
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authorization.Management.Tests'">
     <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- The integration tests can run against SQL Server (tests/Shared/TestDatabase.cs): managed networking, as in the host. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'JeffOps.Authentication.Server.Tests' Or '$(MSBuildProjectName)' == 'JeffOps.Authorization.Management.Tests'">
+    <RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
   </ItemGroup>
 
 </Project>

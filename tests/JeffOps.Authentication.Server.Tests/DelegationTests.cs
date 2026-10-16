@@ -10,7 +10,7 @@ using JeffOps.Authentication.Delegation.Application.Features.Maintenance;
 using JeffOps.Authentication.Delegation.Endpoints;
 using JeffOps.Authentication.Delegation.Infrastructure;
 using JeffOps.Authentication.SharedKernel.Handlers;
-using Microsoft.Data.Sqlite;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -30,12 +30,11 @@ public sealed class DelegationTests : IAsyncLifetime
 
     private readonly FakeDelegationDirectory _directory = new();
     private readonly Approvers _approvers = new();
-    private readonly string _delegationDatabase = Path.Combine(Path.GetTempPath(), $"jeffops-delegation-{Guid.NewGuid():N}.db");
+    private readonly string _delegationDatabase = TestDatabase.SqliteFile("delegation");
     private TokenServerHost _host = null!;
 
     public async ValueTask InitializeAsync()
     {
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = _delegationDatabase, Pooling = false }.ToString();
         _host = await TokenServerHost.StartAsync(
             new Dictionary<string, string?>
             {
@@ -47,11 +46,10 @@ public sealed class DelegationTests : IAsyncLifetime
             {
                 builder.Services.AddSingleton(_directory);
                 builder.Services.AddSingleton(_approvers);
-                builder.Services.AddScoped<IDelegationDatabaseInitializer, CreateDelegationDatabase>();
                 new AuthenticationBuilder(builder.Services, builder.Configuration)
                     .AddDelegation()
                     .UseDirectory<FakeDelegationDirectory.Scoped>()
-                    .UseDatabase((_, options) => options.UseSqlite(connectionString));
+                    .UseTestDatabase(_delegationDatabase);
                 builder.Services.AddAuthorizationBuilder()
                     .AddPolicy("auth.impersonation.initiate", policy => policy.RequireAuthenticatedUser())
                     .AddPolicy("auth.impersonation.breakglass", policy => policy.RequireClaim("lvl", nameof(AccessLevel.Root)))
@@ -73,15 +71,7 @@ public sealed class DelegationTests : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         await _host.DisposeAsync();
-        SqliteConnection.ClearAllPools();
-        try
-        {
-            File.Delete(_delegationDatabase);
-        }
-        catch (IOException)
-        {
-            // Best effort.
-        }
+        TestDatabase.DeleteSqlite(_delegationDatabase);
     }
 
     // ---- Impersonation -------------------------------------------------------------------------------------------------
@@ -453,11 +443,6 @@ public sealed class DelegationTests : IAsyncLifetime
     {
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         return body.TryGetProperty("code", out var code) ? code.GetString() : null;
-    }
-
-    private sealed class CreateDelegationDatabase(DelegationDbContext db) : IDelegationDatabaseInitializer
-    {
-        public Task InitializeAsync(CancellationToken cancellationToken) => db.Database.EnsureCreatedAsync(cancellationToken);
     }
 }
 

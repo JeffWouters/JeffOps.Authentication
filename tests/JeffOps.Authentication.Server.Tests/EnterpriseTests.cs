@@ -17,8 +17,7 @@ using JeffOps.Authentication.LocalAccounts.Endpoints;
 using JeffOps.Authentication.LocalAccounts.Infrastructure;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.Server.Tests;
@@ -29,8 +28,8 @@ public sealed class EnterpriseTests : IAsyncDisposable
     private static readonly Guid Contoso = Guid.NewGuid();
     private static readonly Guid Fabrikam = Guid.NewGuid();
 
-    private readonly string _enterpriseDatabase = Path.Combine(Path.GetTempPath(), $"jeffops-enterprise-{Guid.NewGuid():N}.db");
-    private readonly string _localDatabase = Path.Combine(Path.GetTempPath(), $"jeffops-enterprise-local-{Guid.NewGuid():N}.db");
+    private readonly string _enterpriseDatabase = TestDatabase.SqliteFile("enterprise");
+    private readonly string _localDatabase = TestDatabase.SqliteFile("enterprise-local");
     private readonly FakeDns _dns = new();
     private readonly ConcurrentDictionary<Guid, bool> _administrators = new();
     private TokenServerHost _host = null!;
@@ -124,26 +123,14 @@ public sealed class EnterpriseTests : IAsyncDisposable
             await _host.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
-        foreach (var file in new[] { _enterpriseDatabase, _localDatabase })
-        {
-            try
-            {
-                File.Delete(file);
-            }
-            catch (IOException)
-            {
-                // Best effort.
-            }
-        }
+        TestDatabase.DeleteSqlite(_enterpriseDatabase);
+        TestDatabase.DeleteSqlite(_localDatabase);
     }
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
     private async Task StartAsync()
     {
-        var enterprise = new SqliteConnectionStringBuilder { DataSource = _enterpriseDatabase, Pooling = false }.ToString();
-        var local = new SqliteConnectionStringBuilder { DataSource = _localDatabase, Pooling = false }.ToString();
         _host = await TokenServerHost.StartAsync(
             new()
             {
@@ -155,11 +142,9 @@ public sealed class EnterpriseTests : IAsyncDisposable
             {
                 builder.Services.AddSingleton(_dns);
                 builder.Services.AddSingleton<IExternalIdentityMapper>(new NamedProviders(CorporateProvider, "other-idp"));
-                builder.Services.AddScoped<IEnterpriseDatabaseInitializer, CreateEnterpriseDatabase>();
-                builder.Services.AddScoped<ILocalAccountsDatabaseInitializer, CreateLocalDatabase>();
                 var authentication = new AuthenticationBuilder(builder.Services, builder.Configuration);
-                authentication.AddEnterprise().UseDnsResolver<FakeDns.Scoped>().UseDatabase((_, options) => options.UseSqlite(enterprise));
-                authentication.AddLocalAccounts().UseDatabase((_, options) => options.UseSqlite(local));
+                authentication.AddEnterprise().UseDnsResolver<FakeDns.Scoped>().UseTestDatabase(_enterpriseDatabase);
+                authentication.AddLocalAccounts().UseTestDatabase(_localDatabase);
                 builder.Services.AddAuthorizationBuilder().AddPolicy("auth.enterprise.manage", policy => policy.RequireAssertion(context =>
                     Guid.TryParse(context.User.FindFirst("sub")?.Value, out var user) && _administrators.ContainsKey(user)));
             },
@@ -218,16 +203,6 @@ public sealed class EnterpriseTests : IAsyncDisposable
     {
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         return body.TryGetProperty("code", out var code) ? code.GetString() : null;
-    }
-
-    private sealed class CreateEnterpriseDatabase(EnterpriseDbContext db) : IEnterpriseDatabaseInitializer
-    {
-        public Task InitializeAsync(CancellationToken cancellationToken) => db.Database.EnsureCreatedAsync(cancellationToken);
-    }
-
-    private sealed class CreateLocalDatabase(LocalAccounts.Infrastructure.LocalAccountsDbContext db) : ILocalAccountsDatabaseInitializer
-    {
-        public Task InitializeAsync(CancellationToken cancellationToken) => db.Database.EnsureCreatedAsync(cancellationToken);
     }
 
     /// <summary>Providers known by name only: enough for discovery and policy, no real sign-in.</summary>

@@ -255,9 +255,11 @@ public sealed class SweepExpiredAssignmentsHandler(IAssignmentRepository assignm
             assignments.Remove(assignment);
         }
 
-        if (expired.Count > 0)
+        // Another instance (or the background sweep) may remove the same assignments at the same moment; it then announces
+        // them, and whatever is left is swept next time.
+        if (expired.Count > 0 && !await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
         {
-            await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return 0;
         }
 
         return expired.Count;

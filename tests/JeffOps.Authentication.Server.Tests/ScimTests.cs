@@ -10,7 +10,7 @@ using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Enterprise.Endpoints;
 using JeffOps.Authentication.Enterprise.Infrastructure;
-using Microsoft.Data.Sqlite;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -20,7 +20,7 @@ public sealed class ScimTests : IAsyncDisposable
 {
     private static readonly Guid Contoso = Guid.NewGuid();
 
-    private readonly string _database = Path.Combine(Path.GetTempPath(), $"jeffops-scim-{Guid.NewGuid():N}.db");
+    private readonly string _database = TestDatabase.SqliteFile("scim");
     private readonly RecordingMemberships _memberships = new();
     private readonly ConcurrentQueue<IntegrationEvent> _events = new();
     private TokenServerHost _host = null!;
@@ -297,22 +297,13 @@ public sealed class ScimTests : IAsyncDisposable
             await _host.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
-        try
-        {
-            File.Delete(_database);
-        }
-        catch (IOException)
-        {
-            // Best effort.
-        }
+        TestDatabase.DeleteSqlite(_database);
     }
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
     private async Task StartAsync(bool scimTokenPolicy = true)
     {
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = _database, Pooling = false }.ToString();
         _host = await TokenServerHost.StartAsync(
             configure: builder =>
             {
@@ -320,8 +311,8 @@ public sealed class ScimTests : IAsyncDisposable
                 builder.Services.AddScoped<ITenantMembershipProvisioner>(provider => provider.GetRequiredService<RecordingMemberships>());
                 builder.Services.AddSingleton<IIntegrationEventHandler<GroupMembershipChangedEvent>>(new Recorder<GroupMembershipChangedEvent>(_events));
                 builder.Services.AddSingleton<IIntegrationEventHandler<GroupDeletedEvent>>(new Recorder<GroupDeletedEvent>(_events));
-                builder.Services.AddScoped<IEnterpriseDatabaseInitializer, CreateDatabase>();
-                new AuthenticationBuilder(builder.Services, builder.Configuration).AddEnterprise().UseDatabase((_, options) => options.UseSqlite(connectionString));
+                new AuthenticationBuilder(builder.Services, builder.Configuration).AddEnterprise().UseTestDatabase(_database);
+                builder.Services.AddScoped<IEnterpriseDatabaseInitializer, SeedDomain>();
                 var policies = builder.Services.AddAuthorizationBuilder().AddPolicy("auth.enterprise.manage", policy => policy.RequireAuthenticatedUser());
                 if (scimTokenPolicy)
                 {
@@ -385,12 +376,11 @@ public sealed class ScimTests : IAsyncDisposable
 
     private T Last<T>() => _events.OfType<T>().Last();
 
-    /// <summary>Creates the schema, with contoso.com verified for the Contoso tenant.</summary>
-    private sealed class CreateDatabase(EnterpriseDbContext db) : IEnterpriseDatabaseInitializer
+    /// <summary>Verifies contoso.com for the Contoso tenant, once the schema exists.</summary>
+    private sealed class SeedDomain(EnterpriseDbContext db) : IEnterpriseDatabaseInitializer
     {
         public async Task InitializeAsync(CancellationToken cancellationToken)
         {
-            await db.Database.EnsureCreatedAsync(cancellationToken);
             if (!await db.Domains.AnyAsync(cancellationToken))
             {
                 var domain = Enterprise.Domain.TenantDomain.Claim(Contoso, "contoso.com", DateTimeOffset.UtcNow);

@@ -6,9 +6,8 @@ using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Delegation.Endpoints;
 using JeffOps.Authentication.Delegation.Infrastructure;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.Server.Tests;
@@ -123,22 +122,20 @@ public sealed partial class BffTests
     private static async Task<string?> WhoAmIAsync(Stack stack) =>
         (await stack.Browser.GetFromJsonAsync<JsonElement>(new Uri("api/whoami", UriKind.Relative), TestContext.Current.CancellationToken)).GetProperty("user").GetString();
 
-    /// <summary>The token server side of delegation: the module, its own SQLite file, and partner relationships.</summary>
+    /// <summary>The token server side of delegation: the module, its test database, and partner relationships.</summary>
     private sealed class DelegationSetup : IAsyncDisposable
     {
-        private readonly string _database = Path.Combine(Path.GetTempPath(), $"jeffops-bff-delegation-{Guid.NewGuid():N}.db");
+        private readonly string _database = TestDatabase.SqliteFile("bff-delegation");
 
         public FakeDelegationDirectory Directory { get; } = new();
 
         public void ConfigureTokenServer(WebApplicationBuilder builder)
         {
-            var connectionString = new SqliteConnectionStringBuilder { DataSource = _database, Pooling = false }.ToString();
             builder.Services.AddSingleton(Directory);
-            builder.Services.AddScoped<IDelegationDatabaseInitializer, CreateDatabase>();
             new AuthenticationBuilder(builder.Services, builder.Configuration)
                 .AddDelegation()
                 .UseDirectory<FakeDelegationDirectory.Scoped>()
-                .UseDatabase((_, options) => options.UseSqlite(connectionString));
+                .UseTestDatabase(_database);
             builder.Services.AddAuthorizationBuilder()
                 .AddPolicy("auth.impersonation.initiate", policy => policy.RequireAuthenticatedUser())
                 .AddPolicy("auth.impersonation.breakglass", policy => policy.RequireClaim("lvl", nameof(AccessLevel.Root)))
@@ -157,22 +154,9 @@ public sealed partial class BffTests
 
         public ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
-            try
-            {
-                File.Delete(_database);
-            }
-            catch (IOException)
-            {
-                // Best effort.
-            }
+            TestDatabase.DeleteSqlite(_database);
 
             return ValueTask.CompletedTask;
-        }
-
-        private sealed class CreateDatabase(DelegationDbContext db) : IDelegationDatabaseInitializer
-        {
-            public Task InitializeAsync(CancellationToken cancellationToken) => db.Database.EnsureCreatedAsync(cancellationToken);
         }
     }
 }

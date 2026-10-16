@@ -12,6 +12,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Infrastructure\JeffOps.Authentication.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Persistence.SqlServer\JeffOps.Authentication.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Delegation.SqlServer\JeffOps.Authentication.Delegation.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Enterprise.SqlServer\JeffOps.Authentication.Enterprise.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.LocalAccounts.SqlServer\JeffOps.Authentication.LocalAccounts.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.UI\JeffOps.Authentication.UI.csproj" />
     <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Delegation\JeffOps.Authentication.Delegation.csproj" />
@@ -23,6 +27,10 @@
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff\JeffOps.Authentication.Bff.csproj" />
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff.Yarp\JeffOps.Authentication.Bff.Yarp.csproj" />
     <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Client\JeffOps.Authentication.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\TestDatabase.cs" Link="Shared\TestDatabase.cs" />
   </ItemGroup>
 
 </Project>

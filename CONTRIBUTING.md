@@ -39,7 +39,17 @@ resolved package, transitive ones included. Add a dependency only when the platf
 
 ## Tests
 
-- xUnit v3 with Shouldly and NSubstitute; integration tests run real hosts on `TestServer` with SQLite.
+- xUnit v3 with Shouldly and NSubstitute; integration tests run real hosts on `TestServer` with SQLite by default.
+- The integration suites also run against SQL Server, migrated exactly as a host would (CI does this on every push):
+
+  ```bash
+  # SQL Server LocalDB on Windows
+  JEFFOPS_TEST_DATABASE=SqlServer dotnet test --project tests/JeffOps.Authentication.Server.Tests -c Release
+  # any other server: a connection string without a database; each test creates and drops its own
+  JEFFOPS_TEST_SQLSERVER="Server=localhost,1433;User Id=sa;Password=...;TrustServerCertificate=true" JEFFOPS_TEST_DATABASE=SqlServer dotnet test ...
+  ```
+- A model change needs its migration (`dotnet ef migrations add <Name> --project <the .SqlServer project>`); a test fails
+  otherwise.
 - Every behaviour change comes with a test; every security fix with a test that fails without it.
 - Use `FakeTimeProvider` for anything time-dependent instead of sleeping.
 

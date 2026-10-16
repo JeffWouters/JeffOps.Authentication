@@ -1037,12 +1037,11 @@ These requirements differ from the origin implementation. They are listed here s
   - No FluentAssertions, Moq or any paid library (§6.5).
 - **xUnit v3 conventions**:
   - Integration tests skip with `Assert.SkipUnless(dockerAvailable, …)`; the `SkippableFact` package is not ported.
-  - SQL Server and Redis containers are shared per test assembly through assembly fixtures.
   - Tests pass `TestContext.Current.CancellationToken` to async calls.
 - **Unit**: Domain tests are pure, with no mocks. Application tests run one slice at a time: the handler gets in-memory fakes of its ports, and Shouldly asserts on the `Result`.
 - **Slice / endpoint tests**: `WebApplicationFactory` per module exercises a slice end-to-end over HTTP (status codes, ProblemDetails `code`, authorization metadata).
 - **In-process token pipeline**: real OpenIddict server via TestHost (port `TokenPipelineTests`).
-- **Integration**: Testcontainers (SQL Server, Redis), skipped without Docker.
+- **Integration** (as built): the integration suites run real hosts on `TestServer` against SQLite by default, and against SQL Server with `JEFFOPS_TEST_DATABASE=SqlServer` (LocalDB, or the server in `JEFFOPS_TEST_SQLSERVER`): each host gets its own database, migrated through the persistence packages' own `migrateOnStartup` path, and dropped afterwards. CI runs both, SQL Server in a service container (no Testcontainers). A test checks that every model matches its migrations. SQL Server already found a concurrency race (two sweepers removing the same expired assignments) that SQLite hid.
 - **Architecture / drift tests** (port and generalise):
   - Layer dependency rules (§6.3), including namespace layering inside the single-project modules.
   - Slice isolation: no `Features.X` type references a `Features.Y` type.

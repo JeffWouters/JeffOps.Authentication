@@ -105,6 +105,9 @@ public interface IRegisteredPermissionRepository
 public interface IUnitOfWork
 {
     Task SaveChangesAsync(CancellationToken cancellationToken);
+
+    /// <summary>Saves; false (nothing saved) when another writer changed or removed the same rows first.</summary>
+    Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>The host's static permission catalog (docs/DESIGN.md §13).</summary>

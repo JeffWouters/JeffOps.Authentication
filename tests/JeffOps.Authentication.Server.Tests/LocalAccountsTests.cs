@@ -10,8 +10,7 @@ using JeffOps.Authentication.LocalAccounts.Application;
 using JeffOps.Authentication.LocalAccounts.Domain;
 using JeffOps.Authentication.LocalAccounts.Endpoints;
 using JeffOps.Authentication.LocalAccounts.Infrastructure;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.Server.Tests;
@@ -20,7 +19,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 {
     private const string Password = "correct horse battery staple";
 
-    private readonly string _database = Path.Combine(Path.GetTempPath(), $"jeffops-local-{Guid.NewGuid():N}.db");
+    private readonly string _database = TestDatabase.SqliteFile("local");
     private readonly CapturingEmailSender _email = new();
     private TokenServerHost? _host;
 
@@ -218,22 +217,13 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
             await _host.DisposeAsync();
         }
 
-        SqliteConnection.ClearAllPools();
-        try
-        {
-            File.Delete(_database);
-        }
-        catch (IOException)
-        {
-            // Best effort.
-        }
+        TestDatabase.DeleteSqlite(_database);
     }
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
     private async Task<TokenServerHost> StartAsync(Dictionary<string, string?>? overrides = null, bool enabled = true)
     {
-        var connectionString = new SqliteConnectionStringBuilder { DataSource = _database, Pooling = false }.ToString();
         var settings = new Dictionary<string, string?>
         {
             ["JeffOps:LocalAccounts:HashIterations"] = "10000",
@@ -254,11 +244,10 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
             configure: builder =>
             {
                 builder.Services.AddSingleton(_email);
-                builder.Services.AddScoped<ILocalAccountsDatabaseInitializer, CreateDatabase>();
                 new AuthenticationBuilder(builder.Services, builder.Configuration)
                     .AddLocalAccounts()
                     .UseEmailSender<CapturingEmailSender.Scoped>()
-                    .UseDatabase((_, options) => options.UseSqlite(connectionString));
+                    .UseTestDatabase(_database);
             },
             cookieSignIn: true,
             map: app => app.MapJeffOpsLocalAccounts());
@@ -357,11 +346,6 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
     [GeneratedRegex("<input[^>]*name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")]
     private static partial Regex AntiforgeryToken();
-
-    private sealed class CreateDatabase(LocalAccountsDbContext db) : ILocalAccountsDatabaseInitializer
-    {
-        public Task InitializeAsync(CancellationToken cancellationToken) => db.Database.EnsureCreatedAsync(cancellationToken);
-    }
 }
 
 internal sealed class CapturingEmailSender

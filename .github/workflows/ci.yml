@@ -62,9 +62,44 @@ jobs:
           path: artifacts/*.*nupkg
           if-no-files-found: error
 
+  sql-server:
+    name: Integration tests on SQL Server
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_PID: Developer
+          # A throwaway password for a container that lives as long as this job.
+          MSSQL_SA_PASSWORD: Ci-Only-Passw0rd!
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Ci-Only-Passw0rd!' -Q 'SELECT 1' -b"
+          --health-interval 10s --health-timeout 5s --health-retries 12
+    env:
+      JEFFOPS_TEST_DATABASE: SqlServer
+      JEFFOPS_TEST_SQLSERVER: Server=localhost,1433;User Id=sa;Password=Ci-Only-Passw0rd!;TrustServerCertificate=true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build JeffOps.Authentication.slnx -c Release
+
+      # The integration suites, against SQL Server and its migrations rather than SQLite (tests/Shared/TestDatabase.cs).
+      - name: Test
+        run: |
+          dotnet test --project tests/JeffOps.Authentication.Server.Tests -c Release --no-build
+          dotnet test --project tests/JeffOps.Authorization.Management.Tests -c Release --no-build
+
   publish:
     name: Publish to NuGet
-    needs: build
+    needs: [build, sql-server]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # Protect this environment with required reviewers; it holds the NuGet API key.
