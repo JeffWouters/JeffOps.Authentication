@@ -52,40 +52,28 @@ public sealed partial class DatabaseKeyStore(
 
     private readonly IDataProtector _protector = dataProtection.CreateProtector(Purpose);
     private readonly Lock _gate = new();
-    private IReadOnlyList<SigningKey>? _signing;
-    private IReadOnlyList<RSA>? _encryption;
+    private Snapshot? _snapshot;
     private string? _announcedSigner;
 
     /// <inheritdoc />
     public event EventHandler? KeysChanged;
 
     /// <inheritdoc />
-    public IReadOnlyList<SigningKey> GetSigningKeys()
-    {
-        EnsureLoaded();
-        return _signing!;
-    }
+    public IReadOnlyList<SigningKey> GetSigningKeys() => Current().Signing;
 
     /// <summary>
     /// The keys that encrypt the tokens the server reads back itself (refresh tokens and codes), newest first. Created on
     /// first use and not rotated.
     /// </summary>
-    public IReadOnlyList<RSA> GetEncryptionKeys()
-    {
-        EnsureLoaded();
-        return _encryption!;
-    }
+    public IReadOnlyList<RSA> GetEncryptionKeys() => Current().Encryption;
 
-    /// <summary>Re-reads the keys and notifies listeners. Called after rotation creates or retires a key.</summary>
+    /// <summary>
+    /// Re-reads the keys and notifies listeners. Called after rotation creates or retires a key. Readers keep the previous keys
+    /// until the new ones are loaded: there is never a moment without keys.
+    /// </summary>
     public void Reload()
     {
-        lock (_gate)
-        {
-            _signing = null;
-            _encryption = null;
-        }
-
-        EnsureLoaded();
+        Load(force: true);
         KeysChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -114,18 +102,15 @@ public sealed partial class DatabaseKeyStore(
         return StoredKey.Create(use, _protector.Protect(Convert.ToBase64String(rsa.ExportPkcs8PrivateKey())), now, activationDelay);
     }
 
-    private void EnsureLoaded()
-    {
-        if (_signing is not null && _encryption is not null)
-        {
-            return;
-        }
+    private Snapshot Current() => Volatile.Read(ref _snapshot) ?? Load(force: false);
 
+    private Snapshot Load(bool force)
+    {
         lock (_gate)
         {
-            if (_signing is not null && _encryption is not null)
+            if (!force && _snapshot is { } loaded)
             {
-                return;
+                return loaded;
             }
 
             using var scope = scopes.CreateScope();
@@ -137,12 +122,18 @@ public sealed partial class DatabaseKeyStore(
             var encryption = LoadOrCreate(db, stored, KeyUse.Encryption, now);
             db.SaveChanges();
 
-            _signing = [.. signing.OrderByDescending(pair => pair.Stored.CreatedAt)
-                .Select(pair => new SigningKey(pair.Stored.KeyId, pair.Key, pair.Stored.ActivatesAt))];
-            _encryption = [.. encryption.OrderByDescending(pair => pair.Stored.CreatedAt).Select(pair => pair.Key)];
-            Volatile.Write(ref _announcedSigner, CurrentSigner(_signing, now));
+            var snapshot = new Snapshot(
+                [.. signing.OrderByDescending(pair => pair.Stored.CreatedAt).Select(pair => new SigningKey(pair.Stored.KeyId, pair.Key, pair.Stored.ActivatesAt))],
+                [.. encryption.OrderByDescending(pair => pair.Stored.CreatedAt).Select(pair => pair.Key)]);
+            Volatile.Write(ref _announcedSigner, CurrentSigner(snapshot.Signing, now));
+
+            // Published whole and at once: a reader sees the old keys or the new ones, never none.
+            Volatile.Write(ref _snapshot, snapshot);
+            return snapshot;
         }
     }
+
+    private sealed record Snapshot(IReadOnlyList<SigningKey> Signing, IReadOnlyList<RSA> Encryption);
 
     private List<(StoredKey Stored, RSA Key)> LoadOrCreate(AuthenticationDbContext db, List<StoredKey> stored, KeyUse use, DateTimeOffset now)
     {
