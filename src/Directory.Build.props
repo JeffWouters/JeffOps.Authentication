@@ -19,7 +19,8 @@
     <PackageTags>authentication;authorization;openid-connect;oauth2;openiddict;multi-tenant;bff;jeffops</PackageTags>
     <!-- Source Link: debuggers step into the exact sources of a release, including generated ones. -->
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <!-- Set by CI once the repository is public, e.g. -p:JeffOpsRepositoryUrl=https://github.com/... -->
+    <!-- The public repository; CI passes the URL of the repository it builds. -->
+    <JeffOpsRepositoryUrl Condition="'$(JeffOpsRepositoryUrl)' == ''">https://github.com/JeffWouters/JeffOps.Authentication</JeffOpsRepositoryUrl>
     <PackageProjectUrl Condition="'$(JeffOpsRepositoryUrl)' != ''">$(JeffOpsRepositoryUrl)</PackageProjectUrl>
     <RepositoryUrl Condition="'$(JeffOpsRepositoryUrl)' != ''">$(JeffOpsRepositoryUrl)</RepositoryUrl>
   </PropertyGroup>

@@ -7,7 +7,8 @@ disclosure.
 
 **Do not open a public issue.** Report privately through GitHub's
 [private vulnerability reporting](https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
-("Report a vulnerability" on the repository's **Security** tab).
+("Report a vulnerability" on the repository's **Security** tab, or directly at
+<https://github.com/JeffWouters/JeffOps.Authentication/security/advisories/new>).
 
 Please include:
 
