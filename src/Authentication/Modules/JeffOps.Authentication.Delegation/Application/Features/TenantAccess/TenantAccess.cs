@@ -129,16 +129,22 @@ public sealed class DecideTenantAccessHandler(
             return Error.Forbidden(DelegationErrors.NotAllowed, "You can't decide your own request.");
         }
 
+        // The expiry sweep (or another decision) may change the grant at the same moment: decide again on its new state.
         var now = time.GetUtcNow();
-        var decided = command.Approve ? grant.Approve(caller.UserId, now, options.Value.TenantAccess.SessionWindow) : grant.Deny(now);
-        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            return DelegationErrors.Concurrent();
+            var decided = command.Approve ? grant.Approve(caller.UserId, now, options.Value.TenantAccess.SessionWindow) : grant.Deny(now);
+            if (await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return decided
+                    ? grant.ToDto()
+                    : Error.Failure(DelegationErrors.NotPending, "The request can no longer be decided.");
+            }
+
+            await unitOfWork.ReloadAsync(grant, cancellationToken).ConfigureAwait(false);
         }
 
-        return decided
-            ? grant.ToDto()
-            : Error.Failure(DelegationErrors.NotPending, "The request can no longer be decided.");
+        return DelegationErrors.Concurrent();
     }
 }
 

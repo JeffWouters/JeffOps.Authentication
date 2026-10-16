@@ -220,40 +220,6 @@ public sealed class KeyRotationTests
         (await KeyIdsAsync(server)).ShouldContain(firstKid, "the old key stays published during the overlap");
     }
 
-    [Fact]
-    public async Task Readers_always_see_keys_while_they_are_reloaded()
-    {
-        await using var server = await TokenServerHost.StartAsync();
-        var store = server.Services.GetRequiredService<DatabaseKeyStore>();
-        using var stop = new CancellationTokenSource();
-
-        // Rotation reloads the keys while requests read them; a reader must never find none.
-        var reloads = Task.Run(() =>
-        {
-            for (var i = 0; i < 200; i++)
-            {
-                store.Reload();
-            }
-
-            stop.Cancel();
-        }, TestContext.Current.CancellationToken);
-        var readers = Enumerable.Range(0, Math.Max(2, Environment.ProcessorCount / 2)).Select(_ => Task.Run(() =>
-        {
-            var reads = 0;
-            while (!stop.IsCancellationRequested)
-            {
-                store.GetSigningKeys().ShouldNotBeEmpty();
-                store.GetEncryptionKeys().ShouldNotBeEmpty();
-                reads++;
-            }
-
-            return reads;
-        }, TestContext.Current.CancellationToken)).ToList();
-
-        await reloads;
-        (await Task.WhenAll(readers)).Sum().ShouldBeGreaterThan(0);
-    }
-
     private static Task RotateAsync(TokenServerHost server) =>
         server.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().OfType<KeyRotationService>().Single()
             .RotateOnceAsync(TestContext.Current.CancellationToken);
@@ -331,5 +297,51 @@ public sealed class SessionRevocationTests
         }
 
         (await server.RefreshAsync(tokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
+    }
+}
+
+/// <summary>
+/// Hammers the key store from several threads to catch a race, so it runs on its own: it would starve tests running
+/// alongside, and their load would slow it down.
+/// </summary>
+[CollectionDefinition(nameof(KeyStoreRaceTests), DisableParallelization = true)]
+public sealed class KeyStoreRaceCollection;
+
+[Collection(nameof(KeyStoreRaceTests))]
+public sealed class KeyStoreRaceTests
+{
+    [Fact]
+    public async Task Readers_always_see_keys_while_they_are_reloaded()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var store = server.Services.GetRequiredService<DatabaseKeyStore>();
+        using var stop = new CancellationTokenSource();
+
+        // Rotation reloads the keys while requests read them; a reader must never find none.
+        var reloads = Task.Run(() =>
+        {
+            for (var i = 0; i < 200; i++)
+            {
+                store.Reload();
+            }
+
+            stop.Cancel();
+        }, TestContext.Current.CancellationToken);
+        var readers = Enumerable.Range(0, Math.Max(2, Environment.ProcessorCount / 2)).Select(_ => Task.Run(() =>
+        {
+            var reads = 0L;
+            while (!stop.IsCancellationRequested)
+            {
+                store.GetSigningKeys().ShouldNotBeEmpty();
+                store.GetEncryptionKeys().ShouldNotBeEmpty();
+
+                reads++;
+            }
+
+            return reads;
+        }, TestContext.Current.CancellationToken)).ToList();
+
+        await reloads;
+        (await Task.WhenAll(readers)).Sum().ShouldBeGreaterThan(0);
     }
 }
