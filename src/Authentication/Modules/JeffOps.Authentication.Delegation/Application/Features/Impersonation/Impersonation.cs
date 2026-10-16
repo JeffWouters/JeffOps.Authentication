@@ -40,6 +40,7 @@ public sealed record RequestImpersonationCommand(DelegationCaller Caller, Guid T
 
 public sealed class RequestImpersonationHandler(
     IImpersonationGrantRepository grants,
+    ITenantAccessGrantRepository tenantAccess,
     IAccountRepository accounts,
     IDelegationDirectory directory,
     SessionBuilder sessions,
@@ -98,6 +99,11 @@ public sealed class RequestImpersonationHandler(
             return standing.Error;
         }
 
+        if (standing.Value.Membership?.Level == JeffOps.Authentication.Abstractions.Access.AccessLevel.Root)
+        {
+            return Error.Forbidden(DelegationErrors.TargetProtected, "Platform administrators can't be impersonated.");
+        }
+
         var targetTenant = standing.Value.Membership?.TenantId;
         var kind = caller.IsRoot ? ActorKind.Platform : ActorKind.Partner;
         if (kind == ActorKind.Partner)
@@ -116,6 +122,13 @@ public sealed class RequestImpersonationHandler(
             if (managed.Value.Count == 0)
             {
                 return Error.Forbidden(DelegationErrors.NotManaged, "Your organization doesn't manage this user's tenant.");
+            }
+
+            // A lockbox tenant: its administrator's approval comes first, for impersonating its users as for switching in.
+            var lockbox = await Tokens.ActorTokens.LockboxGrantAsync(tenantAccess, directory, caller.UserId, organization, tenant, now, cancellationToken).ConfigureAwait(false);
+            if (lockbox.IsFailure)
+            {
+                return lockbox.Error.Code == DelegationErrors.TenantApprovalRequired ? Error.Forbidden(lockbox.Error.Code, lockbox.Error.Message) : lockbox.Error;
             }
         }
 

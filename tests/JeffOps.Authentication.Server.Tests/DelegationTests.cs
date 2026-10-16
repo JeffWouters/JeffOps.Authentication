@@ -265,6 +265,69 @@ public sealed class DelegationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Impersonating_a_user_of_a_lockbox_tenant_needs_the_tenant_s_approval_too()
+    {
+        var (_, partnerToken) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        var (admin, adminToken) = await UserAsync("admin@example.com", LockboxTenant, CustomerOrganization);
+        var (member, memberToken) = await UserAsync("member@example.com", LockboxTenant, CustomerOrganization, AccessLevel.Organization);
+        _approvers.Add(admin);
+
+        var refused = await _host.SendAsync(HttpMethod.Post, "delegation/impersonation", partnerToken, JsonContent.Create(new { targetUserId = member }));
+        refused.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeAsync(refused)).ShouldBe("tenant_approval_required");
+
+        var access = (await PostAsync<JsonElement>(partnerToken, "delegation/tenant-access", new { tenantId = LockboxTenant })).GetProperty("id").GetString()!;
+        await PostAsync<JsonElement>(adminToken, $"delegation/tenant-access/{access}/approve");
+        var grantId = await ApprovedImpersonationAsync(partnerToken, member, memberToken);
+
+        var minted = await MintImpersonationAsync(grantId, partnerToken);
+        minted.Status.ShouldBe(HttpStatusCode.OK, minted.Body.ToString());
+        minted.Claims("dlg_scope").ShouldBe(["readonly", "billing"], ignoreOrder: true);
+        minted.Claims("lvl").ShouldBe(["Tenant"], "a partner reaches one managed tenant, not the customer's organization");
+
+        // Ending the lockbox grant ends the impersonation too.
+        await PostAsync<JsonElement>(adminToken, $"delegation/tenant-access/{access}/revoke");
+        (await MintImpersonationAsync(grantId, partnerToken)).Code.ShouldBe("tenant_approval_required");
+    }
+
+    [Fact]
+    public async Task Platform_administrators_can_t_be_impersonated()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (otherRoot, _) = await UserAsync("root@example.com", PlatformTenant, null, AccessLevel.Root);
+
+        var response = await _host.SendAsync(HttpMethod.Post, "delegation/impersonation", supportToken,
+            JsonContent.Create(new { targetUserId = otherRoot, breakGlass = true, reason = "testing" }));
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeAsync(response)).ShouldBe("target_protected");
+    }
+
+    [Fact]
+    public async Task A_workspace_guest_of_the_partner_can_t_switch_into_managed_tenants()
+    {
+        var (_, guestToken) = await UserAsync("guest@example.com", PartnerTenant, PartnerOrganization, AccessLevel.Workspace);
+
+        (await MintTenantSwitchAsync(CustomerTenant, guestToken)).Code.ShouldBe("level_too_low");
+    }
+
+    [Fact]
+    public async Task Acting_as_someone_doesn_t_extend_to_their_delegations()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+        var asCustomer = (await MintImpersonationAsync(grantId, supportToken)).AccessToken!;
+
+        var listed = await _host.SendAsync(HttpMethod.Get, "delegation/tenant-access", asCustomer);
+        listed.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeAsync(listed)).ShouldBe("home_session_required");
+        (await _host.SendAsync(HttpMethod.Get, "delegation/impersonation", asCustomer)).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+
+        (await _host.SendAsync(HttpMethod.Post, $"delegation/impersonation/{grantId}/end", asCustomer)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task An_actor_token_only_counts_for_its_own_client_and_scopes()
     {
         var (partner, _) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);

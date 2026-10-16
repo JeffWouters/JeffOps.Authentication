@@ -39,18 +39,19 @@ public static class DelegationEndpointRouteBuilderExtensions
 
         var impersonation = endpoints.MapGroup(ImpersonationRoutes).WithTags("Impersonation").RequireAuthorization(tokenPolicy);
         impersonation.MapPost("/", RequestImpersonationAsync).AddEndpointFilter<StepUpFilter>().WithName("RequestImpersonation");
-        impersonation.MapGet("/", ListImpersonationsAsync).WithName("ListImpersonations");
-        impersonation.MapGet("/{grantId:guid}", GetImpersonationAsync).WithName("GetImpersonation");
+        impersonation.MapGet("/", ListImpersonationsAsync).AddEndpointFilter<HomeSessionFilter>().WithName("ListImpersonations");
+        impersonation.MapGet("/{grantId:guid}", GetImpersonationAsync).AddEndpointFilter<HomeSessionFilter>().WithName("GetImpersonation");
         impersonation.MapPost("/{grantId:guid}/approve", (Guid grantId, HttpContext context, ICommandHandler<DecideImpersonationCommand, ImpersonationGrantDto> handler) =>
-            DecideImpersonationAsync(grantId, approve: true, context, handler)).AddEndpointFilter<StepUpFilter>().WithName("ApproveImpersonation");
+            DecideImpersonationAsync(grantId, approve: true, context, handler)).AddEndpointFilter<HomeSessionFilter>().AddEndpointFilter<StepUpFilter>().WithName("ApproveImpersonation");
         impersonation.MapPost("/{grantId:guid}/deny", (Guid grantId, HttpContext context, ICommandHandler<DecideImpersonationCommand, ImpersonationGrantDto> handler) =>
-            DecideImpersonationAsync(grantId, approve: false, context, handler)).WithName("DenyImpersonation");
+            DecideImpersonationAsync(grantId, approve: false, context, handler)).AddEndpointFilter<HomeSessionFilter>().WithName("DenyImpersonation");
         impersonation.MapPost("/{grantId:guid}/end", (Guid grantId, HttpContext context, ICommandHandler<EndImpersonationCommand, ImpersonationGrantDto> handler) =>
             EndImpersonationAsync(grantId, revoke: false, context, handler)).WithName("EndImpersonation");
         impersonation.MapPost("/{grantId:guid}/revoke", (Guid grantId, HttpContext context, ICommandHandler<EndImpersonationCommand, ImpersonationGrantDto> handler) =>
             EndImpersonationAsync(grantId, revoke: true, context, handler)).WithName("RevokeImpersonation");
 
-        var access = endpoints.MapGroup(TenantAccessRoutes).WithTags("Tenant access").RequireAuthorization(tokenPolicy);
+        // Someone acting as another user can't use that user's lockbox grants (only end the impersonation itself, above).
+        var access = endpoints.MapGroup(TenantAccessRoutes).WithTags("Tenant access").RequireAuthorization(tokenPolicy).AddEndpointFilter<HomeSessionFilter>();
         access.MapPost("/", RequestTenantAccessAsync).AddEndpointFilter<StepUpFilter>().WithName("RequestTenantAccess");
         access.MapGet("/", ListTenantAccessAsync).WithName("ListTenantAccess");
         access.MapPost("/{grantId:guid}/approve", (Guid grantId, HttpContext context, ICommandHandler<DecideTenantAccessCommand, TenantAccessGrantDto> handler) =>
@@ -225,6 +226,25 @@ public static class DelegationEndpointRouteBuilderExtensions
 }
 
 /// <summary>Requesting and approving delegated access needs a stepped-up sign-in (RFC 9470 challenge), unless turned off.</summary>
+/// <summary>Refuses impersonation tokens: acting as someone doesn't extend to managing their delegations.</summary>
+internal sealed class HomeSessionFilter : IEndpointFilter
+{
+    public ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+
+        var http = context.HttpContext;
+        var names = http.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default;
+        return !AccessContextReader.IsImpersonation(http.User, names)
+            ? next(context)
+            : ValueTask.FromResult<object?>(TypedResults.Problem(
+                detail: "This needs your own session, not one acting as someone else.",
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = DelegationErrors.HomeSessionRequired }));
+    }
+}
+
 internal sealed class StepUpFilter : IEndpointFilter
 {
     public ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)

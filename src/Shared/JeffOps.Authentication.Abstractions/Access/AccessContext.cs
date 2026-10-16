@@ -15,11 +15,14 @@ public enum AccessLevel
     /// <summary>The caller's own tenant.</summary>
     Tenant = 1,
 
-    /// <summary>All tenants owned by the caller's organization.</summary>
-    Organization = 2,
+    /// <summary>
+    /// A managed tenant reached through a delegation, under the relationship's <c>dlg_scope</c> ceiling: one tenant's breadth,
+    /// so below <see cref="Organization"/> (a partner switched into one customer tenant must not pass organization-wide checks).
+    /// </summary>
+    Delegated = 2,
 
-    /// <summary>A managed tenant reached through a delegation.</summary>
-    Delegated = 3,
+    /// <summary>All tenants owned by the caller's organization.</summary>
+    Organization = 3,
 
     /// <summary>Platform administrator.</summary>
     Root = 4,

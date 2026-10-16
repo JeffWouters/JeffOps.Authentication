@@ -131,7 +131,8 @@ internal sealed class DelegationUnitOfWork(DelegationDbContext db, IDomainEventD
             return false;
         }
 
-        await dispatcher.DispatchAsync(events, cancellationToken).ConfigureAwait(false);
+        // Committed: the change is announced, audited and notified even if the caller has gone away meanwhile.
+        await dispatcher.DispatchAsync(events, CancellationToken.None).ConfigureAwait(false);
         return true;
     }
 

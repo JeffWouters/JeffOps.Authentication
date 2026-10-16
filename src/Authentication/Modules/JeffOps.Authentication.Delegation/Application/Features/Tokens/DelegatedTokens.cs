@@ -1,4 +1,5 @@
 using System.Globalization;
+using JeffOps.Authentication.Abstractions.Auditing;
 using System.Security.Claims;
 using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Access;
@@ -55,6 +56,63 @@ internal static class ActorTokens
     }
 
     public static Error Invalid(string message) => Error.Unauthorized(DelegationErrors.GrantInvalid, message);
+
+    /// <summary>Whether the actor's session was ended (sign-out everywhere, a credential change) after the actor token was issued.</summary>
+    public static bool SessionRevoked(JeffOps.Authentication.Domain.Accounts.Account account, ClaimsPrincipal actor, ClaimNames names) =>
+        account.IsSessionRevoked(long.TryParse(actor.FindFirst(names.AuthenticationTime)?.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var authTime)
+            ? DateTimeOffset.FromUnixTimeSeconds(Math.Clamp(authTime, 0, 253402300799))
+            : DateTimeOffset.UnixEpoch);
+
+    /// <summary>
+    /// The live lockbox grant a partner needs for <paramref name="tenant"/> when the tenant requires approval; null when it
+    /// doesn't; an error when it does and there is none. The same rule covers tenant switch and partner impersonation, so a
+    /// lockbox can't be bypassed by impersonating one of the tenant's users.
+    /// </summary>
+    public static async Task<Result<TenantAccessGrant?>> LockboxGrantAsync(
+        ITenantAccessGrantRepository grants, IDelegationDirectory directory, Guid actorId, Guid organization, Guid tenant, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var lockbox = await DirectoryCalls.RequiresApprovalAsync(directory, tenant, cancellationToken).ConfigureAwait(false);
+        if (lockbox.IsFailure)
+        {
+            return lockbox.Error;
+        }
+
+        if (!lockbox.Value)
+        {
+            return Result.Success<TenantAccessGrant?>(null);
+        }
+
+        var open = await grants.ListOpenAsync(actorId, tenant, now, cancellationToken).ConfigureAwait(false);
+        return open
+            .Where(candidate => candidate.ActorUserId == actorId && candidate.TargetTenantId == tenant
+                && candidate.ActorOrganizationId == organization && candidate.CanMint(now))
+            .OrderByDescending(candidate => candidate.ApprovedAt)
+            .FirstOrDefault() is { } grant
+            ? grant
+            : Error.Unauthorized(DelegationErrors.TenantApprovalRequired, "This tenant requires approval and there is no approved access grant.");
+    }
+
+    /// <summary>Levels a partner may act at in a managed tenant: never broader than the one tenant the relationship covers.</summary>
+    public static void CapPartnerLevel(List<Claim> claims, ClaimNames names, IReadOnlyCollection<string> scopes)
+    {
+        if (claims.Find(claim => claim.Type == names.Level) is { } level
+            && level.Value is not (nameof(AccessLevel.Workspace) or nameof(AccessLevel.Tenant)))
+        {
+            claims.Remove(level);
+            claims.Add(new Claim(names.Level, nameof(AccessLevel.Tenant)));
+        }
+
+        claims.AddRange(scopes.Distinct(StringComparer.OrdinalIgnoreCase).Select(scope => new Claim(names.DelegationScope, scope.ToLowerInvariant())));
+    }
+
+    public static Task AuditMintAsync(IAuditSink audit, string action, string resourceType, Guid resourceId, Guid actorId, Guid? tenantId, DateTimeOffset now, CancellationToken cancellationToken) =>
+        audit.WriteAsync(new AuditRecord(action, resourceType, resourceId.ToString())
+        {
+            ActorId = actorId,
+            TenantId = tenantId,
+            OccurredAt = now,
+            Severity = AuditSeverity.Information,
+        }, cancellationToken);
 }
 
 /// <summary>
@@ -64,10 +122,12 @@ internal static class ActorTokens
 /// </summary>
 public sealed class MintImpersonationTokenHandler(
     IImpersonationGrantRepository grants,
+    ITenantAccessGrantRepository tenantAccess,
     IAccountRepository accounts,
     IDelegationDirectory directory,
     SessionBuilder sessions,
     IDelegationUnitOfWork unitOfWork,
+    IAuditSink audit,
     ClaimNames names,
     IOptions<DelegationOptions> options,
     TimeProvider time) : IExtensionGrantHandler
@@ -97,9 +157,10 @@ public sealed class MintImpersonationTokenHandler(
             return ActorTokens.Invalid("The impersonation grant is not approved, is over, or isn't yours.");
         }
 
-        if (await accounts.FindAsync(actorId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true })
+        if (await accounts.FindAsync(actorId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true } actorAccount
+            || ActorTokens.SessionRevoked(actorAccount, actor, names))
         {
-            return ActorTokens.Invalid("Your account is not active.");
+            return ActorTokens.Invalid("Your account is not active, or your session was ended.");
         }
 
         if (grant.ActorKind == ActorKind.Platform && !AccessContextReader.Read(actor, names).IsRoot)
@@ -120,12 +181,32 @@ public sealed class MintImpersonationTokenHandler(
             return standing.Error;
         }
 
+        if (standing.Value.Membership?.Level == AccessLevel.Root)
+        {
+            return ActorTokens.Invalid("Platform administrators can't be impersonated.");
+        }
+
+        IReadOnlyList<string> ceiling = [];
+        var lifetimeEnd = grant.ExpiresAt!.Value;
         if (grant.ActorKind == ActorKind.Partner)
         {
-            if (grant.ActorOrganizationId is not { } organization || grant.TargetTenantId is not { } managedTenant
+            var home = AccessContextReader.Read(actor, names).TenantId;
+            if (grant.ActorOrganizationId is not { } organization || grant.TargetTenantId is not { } managedTenant || home is null
                 || AccessContextReader.Read(actor, names).OrganizationId != organization)
             {
                 return ActorTokens.Invalid("The partner relationship no longer allows this.");
+            }
+
+            // Still a member of the managing organization, live (not as the actor token remembers it).
+            var actorStanding = await sessions.StandingAsync(actorId, home, cancellationToken).ConfigureAwait(false);
+            if (actorStanding.IsFailure)
+            {
+                return actorStanding.Error;
+            }
+
+            if (actorStanding.Value.OrganizationId != organization)
+            {
+                return ActorTokens.Invalid("You no longer belong to the managing organization.");
             }
 
             var scopes = await DirectoryCalls.ScopesAsync(directory, organization, managedTenant, cancellationToken).ConfigureAwait(false);
@@ -138,6 +219,20 @@ public sealed class MintImpersonationTokenHandler(
             {
                 return ActorTokens.Invalid("Your organization no longer manages this tenant.");
             }
+
+            // A lockbox tenant's approval covers impersonating its users too.
+            var lockbox = await ActorTokens.LockboxGrantAsync(tenantAccess, directory, actorId, organization, managedTenant, now, cancellationToken).ConfigureAwait(false);
+            if (lockbox.IsFailure)
+            {
+                return lockbox.Error;
+            }
+
+            if (lockbox.Value?.ExpiresAt is { } lockboxEnds && lockboxEnds < lifetimeEnd)
+            {
+                lifetimeEnd = lockboxEnds;
+            }
+
+            ceiling = scopes.Value;
         }
 
         if (!await RecordMintAsync(grant, now, cancellationToken).ConfigureAwait(false))
@@ -162,8 +257,14 @@ public sealed class MintImpersonationTokenHandler(
         // Step-up reflects the actor's sign-in; the target's authentication methods are not claimed.
         ActorTokens.CopyAuthentication(actor, claims, names, includeMethods: false);
         sessions.AddTenantClaims(claims, standing.Value);
+        if (grant.ActorKind == ActorKind.Partner)
+        {
+            // A partner acts within the relationship: its scope ceiling, and no wider than the one tenant.
+            ActorTokens.CapPartnerLevel(claims, names, ceiling);
+        }
 
-        var remaining = grant.ExpiresAt!.Value - now;
+        await ActorTokens.AuditMintAsync(audit, "impersonation.token_minted", "impersonation_grant", grant.Id, actorId, grant.TargetTenantId, now, cancellationToken).ConfigureAwait(false);
+        var remaining = lifetimeEnd - now;
         var lifetime = options.Value.Impersonation.TokenLifetime;
         return new IssuedIdentity(target.Id.ToString(), claims, request.Scopes)
         {
@@ -203,6 +304,7 @@ public sealed class MintTenantSwitchTokenHandler(
     ITenantDirectory tenants,
     SessionBuilder sessions,
     IDelegationUnitOfWork unitOfWork,
+    IAuditSink audit,
     ClaimNames names,
     IOptions<DelegationOptions> options,
     TimeProvider time) : IExtensionGrantHandler
@@ -240,9 +342,10 @@ public sealed class MintTenantSwitchTokenHandler(
             return ActorTokens.Invalid("That is your own tenant.");
         }
 
-        if (await accounts.FindAsync(actorId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true } account)
+        if (await accounts.FindAsync(actorId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true } account
+            || ActorTokens.SessionRevoked(account, actor, names))
         {
-            return ActorTokens.Invalid("Your account is not active.");
+            return ActorTokens.Invalid("Your account is not active, or your session was ended.");
         }
 
         // The actor must still belong to the managing organization.
@@ -255,6 +358,12 @@ public sealed class MintTenantSwitchTokenHandler(
         if (standing.Value.OrganizationId != organization)
         {
             return ActorTokens.Invalid("You no longer belong to the managing organization.");
+        }
+
+        // Acting in a customer's tenant is for the partner's own tenant members and above, not workspace guests.
+        if (standing.Value.Membership?.Level is not (AccessLevel.Tenant or AccessLevel.Organization or AccessLevel.Root))
+        {
+            return Error.Unauthorized(DelegationErrors.LevelTooLow, "Your access in your organization doesn't extend to managed tenants.");
         }
 
         var scopes = await DirectoryCalls.ScopesAsync(directory, organization, target, cancellationToken).ConfigureAwait(false);
@@ -279,28 +388,24 @@ public sealed class MintTenantSwitchTokenHandler(
             return Error.Unauthorized(GrantErrors.TenantInactive, "The tenant is not active.");
         }
 
-        var lockbox = await DirectoryCalls.RequiresApprovalAsync(directory, target, cancellationToken).ConfigureAwait(false);
+        var lockbox = await ActorTokens.LockboxGrantAsync(grants, directory, actorId, organization, target, now, cancellationToken).ConfigureAwait(false);
         if (lockbox.IsFailure)
         {
-            return lockbox.Error;
+            return lockbox.Error.Code == DelegationErrors.TenantApprovalRequired ? Error.Unauthorized(DelegationErrors.GrantInvalid, lockbox.Error.Message) : lockbox.Error;
         }
 
         DateTimeOffset? grantEnds = null;
-        if (lockbox.Value)
+        if (lockbox.Value is { } grant)
         {
-            var open = await grants.ListOpenAsync(actorId, target, now, cancellationToken).ConfigureAwait(false);
-            var grant = open
-                .Where(candidate => candidate.ActorUserId == actorId && candidate.TargetTenantId == target
-                    && candidate.ActorOrganizationId == organization && candidate.CanMint(now))
-                .OrderByDescending(candidate => candidate.ApprovedAt)
-                .FirstOrDefault();
-            if (grant is null || !await RecordMintAsync(grant, now, cancellationToken).ConfigureAwait(false))
+            if (!await RecordMintAsync(grant, now, cancellationToken).ConfigureAwait(false))
             {
                 return Error.Unauthorized(DelegationErrors.GrantInvalid, "This tenant requires approval and there is no approved access grant.");
             }
 
             grantEnds = grant.ExpiresAt;
         }
+
+        await ActorTokens.AuditMintAsync(audit, "tenant_switch.token_minted", "tenant", target, actorId, target, now, cancellationToken).ConfigureAwait(false);
 
         var claims = new List<Claim>
         {

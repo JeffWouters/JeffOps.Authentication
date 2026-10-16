@@ -53,6 +53,9 @@ public static class DelegationErrors
     public const string ActorRequired = "actor_required";
     public const string GrantInvalid = "grant_invalid";
     public const string Unavailable = "delegation_unavailable";
+    public const string TargetProtected = "target_protected";
+    public const string TenantApprovalRequired = "tenant_approval_required";
+    public const string LevelTooLow = "level_too_low";
 
     public static Error HomeSession() =>
         Error.Forbidden(HomeSessionRequired, "Not available while impersonating or acting in another tenant.");

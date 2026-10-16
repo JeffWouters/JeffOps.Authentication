@@ -21,3 +21,11 @@ First public preview (`0.1.0-alpha`).
 - **Clients**: JWT validation (with DPoP) for resource services, service tokens, a backend-for-frontend with YARP.
 - **Entitlements**: `RequireEntitlement` endpoint convention answering 402.
 - **Testing**: an in-memory test token issuer and fakes for consumers' tests.
+
+### Security
+
+Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
+details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the
+signed assertion (rewrapped assertions were accepted); SCIM can only provision addresses in the tenant's verified domains;
+partner impersonation honours lockbox approval and the relationship's ceiling. `AccessLevel.Delegated` now ranks below
+`Organization`. Fuzz tests cover the DPoP proof validator and the SCIM parsers.

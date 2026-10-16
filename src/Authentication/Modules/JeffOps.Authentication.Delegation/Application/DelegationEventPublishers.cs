@@ -20,9 +20,19 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
         var grant = domainEvent.Grant;
-        await PublishAsync(grant, "requested", cancellationToken).ConfigureAwait(false);
+        if (grant is not ImpersonationGrant impersonation)
+        {
+            await PublishAsync(grant, "requested", cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
-        if (grant is ImpersonationGrant impersonation)
+        // The target hears first (break-glass is urgent), and a failing step doesn't stop the others.
+        await AllAsync(() => NotifyTargetAsync(impersonation, cancellationToken), () => PublishAsync(grant, "requested", cancellationToken)).ConfigureAwait(false);
+    }
+
+    private Task NotifyTargetAsync(ImpersonationGrant impersonation, CancellationToken cancellationToken)
+    {
+        var grant = impersonation;
         {
             var notification = impersonation.BreakGlass
                 ? new UserNotification(
@@ -37,7 +47,31 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
                     "Someone asks to act as you",
                     $"A support user asks to act as you. Approve before {impersonation.ApprovalDeadline:HH:mm} UTC if you expect this; otherwise ignore or deny it.")
                 { Priority = NotificationPriority.High, ReferenceId = grant.Id.ToString() };
-            await notifier.NotifyAsync(notification, cancellationToken).ConfigureAwait(false);
+            return notifier.NotifyAsync(notification, cancellationToken);
+        }
+    }
+
+    /// <summary>Runs every step, then reports all failures together.</summary>
+    private static async Task AllAsync(params Func<Task>[] steps)
+    {
+        List<Exception>? failures = null;
+        foreach (var step in steps)
+        {
+            try
+            {
+                await step().ConfigureAwait(false);
+            }
+#pragma warning disable CA1031 // Collected and rethrown below, after the remaining steps ran.
+            catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning restore CA1031
+            {
+                (failures ??= []).Add(exception);
+            }
+        }
+
+        if (failures is not null)
+        {
+            throw new AggregateException("Delivering a delegation change partly failed.", failures);
         }
     }
 
@@ -104,7 +138,7 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
             };
         }
 
-        await publisher.PublishAsync(integrationEvent, cancellationToken).ConfigureAwait(false);
-        await audit.WriteAsync(record, cancellationToken).ConfigureAwait(false);
+        // The audit record first: it is the one that must not be lost.
+        await AllAsync(() => audit.WriteAsync(record, cancellationToken), () => publisher.PublishAsync(integrationEvent, cancellationToken)).ConfigureAwait(false);
     }
 }
