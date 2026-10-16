@@ -29,6 +29,7 @@ internal static partial class BffEndpoints
         group.MapMethods(BffPaths.Callback, [HttpMethods.Get, HttpMethods.Post], CallbackAsync);
         group.MapPost(BffPaths.Logout, LogoutAsync);
         group.MapGet(BffPaths.Me, MeAsync);
+        group.MapGet(BffPaths.Token, TokenAsync);
         group.MapPost(BffPaths.BackchannelLogout, BackchannelLogoutAsync).DisableAntiforgery();
     }
 
@@ -161,6 +162,42 @@ internal static partial class BffEndpoints
             .ToDictionary(group => group.Key, group => group.Count() == 1 ? (object)group.First().Value : group.Select(claim => claim.Value).ToArray());
 
         return TypedResults.Ok(claims);
+    }
+
+    /// <summary>
+    /// Token-mediating mode: the access token this browser's requests act with, for the app to call an API directly. Only
+    /// with <see cref="BffOptions.TokenMediating"/>; the CSRF header is required so another site can't make the request.
+    /// </summary>
+    private static async Task<IResult> TokenAsync(HttpContext context, BffSessionManager sessions, IOptions<BffOptions> options)
+    {
+        var settings = options.Value;
+        if (!settings.TokenMediating)
+        {
+            return TypedResults.NotFound();
+        }
+
+        if (!context.Request.Headers.ContainsKey(settings.CsrfHeaderName))
+        {
+            return TypedResults.Problem(
+                detail: $"Requests for the token must send the {settings.CsrfHeaderName} header.",
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "csrf_header_required" });
+        }
+
+        var (token, problem) = await CookieToBearerMiddleware.CurrentTokenAsync(context, sessions, context.RequestServices, settings, readOnly: true).ConfigureAwait(false);
+        if (problem is not null)
+        {
+            return problem;
+        }
+
+        if (token is null)
+        {
+            return TypedResults.Unauthorized();
+        }
+
+        context.Response.Headers.CacheControl = "no-store";
+        var expires = new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(token).ValidTo;
+        return TypedResults.Ok(new { access_token = token, token_type = "Bearer", expires_at = new DateTimeOffset(expires, TimeSpan.Zero).ToUnixTimeSeconds() });
     }
 
     /// <summary>

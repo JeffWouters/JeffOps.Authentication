@@ -47,6 +47,14 @@ public sealed class BffOptions
     /// <summary>The header every state-changing request with the session cookie must carry (CSRF protection).</summary>
     public string CsrfHeaderName { get; set; } = "X-JeffOps-Csrf";
 
+    /// <summary>
+    /// Token-mediating mode ("OAuth 2.0 for Browser-Based Applications", token-mediating backend): <c>GET /bff/token</c>
+    /// hands the browser app the session's short-lived access token (refreshed here when needed), for calling APIs directly.
+    /// The refresh token never leaves the BFF. Off by default: proxying through the BFF keeps every token out of the browser,
+    /// which is safer; turn this on only for APIs the BFF can't proxy. The request must carry the CSRF header.
+    /// </summary>
+    public bool TokenMediating { get; set; }
+
     /// <summary>The claims of the access token returned by <c>/bff/me</c>.</summary>
     public IList<string> UserClaims { get; } = ["sub", "email", "name", "tid", "org", "lvl", "amr", "step_up", "act_tid", "dlg_scope", "act_kind", "grant_id"];
 

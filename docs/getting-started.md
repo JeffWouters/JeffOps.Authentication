@@ -227,6 +227,8 @@ app.Run();
 
 From the SPA: navigate to `/bff/login` to sign in, call `/bff/me` for the user, and send state-changing API requests
 with the header `X-JeffOps-Csrf: 1`. Signing out at the token server ends the BFF session through back-channel logout.
+For an API the BFF can't proxy, `JeffOps:Bff:TokenMediating: true` lets the app fetch a short-lived access token from
+`/bff/token` (with the same header); the refresh token stays in the BFF.
 
 ## 4. Service-to-service calls
 

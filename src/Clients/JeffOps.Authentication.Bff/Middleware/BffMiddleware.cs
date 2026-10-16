@@ -89,68 +89,86 @@ public sealed class CookieToBearerMiddleware(RequestDelegate next, BffSessionMan
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        if (!context.Request.Path.StartsWithSegments("/bff")
-            && context.Request.Cookies.TryGetValue(BffCookie.Name(context.Request, options.Value), out var id)
-            && !string.IsNullOrEmpty(id))
+        if (!context.Request.Path.StartsWithSegments("/bff"))
         {
-            BffSession? session;
-            try
+            var readOnly = HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method);
+            var (token, problem) = await CurrentTokenAsync(context, sessions, services, options.Value, readOnly).ConfigureAwait(false);
+            if (problem is not null)
             {
-                var readOnly = HttpMethods.IsGet(context.Request.Method) || HttpMethods.IsHead(context.Request.Method);
-                session = await sessions.GetFreshAsync(id, readOnly, context.RequestAborted).ConfigureAwait(false);
-            }
-            catch (SessionStoreUnavailableException)
-            {
-                await TypedResults.Problem(
-                    detail: "Sessions are temporarily unavailable. Try again shortly.",
-                    statusCode: StatusCodes.Status503ServiceUnavailable,
-                    extensions: new Dictionary<string, object?> { ["code"] = "session_store_unavailable" }).ExecuteAsync(context).ConfigureAwait(false);
+                await problem.ExecuteAsync(context).ConfigureAwait(false);
                 return;
             }
 
-            if (session is null)
+            if (token is not null)
+            {
+                context.Request.Headers.Authorization = "Bearer " + token;
+            }
+            else if (context.Request.Cookies.ContainsKey(BffCookie.Name(context.Request, options.Value)))
             {
                 context.Request.Headers.Authorization = default;
-            }
-            else
-            {
-                var token = session.AccessToken;
-                var acting = BffCookie.ActingName(context.Request, options.Value);
-                if (options.Value.Delegation.Enabled
-                    && context.Request.Cookies.TryGetValue(acting, out var derivedId)
-                    && !string.IsNullOrEmpty(derivedId))
-                {
-                    BffSession? derived;
-                    try
-                    {
-                        derived = await services.GetRequiredService<DerivedSessionManager>().GetFreshAsync(derivedId, id, context.RequestAborted).ConfigureAwait(false);
-                    }
-                    catch (SessionStoreUnavailableException)
-                    {
-                        derived = null;
-                    }
-
-                    if (derived is not null)
-                    {
-                        token = derived.AccessToken;
-                    }
-                    else
-                    {
-                        // Never fall back to the own session silently mid-action: the request fails, the cookie goes.
-                        context.Response.Cookies.Delete(acting, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
-                        await TypedResults.Problem(
-                            detail: "The acting session has ended.",
-                            statusCode: StatusCodes.Status401Unauthorized,
-                            extensions: new Dictionary<string, object?> { ["code"] = "acting_session_ended" }).ExecuteAsync(context).ConfigureAwait(false);
-                        return;
-                    }
-                }
-
-                context.Request.Headers.Authorization = "Bearer " + token;
             }
         }
 
         await next(context).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The access token a request of this browser acts with: its session's (refreshed when close to expiry), or its acting
+    /// session's while impersonating or switched into a tenant. Null without a live session; a problem when the session store
+    /// is down or the acting session ended (never a silent fall-back to the own session mid-action).
+    /// </summary>
+    internal static async Task<(string? Token, IResult? Problem)> CurrentTokenAsync(
+        HttpContext context, BffSessionManager sessions, IServiceProvider services, BffOptions options, bool readOnly)
+    {
+        if (!context.Request.Cookies.TryGetValue(BffCookie.Name(context.Request, options), out var id) || string.IsNullOrEmpty(id))
+        {
+            return (null, null);
+        }
+
+        BffSession? session;
+        try
+        {
+            session = await sessions.GetFreshAsync(id, readOnly, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (SessionStoreUnavailableException)
+        {
+            return (null, TypedResults.Problem(
+                detail: "Sessions are temporarily unavailable. Try again shortly.",
+                statusCode: StatusCodes.Status503ServiceUnavailable,
+                extensions: new Dictionary<string, object?> { ["code"] = "session_store_unavailable" }));
+        }
+
+        if (session is null)
+        {
+            return (null, null);
+        }
+
+        var acting = BffCookie.ActingName(context.Request, options);
+        if (!options.Delegation.Enabled || !context.Request.Cookies.TryGetValue(acting, out var derivedId) || string.IsNullOrEmpty(derivedId))
+        {
+            return (session.AccessToken, null);
+        }
+
+        BffSession? derived;
+        try
+        {
+            derived = await services.GetRequiredService<DerivedSessionManager>().GetFreshAsync(derivedId, id, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (SessionStoreUnavailableException)
+        {
+            derived = null;
+        }
+
+        if (derived is not null)
+        {
+            return (derived.AccessToken, null);
+        }
+
+        context.Response.Cookies.Delete(acting, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
+        return (null, TypedResults.Problem(
+            detail: "The acting session has ended.",
+            statusCode: StatusCodes.Status401Unauthorized,
+            extensions: new Dictionary<string, object?> { ["code"] = "acting_session_ended" }));
     }
 }
 
@@ -165,6 +183,9 @@ public static class BffPaths
     public const string Logout = "/bff/logout";
     /// <summary>Answers the signed-in user's claims (<see cref="BffOptions.UserClaims"/>).</summary>
     public const string Me = "/bff/me";
+
+    /// <summary>The current access token, for token-mediating mode (<see cref="BffOptions.TokenMediating"/>).</summary>
+    public const string Token = "/bff/token";
     /// <summary>Receives OpenID Connect back-channel logout tokens from the token server; exempt from the CSRF header.</summary>
     public const string BackchannelLogout = "/bff/backchannel-logout";
     /// <summary>Answers what the browser is acting as: an impersonation, a tenant switch, or nothing.</summary>

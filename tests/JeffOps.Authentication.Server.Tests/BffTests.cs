@@ -47,7 +47,7 @@ public sealed partial class BffTests
         }
     }
 
-    private static async Task<Stack> StartAsync(string accessTokenLifetime = "00:15:00", DelegationSetup? delegation = null)
+    private static async Task<Stack> StartAsync(string accessTokenLifetime = "00:15:00", DelegationSetup? delegation = null, bool tokenMediating = false)
     {
         var routes = new RoutingHandler();
         var tokenServerSettings = new Dictionary<string, string?>
@@ -113,6 +113,7 @@ public sealed partial class BffTests
             ["JeffOps:Bff:Scopes:1"] = "email",
             ["JeffOps:Bff:Scopes:2"] = "api",
             ["JeffOps:Bff:Delegation:Enabled"] = delegation is null ? "false" : "true",
+            ["JeffOps:Bff:TokenMediating"] = tokenMediating ? "true" : "false",
         });
         if (delegation is not null)
         {
@@ -177,6 +178,44 @@ public sealed partial class BffTests
         var whoami = await stack.Browser.GetFromJsonAsync<JsonElement>(new Uri("api/whoami", UriKind.Relative), TestContext.Current.CancellationToken);
         whoami.GetProperty("user").GetString().ShouldBe(accountId.ToString());
         whoami.GetProperty("cookie").GetString().ShouldBeEmpty("the session cookie never reaches the backend");
+    }
+
+    [Fact]
+    public async Task Token_mediating_mode_hands_the_app_the_session_s_access_token_only_when_on()
+    {
+        await using (var proxyOnly = await StartAsync())
+        {
+            await SignInAsync(proxyOnly);
+            (await TokenAsync(proxyOnly.Browser, csrf: true)).StatusCode.ShouldBe(HttpStatusCode.NotFound, "off by default");
+        }
+
+        await using var stack = await StartAsync(tokenMediating: true);
+        var accountId = await SignInAsync(stack);
+
+        (await TokenAsync(stack.Browser, csrf: false)).StatusCode.ShouldBe(HttpStatusCode.Forbidden, "the CSRF header is required");
+
+        var response = await TokenAsync(stack.Browser, csrf: true);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        response.Headers.CacheControl!.NoStore.ShouldBeTrue();
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        body.TryGetProperty("refresh_token", out _).ShouldBeFalse("the refresh token stays in the BFF");
+        new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(body.GetProperty("access_token").GetString()).Subject.ShouldBe(accountId.ToString());
+        body.GetProperty("expires_at").GetInt64().ShouldBeGreaterThan(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        // Without a session there is no token.
+        using var anonymous = new HttpClient(stack.Routes.Clone()) { BaseAddress = new Uri("https://bff.test/") };
+        (await TokenAsync(anonymous, csrf: true)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    private static async Task<HttpResponseMessage> TokenAsync(HttpClient browser, bool csrf)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "bff/token");
+        if (csrf)
+        {
+            request.Headers.Add("X-JeffOps-Csrf", "1");
+        }
+
+        return await browser.SendAsync(request, TestContext.Current.CancellationToken);
     }
 
     [Fact]
