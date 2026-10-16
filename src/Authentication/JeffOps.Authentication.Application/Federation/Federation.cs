@@ -102,6 +102,21 @@ public sealed class FederationOptions
 /// <param name="SsoOnly">Whether every other sign-in method (passwords, passkeys, other providers) is refused for the domain.</param>
 public sealed record RealmPolicy(Guid TenantId, string? Provider, bool SsoOnly);
 
+/// <summary>
+/// The accounts a tenant's provisioning (SCIM) created or linked. On the first sign-in through the tenant's own SSO provider,
+/// such an account is claimed instead of a second one being created. The Enterprise module provides one; the default knows none.
+/// </summary>
+public interface IProvisionedAccountDirectory
+{
+    /// <summary>The account the tenant provisioned for <paramref name="email"/>, or null.</summary>
+    Task<Guid?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken);
+}
+
+public sealed class NoProvisionedAccounts : IProvisionedAccountDirectory
+{
+    public Task<Guid?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken) => Task.FromResult<Guid?>(null);
+}
+
 /// <summary>Tenants' verified email domains and their sign-in policy. The Enterprise module provides one; the default knows none.</summary>
 public interface IHomeRealmDirectory
 {

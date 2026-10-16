@@ -317,6 +317,7 @@ public static class EnterpriseServiceCollectionExtensions
 
         services.RemoveAll<IHomeRealmDirectory>();
         services.AddScoped<IHomeRealmDirectory, EnterpriseHomeRealms>();
+        services.AddScoped<IProvisionedAccountDirectory, ScimProvisionedAccounts>();
 
         services
             .AddHandler<ClaimDomainHandler>()

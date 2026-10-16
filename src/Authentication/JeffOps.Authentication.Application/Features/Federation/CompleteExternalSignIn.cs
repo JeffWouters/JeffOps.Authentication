@@ -26,10 +26,12 @@ public static class FederationErrors
 }
 
 /// <summary>
-/// Links by (issuer, subject) only — never by email, so a provider that lets users change their address can't be used to
-/// take over another account (docs/DESIGN.md §8.2). New accounts are created just in time when allowed. The email-domain
-/// policy applies to every external sign-in, not only the first, so removing a domain locks its users out at their next
-/// sign-in.
+/// Links by (issuer, subject) — not by email in general, so a provider that lets users change their address can't be used to
+/// take over another account (docs/DESIGN.md §8.2). One exception, where the tenant vouches for both sides: the first
+/// sign-in through a tenant's own SSO provider, with a verified email in the tenant's verified domain, claims the account
+/// that tenant's provisioning (SCIM) created or linked for that address, if it has no login from this provider yet. New
+/// accounts are created just in time when allowed. The email-domain policy applies to every external sign-in, not only the
+/// first, so removing a domain locks its users out at their next sign-in.
 /// </summary>
 public sealed class CompleteExternalSignInHandler(
     IAccountRepository accounts,
@@ -37,6 +39,7 @@ public sealed class CompleteExternalSignInHandler(
     SessionBuilder sessions,
     IEnumerable<IExternalSignInObserver> observers,
     IHomeRealmDirectory realms,
+    IProvisionedAccountDirectory provisioned,
     IAuditSink audit,
     IOptions<FederationOptions> options,
     IHostEnvironment environment,
@@ -73,6 +76,12 @@ public sealed class CompleteExternalSignInHandler(
         }
 
         var account = await accounts.FindByExternalLoginAsync(identity.Login, cancellationToken).ConfigureAwait(false);
+        if (account is null && admittedByTenant && realm is not null
+            && await ClaimProvisionedAsync(realm.TenantId, identity, now, cancellationToken).ConfigureAwait(false) is { } claimed)
+        {
+            account = claimed;
+        }
+
         var isNew = account is null;
         if (account is null)
         {
@@ -107,6 +116,30 @@ public sealed class CompleteExternalSignInHandler(
         }
 
         return new ExternalSignInResult(account.Id, identity.Strength, isNew);
+    }
+
+    /// <summary>The account the tenant provisioned for this email, now linked to this login; null when there is none to claim.</summary>
+    private async Task<Account?> ClaimProvisionedAsync(Guid tenantId, ExternalIdentity identity, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(identity.Email)
+            || await provisioned.FindAsync(tenantId, identity.Email, cancellationToken).ConfigureAwait(false) is not { } accountId
+            || await accounts.FindAsync(accountId, cancellationToken).ConfigureAwait(false) is not { } account
+            || !string.Equals(account.Email, Account.NormalizeEmail(identity.Email), StringComparison.Ordinal)
+            || account.ExternalLogins.Any(login => string.Equals(login.Issuer, identity.Login.Issuer, StringComparison.Ordinal)))
+        {
+            return null;
+        }
+
+        account.LinkExternalLogin(identity.Login, identity.Provider, now);
+        await audit.WriteAsync(
+            new AuditRecord("signin.provisioned_account_linked", "account", account.Id.ToString())
+            {
+                OccurredAt = now,
+                TenantId = tenantId,
+                Details = new Dictionary<string, string?> { ["provider"] = identity.Provider, ["issuer"] = identity.Login.Issuer },
+            },
+            cancellationToken).ConfigureAwait(false);
+        return account;
     }
 
     private bool DomainAllowed(string? email, FederationOptions settings)

@@ -116,6 +116,39 @@ public sealed class EnterpriseTests : IAsyncDisposable
         admitted.IsSuccess.ShouldBeTrue();
     }
 
+    [Fact]
+    public async Task The_first_sso_sign_in_claims_the_account_the_tenant_provisioned()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = false });
+        var provisioned = await ProvisionAsync("jo@contoso.com", Contoso);
+
+        var first = await ExternalSignInAsync(CorporateProvider, "jo@contoso.com", subject: "jo-at-idp");
+        first.IsSuccess.ShouldBeTrue(first.IsFailure ? first.Error.Message : null);
+        first.Value.AccountId.ShouldBe(provisioned, "the provisioned account is claimed, not a second one created");
+        first.Value.IsNewAccount.ShouldBeFalse();
+        (await ExternalSignInAsync(CorporateProvider, "jo@contoso.com", subject: "jo-at-idp")).Value.AccountId.ShouldBe(provisioned);
+
+        // Another identity at the same provider claiming the same address doesn't take the account over.
+        (await ExternalSignInAsync(CorporateProvider, "jo@contoso.com", subject: "someone-else")).Value.AccountId.ShouldNotBe(provisioned);
+    }
+
+    [Fact]
+    public async Task Accounts_the_tenant_didn_t_provision_are_not_claimed_by_email()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = false });
+        var selfRegistered = await _host.CreateAccountAsync("lee@contoso.com");
+
+        var signedIn = await ExternalSignInAsync(CorporateProvider, "lee@contoso.com");
+
+        signedIn.Value.AccountId.ShouldNotBe(selfRegistered.Id);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_host is not null)
@@ -179,12 +212,22 @@ public sealed class EnterpriseTests : IAsyncDisposable
         await PostAsync(admin, $"enterprise/domains/{claimed.GetProperty("id").GetString()}/verify");
     }
 
-    private async Task<Result<ExternalSignInResult>> ExternalSignInAsync(string provider, string email)
+    private async Task<Result<ExternalSignInResult>> ExternalSignInAsync(string provider, string email, string? subject = null)
     {
         await using var scope = _host.Services.CreateAsyncScope();
-        var identity = new ExternalIdentity(provider, new ExternalLoginKey("https://idp.test/", Guid.NewGuid().ToString()), email, true, "Jo", AuthenticationStrength.Password);
+        var identity = new ExternalIdentity(provider, new ExternalLoginKey("https://idp.test/", subject ?? Guid.NewGuid().ToString()), email, true, "Jo", AuthenticationStrength.Password);
         return await scope.ServiceProvider.GetRequiredService<ICommandHandler<CompleteExternalSignInCommand, ExternalSignInResult>>()
             .HandleAsync(new CompleteExternalSignInCommand(identity), TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>An account the tenant's SCIM provisioning created, as the SCIM endpoints would record it.</summary>
+    private async Task<Guid> ProvisionAsync(string email, Guid tenant)
+    {
+        var account = await _host.CreateAccountAsync(email);
+        await using var scope = _host.Services.CreateAsyncScope();
+        scope.ServiceProvider.GetRequiredService<IScimUserRepository>().Add(Enterprise.Domain.ScimUser.Provision(tenant, account.Id, createdAccount: true, _host.Time.GetUtcNow()));
+        await scope.ServiceProvider.GetRequiredService<IEnterpriseUnitOfWork>().SaveChangesAsync(TestContext.Current.CancellationToken);
+        return account.Id;
     }
 
     private async Task<JsonElement> PostAsync(string token, string path, object? body = null) =>

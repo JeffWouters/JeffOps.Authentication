@@ -1,3 +1,4 @@
+using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Domain;
 using Microsoft.Extensions.Options;
@@ -77,6 +78,19 @@ public static class EnterpriseErrors
     public const string DnsUnavailable = "dns_unavailable";
     public const string UnknownProvider = "unknown_provider";
     public const string NoVerifiedDomain = "no_verified_domain";
+}
+
+/// <summary>The accounts a tenant's SCIM provisioning created or linked, by email.</summary>
+public sealed class ScimProvisionedAccounts(IAccountRepository accounts, IScimUserRepository users) : IProvisionedAccountDirectory
+{
+    public async Task<Guid?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(email);
+        return await accounts.FindByEmailAsync(email, cancellationToken).ConfigureAwait(false) is { } account
+            && await users.FindAsync(tenantId, account.Id, cancellationToken).ConfigureAwait(false) is not null
+            ? account.Id
+            : null;
+    }
 }
 
 /// <summary>Home realm discovery and SSO policy from tenants' verified domains.</summary>
