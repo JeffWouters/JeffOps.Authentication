@@ -148,6 +148,7 @@ public static class AuthenticationServiceCollectionExtensions
                     }));
 
                 BoundAccessTokens.Register(server);
+                PushedAuthorizationDpop.Register(server);
                 server.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()
                     .EnableTokenEndpointPassthrough()

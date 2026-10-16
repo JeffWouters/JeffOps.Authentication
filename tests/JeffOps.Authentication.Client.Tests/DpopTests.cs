@@ -150,7 +150,26 @@ public sealed class DpopResourceServerTests
         });
     }
 
-    private static async Task<WebApplication> StartAsync(DpopMode mode = DpopMode.Allowed)
+    [Fact]
+    public async Task With_nonces_a_proof_must_carry_a_recent_one_from_this_service()
+    {
+        await using var app = await StartAsync(nonces: true);
+        using var key = new DpopKey();
+        var token = Token(key.Thumbprint);
+
+        var first = await SendAsync(app, "DPoP", token, key.Proof("GET", "http://localhost/me", token));
+        first.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        first.Headers.WwwAuthenticate.ToString().ShouldContain("error=\"use_dpop_nonce\"");
+        var nonce = first.Headers.GetValues("DPoP-Nonce").ShouldHaveSingleItem();
+
+        var retried = await SendAsync(app, "DPoP", token, key.Proof("GET", "http://localhost/me", token, nonce: nonce));
+        retried.StatusCode.ShouldBe(HttpStatusCode.OK);
+        retried.Headers.Contains("DPoP-Nonce").ShouldBeTrue("every answer carries a fresh nonce");
+
+        (await SendAsync(app, "DPoP", token, key.Proof("GET", "http://localhost/me", token, nonce: "made-up"))).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    private static async Task<WebApplication> StartAsync(DpopMode mode = DpopMode.Allowed, bool nonces = false)
     {
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
         builder.WebHost.UseTestServer();
@@ -160,6 +179,7 @@ public sealed class DpopResourceServerTests
             ["JeffOps:Authentication:Authority"] = Issuer,
             ["JeffOps:Authentication:Audiences:0"] = "api",
             ["JeffOps:Authentication:Dpop"] = mode.ToString(),
+            ["JeffOps:Authentication:DpopNonces"] = nonces ? "true" : "false",
         });
         builder.Services.AddJeffOpsAuthenticationClient(builder.Configuration);
         builder.Services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>

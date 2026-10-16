@@ -84,6 +84,64 @@ public sealed partial class HardeningTests
     }
 
     [Fact]
+    public async Task A_dpop_proof_at_the_pushed_request_binds_the_code_to_its_key()
+    {
+        await using var host = await StartAsync();
+        var account = await host.CreateAccountAsync();
+        using var key = new DpopKey();
+        using var thief = new DpopKey();
+        var verifier = Base64Url(RandomNumberGenerator.GetBytes(32));
+        var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
+
+        using var push = new HttpRequestMessage(HttpMethod.Post, "connect/par")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["client_id"] = ParClient,
+                ["client_secret"] = ParSecret,
+                ["response_type"] = "code",
+                ["redirect_uri"] = ParRedirect,
+                ["scope"] = "openid",
+                ["code_challenge"] = challenge,
+                ["code_challenge_method"] = "S256",
+            }),
+        };
+        push.Headers.Add("DPoP", key.Proof("POST", "https://localhost/connect/par"));
+        var par = await host.Client.SendAsync(push, TestContext.Current.CancellationToken);
+        par.StatusCode.ShouldBe(HttpStatusCode.Created, await par.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var requestUri = JsonDocument.Parse(await par.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement.GetProperty("request_uri").GetString()!;
+
+        using var authorize = new HttpRequestMessage(HttpMethod.Get, $"connect/authorize?client_id={ParClient}&request_uri={Uri.EscapeDataString(requestUri)}");
+        authorize.Headers.Add(HeaderSignIn.Header, $"{account.Id}|pwd,mfa|{host.Time.GetUtcNow().ToUnixTimeSeconds()}");
+        var code = TokenServerHost.QueryValue((await host.Client.SendAsync(authorize, TestContext.Current.CancellationToken)).Headers.Location!, "code")!;
+
+        Dictionary<string, string> Redeem() => new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = code,
+            ["redirect_uri"] = ParRedirect,
+            ["code_verifier"] = verifier,
+            ["client_id"] = ParClient,
+            ["client_secret"] = ParSecret,
+        };
+        (await RedeemAsync(host, Redeem(), proof: null)).ShouldContain("invalid_dpop_proof", Case.Sensitive, "the code is bound to the pushed proof's key");
+        (await RedeemAsync(host, Redeem(), thief.Proof("POST", "https://localhost/connect/token"))).ShouldContain("invalid_dpop_proof");
+        JsonDocument.Parse(await RedeemAsync(host, Redeem(), key.Proof("POST", "https://localhost/connect/token")))
+            .RootElement.GetProperty("token_type").GetString().ShouldBe("DPoP");
+    }
+
+    private static async Task<string> RedeemAsync(TokenServerHost host, Dictionary<string, string> form, string? proof)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "connect/token") { Content = new FormUrlEncodedContent(form) };
+        if (proof is not null)
+        {
+            request.Headers.Add("DPoP", proof);
+        }
+
+        return await (await host.Client.SendAsync(request, TestContext.Current.CancellationToken)).Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task A_device_gets_tokens_after_its_user_approves_on_another_screen()
     {
         await using var host = await StartAsync();

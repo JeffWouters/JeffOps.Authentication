@@ -31,6 +31,14 @@ public sealed class AuthenticationClientOptions
     /// </summary>
     public Access.DpopMode Dpop { get; set; } = Access.DpopMode.Allowed;
 
+    /// <summary>
+    /// Whether DPoP proofs must carry a nonce this service issued (RFC 9449 §9), so a proof can't be made in advance. Every
+    /// answer to a DPoP request carries a fresh nonce in the <c>DPoP-Nonce</c> header; a proof without a valid one is
+    /// answered 401 with <c>WWW-Authenticate: DPoP error="use_dpop_nonce"</c>, and the client retries with it. Nonces are
+    /// Data-Protected timestamps valid for five minutes: share the Data Protection key ring between instances. Default: false.
+    /// </summary>
+    public bool DpopNonces { get; set; }
+
     /// <summary>Which service tokens may be scoped to a tenant by trusted internal headers.</summary>
     public ServiceTokenTenantScopingOptions ServiceTokenTenantScoping { get; } = new();
 }

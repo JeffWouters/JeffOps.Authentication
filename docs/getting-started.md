@@ -181,7 +181,7 @@ are managed by the authorization management API (`JeffOps.Authorization.Infrastr
 `AddJeffOpsAuthorization(...)` and `MapJeffOpsAuthorization()`), usually in its own service.
 
 **DPoP.** Tokens bound to a client key are checked automatically. Set `JeffOps:Authentication:Dpop` to `Required` to
-accept only bound tokens. With several instances of an API, register a shared `IReplayCache` (for example on Redis) so
+accept only bound tokens, and `JeffOps:Authentication:DpopNonces` to `true` to make clients include a nonce this API issued. With several instances of an API, register a shared `IReplayCache` (for example on Redis) so
 each proof is accepted once across all of them.
 
 ## 3. A single-page app behind a BFF

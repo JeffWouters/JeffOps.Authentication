@@ -62,7 +62,7 @@ public static class AuthenticationClientServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<Abstractions.Replay.IReplayCache>(provider => new Abstractions.Replay.MemoryReplayCache(provider.GetService<TimeProvider>()));
         services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
-            .PostConfigure<IOptions<AuthenticationClientOptions>, TimeProvider>((jwt, client, time) => DpopValidation.Attach(jwt, client.Value.Dpop, time));
+            .PostConfigure<IOptions<AuthenticationClientOptions>, TimeProvider>((jwt, client, time) => DpopValidation.Attach(jwt, client.Value.Dpop, time, client.Value.DpopNonces));
 
         services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder().RequireAuthenticatedUser().Build());

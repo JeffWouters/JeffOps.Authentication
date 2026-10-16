@@ -2,6 +2,7 @@ using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Dpop;
 using JeffOps.Authentication.Abstractions.Replay;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
 
@@ -26,9 +27,11 @@ internal static class DpopValidation
 {
     private const string SchemeItem = "jeffops:dpop:scheme";
     private const string FailedItem = "jeffops:dpop:failed";
+    private const string NonceItem = "jeffops:dpop:use-nonce";
+    private const string NoncePurpose = "JeffOps.Dpop.ResourceNonce";
     private static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
 
-    public static void Attach(JwtBearerOptions jwt, DpopMode mode, TimeProvider time)
+    public static void Attach(JwtBearerOptions jwt, DpopMode mode, TimeProvider time, bool requireNonce = false)
     {
         // The checks live in JwtBearerOptions.Events and need the token as a JsonWebToken; configurations that bypass either
         // would let a bound token through without its proof, so they are refused.
@@ -61,7 +64,7 @@ internal static class DpopValidation
 
         events.OnTokenValidated = async context =>
         {
-            if (await CheckAsync(context, mode, time).ConfigureAwait(false) is { } failure)
+            if (await CheckAsync(context, mode, time, requireNonce).ConfigureAwait(false) is { } failure)
             {
                 context.HttpContext.Items[FailedItem] = true;
                 context.Fail(failure);
@@ -73,7 +76,13 @@ internal static class DpopValidation
 
         events.OnChallenge = async context =>
         {
-            if (context.HttpContext.Items.ContainsKey(FailedItem) || mode == DpopMode.Required)
+            if (context.HttpContext.Items.ContainsKey(NonceItem))
+            {
+                context.Response.Headers.WWWAuthenticate = Microsoft.Extensions.Primitives.StringValues.Concat(
+                    context.Response.Headers.WWWAuthenticate,
+                    $"{DpopProofValidator.Scheme} error=\"use_dpop_nonce\", error_description=\"Resend the request with the DPoP-Nonce value in the proof.\"");
+            }
+            else if (context.HttpContext.Items.ContainsKey(FailedItem) || mode == DpopMode.Required)
             {
                 context.Response.Headers.WWWAuthenticate = Microsoft.Extensions.Primitives.StringValues.Concat(
                     context.Response.Headers.WWWAuthenticate,
@@ -86,7 +95,7 @@ internal static class DpopValidation
         jwt.Events = events;
     }
 
-    private static async Task<string?> CheckAsync(TokenValidatedContext context, DpopMode mode, TimeProvider time)
+    private static async Task<string?> CheckAsync(TokenValidatedContext context, DpopMode mode, TimeProvider time, bool requireNonce)
     {
         var http = context.HttpContext;
         var usedDpopScheme = http.Items.ContainsKey(SchemeItem);
@@ -139,9 +148,50 @@ internal static class DpopValidation
             return "The DPoP proof is signed by another key than the token is bound to.";
         }
 
+        // Server nonces: every answer carries a fresh one; a proof without a valid one is turned away with it.
+        if (requireNonce)
+        {
+            var nonces = http.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector(NoncePurpose);
+            http.Response.Headers[DpopProofValidator.NonceHeaderName] = DpopNonces.Issue(nonces, now);
+            if (!DpopNonces.IsValid(nonces, proof.Nonce, now))
+            {
+                http.Items[NonceItem] = true;
+                return "The DPoP proof needs the nonce in the DPoP-Nonce header.";
+            }
+        }
+
         return await http.RequestServices.GetRequiredService<IReplayCache>()
                 .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, http.RequestAborted).ConfigureAwait(false)
             ? null
             : "This DPoP proof was already used.";
+    }
+}
+
+/// <summary>Server-issued DPoP nonces (RFC 9449 §9): Data-Protected issue times, valid for five minutes.</summary>
+internal static class DpopNonces
+{
+    private static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(5);
+
+    public static string Issue(IDataProtector protector, DateTimeOffset now) =>
+        DpopProofValidator.Base64Url(protector.Protect(BitConverter.GetBytes(now.ToUnixTimeSeconds())));
+
+    public static bool IsValid(IDataProtector protector, string? nonce, DateTimeOffset now)
+    {
+        if (string.IsNullOrEmpty(nonce) || nonce.Length > 512)
+        {
+            return false;
+        }
+
+        try
+        {
+            var base64 = nonce.Replace('-', '+').Replace('_', '/');
+            base64 = base64.PadRight(base64.Length + ((4 - (base64.Length % 4)) % 4), '=');
+            var issued = DateTimeOffset.FromUnixTimeSeconds(BitConverter.ToInt64(protector.Unprotect(Convert.FromBase64String(base64))));
+            return issued <= now + TimeSpan.FromMinutes(1) && now - issued <= Lifetime;
+        }
+        catch (Exception exception) when (exception is FormatException or System.Security.Cryptography.CryptographicException or ArgumentException)
+        {
+            return false;
+        }
     }
 }
