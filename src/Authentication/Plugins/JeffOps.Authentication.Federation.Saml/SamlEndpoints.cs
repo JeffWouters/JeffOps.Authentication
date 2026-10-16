@@ -29,9 +29,14 @@ namespace JeffOps.Authentication.Federation.Saml;
 /// </summary>
 public static partial class SamlEndpoints
 {
+    /// <summary>The route prefix of the SAML endpoints: <c>signin/saml</c>.</summary>
     public const string Prefix = "signin/saml";
     private const string LoginPath = "/account/login";
 
+    /// <summary>
+    /// Maps the sign-in, assertion consumer and metadata endpoints under <see cref="Prefix"/> for every provider added with
+    /// <c>AddSamlProvider</c>. They allow anonymous callers and are left out of the API description.
+    /// </summary>
     public static IEndpointRouteBuilder MapJeffOpsSaml(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);

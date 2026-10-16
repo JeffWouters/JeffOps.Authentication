@@ -45,10 +45,13 @@ public sealed record AccessContext(
     /// <summary>An unauthenticated caller with no tenant.</summary>
     public static AccessContext Anonymous { get; } = new(null, null, null, null, AccessLevel.Tenant);
 
+    /// <summary>Whether the caller is a platform administrator (<see cref="AccessLevel.Root"/>).</summary>
     public bool IsRoot => Level == AccessLevel.Root;
 
+    /// <summary>Whether the caller is a service principal, which is authorized by its permission grants rather than by <see cref="Level"/>.</summary>
     public bool IsService => Level == AccessLevel.Service;
 
+    /// <summary>Whether the caller is acting on a managed tenant: at <see cref="AccessLevel.Delegated"/> or with an <see cref="ActingTenantId"/>.</summary>
     public bool IsDelegated => Level == AccessLevel.Delegated || ActingTenantId is not null;
 
     /// <summary>The tenant this request targets: the acting tenant in a delegated session, otherwise the home tenant.</summary>
@@ -60,9 +63,11 @@ public sealed record AccessContext(
 /// </summary>
 public interface IAccessContextAccessor
 {
+    /// <summary>The current request's access context; <see cref="AccessContext.Anonymous"/> for an unauthenticated caller.</summary>
     AccessContext GetAccessContext();
 }
 
+/// <summary>Convenience methods over <see cref="IAccessContextAccessor"/>.</summary>
 public static class AccessContextAccessorExtensions
 {
     /// <summary>The effective tenant of the current request, or throws when none is in scope.</summary>

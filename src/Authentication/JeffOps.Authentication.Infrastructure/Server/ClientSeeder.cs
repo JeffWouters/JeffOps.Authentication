@@ -172,5 +172,6 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
 /// <summary>Prepares the database before clients are seeded, for example by applying migrations.</summary>
 public interface IAuthenticationDatabaseInitializer
 {
+    /// <summary>Brings the database up to date. Runs once at startup, before clients and scopes are seeded.</summary>
     Task InitializeAsync(CancellationToken cancellationToken);
 }

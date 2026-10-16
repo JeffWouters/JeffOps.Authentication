@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace JeffOps.Authentication.Federation.Saml;
 
+/// <summary>Registers SAML 2.0 identity providers.</summary>
 public static class SamlServiceCollectionExtensions
 {
     /// <summary>

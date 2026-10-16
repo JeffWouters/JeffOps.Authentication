@@ -12,14 +12,18 @@ namespace JeffOps.Authentication.Client.ServiceTokens;
 /// </summary>
 public sealed class ServiceTokenOptions
 {
+    /// <summary>The configuration section the options bind from: <c>JeffOps:ServiceToken</c>.</summary>
     public const string SectionName = "JeffOps:ServiceToken";
 
+    /// <summary>The token server's token endpoint. Required.</summary>
     [Required]
     public Uri? TokenEndpoint { get; set; }
 
+    /// <summary>This service's client id at the token server. Required.</summary>
     [Required]
     public string? ClientId { get; set; }
 
+    /// <summary>This service's client secret. Required.</summary>
     [Required]
     public string? ClientSecret { get; set; }
 
@@ -36,12 +40,17 @@ public sealed class ServiceTokenOptions
 /// </summary>
 public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, IOptions<ServiceTokenOptions> options, TimeProvider time) : IDisposable
 {
+    /// <summary>The name of the HTTP client that calls the token endpoint.</summary>
     public const string HttpClientName = "JeffOps.ServiceToken";
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _token;
     private DateTimeOffset _refreshAt = DateTimeOffset.MinValue;
 
+    /// <summary>
+    /// This service's access token, cached or newly acquired. Throws <see cref="HttpRequestException"/> when the token
+    /// endpoint refuses the request.
+    /// </summary>
     public async Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
     {
         if (_token is { } cached && time.GetUtcNow() < _refreshAt)
@@ -97,6 +106,7 @@ public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, I
         }
     }
 
+    /// <inheritdoc />
     public void Dispose() => _gate.Dispose();
 
     private sealed record TokenResponse(
@@ -107,6 +117,7 @@ public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, I
 /// <summary>Attaches the service's bearer token to outgoing requests that carry no Authorization header.</summary>
 public sealed class ServiceTokenHandler(ServiceTokenProvider tokens) : DelegatingHandler
 {
+    /// <inheritdoc />
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.UI;
 
+/// <summary>Registers and maps the hosted login UI.</summary>
 public static class UiServiceCollectionExtensions
 {
     /// <summary>Adds the hosted login UI (Razor components, static server rendering).</summary>

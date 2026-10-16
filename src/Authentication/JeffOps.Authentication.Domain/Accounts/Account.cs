@@ -46,6 +46,12 @@ public sealed class Account : AggregateRoot<Guid>
 
     public DateTimeOffset UpdatedAt { get; private set; }
 
+    /// <summary>
+    /// Sessions signed in before this moment are over: set when credentials change or the user (or an operator) signs out
+    /// everywhere. Null when sessions were never revoked.
+    /// </summary>
+    public DateTimeOffset? SessionsRevokedAt { get; private set; }
+
     public IReadOnlyCollection<ExternalLogin> ExternalLogins => _externalLogins.AsReadOnly();
 
     public bool CanAuthenticate => Status == AccountStatus.Active;
@@ -144,9 +150,28 @@ public sealed class Account : AggregateRoot<Guid>
         return true;
     }
 
+    /// <summary>
+    /// Ends every session of the account: refresh tokens issued before <paramref name="now"/> stop working, and clients are
+    /// told to drop their sessions. <paramref name="reason"/> is a stable code such as <c>password_changed</c>.
+    /// </summary>
+    public void RevokeSessions(DateTimeOffset now, string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        SessionsRevokedAt = now;
+        UpdatedAt = now;
+        Raise(new AccountSessionsRevoked(Id, reason));
+    }
+
+    /// <summary>Whether a session that signed in at <paramref name="signedInAt"/> has been revoked since (second precision, as <c>auth_time</c>).</summary>
+    public bool IsSessionRevoked(DateTimeOffset signedInAt) =>
+        SessionsRevokedAt is { } revoked && signedInAt.ToUnixTimeSeconds() < revoked.ToUnixTimeSeconds();
+
     public static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 }
 
 public sealed record AccountRegistered(Guid AccountId, string Email) : IDomainEvent;
 
 public sealed record AccountStatusChanged(Guid AccountId, bool Disabled) : IDomainEvent;
+
+/// <summary>Every session of the account was ended (<paramref name="Reason"/> is a stable code such as <c>password_changed</c>).</summary>
+public sealed record AccountSessionsRevoked(Guid AccountId, string Reason) : IDomainEvent;

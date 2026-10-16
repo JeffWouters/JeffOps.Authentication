@@ -12,6 +12,7 @@ namespace JeffOps.Authentication.Bff.Sessions;
 /// <summary>The outcome of starting or re-minting a derived session.</summary>
 public enum DerivedOutcome
 {
+    /// <summary>The derived session was started, or its token minted again.</summary>
     Started,
 
     /// <summary>The token server refused (grant over, relationship gone, ...): nothing to retry.</summary>
@@ -24,6 +25,11 @@ public enum DerivedOutcome
     SignedOut,
 }
 
+/// <summary>The result of starting or re-minting a derived session.</summary>
+/// <param name="Outcome">What happened.</param>
+/// <param name="Id">The new derived session's id, for the acting cookie; set when a session was started.</param>
+/// <param name="Session">The derived session; set when the outcome is <see cref="DerivedOutcome.Started"/>.</param>
+/// <param name="Error">The token server's OAuth error code when it refused.</param>
 public sealed record DerivedStart(DerivedOutcome Outcome, string? Id = null, BffSession? Session = null, string? Error = null);
 
 /// <summary>
@@ -41,7 +47,9 @@ public sealed partial class DerivedSessionManager(
     TimeProvider time,
     ILogger<DerivedSessionManager> logger)
 {
+    /// <summary>The <see cref="BffSession.Kind"/> of an impersonation session.</summary>
     public const string Impersonation = "impersonation";
+    /// <summary>The <see cref="BffSession.Kind"/> of a tenant-switch session.</summary>
     public const string TenantSwitch = "tenant-switch";
 
     private static readonly SemaphoreSlim[] MintStripes = [.. Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1))];
@@ -112,6 +120,7 @@ public sealed partial class DerivedSessionManager(
         return session;
     }
 
+    /// <summary>Whether <paramref name="session"/> was started from own session <paramref name="ownerId"/>, compared in constant time.</summary>
     public static bool BelongsTo(BffSession session, string ownerId)
     {
         ArgumentNullException.ThrowIfNull(session);

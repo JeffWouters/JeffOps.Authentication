@@ -32,9 +32,11 @@ public sealed record AuthorizationManagementBuilder(IServiceCollection Services,
 /// <summary>Prepares the database before seeding, for example by applying migrations.</summary>
 public interface IAuthorizationDatabaseInitializer
 {
+    /// <summary>Brings the database up to date. Runs once at startup, before the management store is seeded.</summary>
     Task InitializeAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>Registers authorization management.</summary>
 public static class AuthorizationManagementServiceCollectionExtensions
 {
     /// <summary>

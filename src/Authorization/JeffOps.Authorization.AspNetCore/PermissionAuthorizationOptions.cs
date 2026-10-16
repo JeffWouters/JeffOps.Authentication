@@ -10,6 +10,7 @@ namespace JeffOps.Authorization.AspNetCore;
 /// </summary>
 public sealed class PermissionAuthorizationOptions
 {
+    /// <summary>The configuration section the options bind from: <c>JeffOps:Authorization</c>.</summary>
     public const string SectionName = "JeffOps:Authorization";
 
     /// <summary>Base address of the authorization management service whose read API is cached locally.</summary>
@@ -27,8 +28,10 @@ public sealed class PermissionAuthorizationOptions
     /// </summary>
     public IList<string> ImpersonationRefusedPermissions { get; } = [];
 
+    /// <summary>The scopes a delegated (impersonation or tenant-switch) token can carry, and what each one allows.</summary>
     public DelegationCeilingOptions Delegation { get; } = new();
 
+    /// <summary>Lifetimes, sealing key and partition of the local decision cache.</summary>
     public DecisionCacheOptions Cache { get; } = new();
 
     internal DelegationCeiling BuildDelegationCeiling() => new(
@@ -63,10 +66,13 @@ public sealed class DecisionCacheOptions
     /// <summary>How long a user's role assignments are cached; also the revocation window without invalidation events.</summary>
     public TimeSpan Assignments { get; set; } = TimeSpan.FromSeconds(60);
 
+    /// <summary>How long the permissions of each role are cached. Default: 10 minutes.</summary>
     public TimeSpan RolePermissions { get; set; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>How long the attribute policies are cached. Default: 60 seconds.</summary>
     public TimeSpan Policies { get; set; } = TimeSpan.FromSeconds(60);
 
+    /// <summary>How long the scope hierarchy is cached. Default: 5 minutes.</summary>
     public TimeSpan Scopes { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>How long past its lifetime a sealed entry is still accepted, to ride out a short outage of the source.</summary>

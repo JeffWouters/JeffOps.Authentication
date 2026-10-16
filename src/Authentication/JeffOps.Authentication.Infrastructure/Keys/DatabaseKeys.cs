@@ -14,13 +14,16 @@ namespace JeffOps.Authentication.Infrastructure.Keys;
 /// <summary>Signing-key settings. Bound from <c>JeffOps:TokenServer:SigningKeys</c>.</summary>
 public sealed class SigningKeyOptions
 {
+    /// <summary>The configuration section the options bind from.</summary>
     public const string SectionName = "JeffOps:TokenServer:SigningKeys";
 
+    /// <summary>The size in bits of newly created RSA keys. Default: 2048.</summary>
     public int RsaKeySize { get; set; } = 2048;
 
     /// <summary>Rotate database signing keys. On by default.</summary>
     public bool RotationEnabled { get; set; } = true;
 
+    /// <summary>How old the signing key may get before a successor is created. Default: 30 days.</summary>
     public TimeSpan RotationInterval { get; set; } = TimeSpan.FromDays(30);
 
     /// <summary>How long a replaced key stays published after it stopped signing; must exceed the longest token lifetime.</summary>
@@ -29,6 +32,7 @@ public sealed class SigningKeyOptions
     /// <summary>How long a new key is published before it signs, so resource services have fetched it.</summary>
     public TimeSpan ActivationDelay { get; set; } = TimeSpan.FromDays(1);
 
+    /// <summary>How often the rotation service checks whether a key is due for creation, retirement or activation. Default: 1 hour.</summary>
     public TimeSpan CheckInterval { get; set; } = TimeSpan.FromHours(1);
 }
 
@@ -52,14 +56,20 @@ public sealed partial class DatabaseKeyStore(
     private IReadOnlyList<RSA>? _encryption;
     private string? _announcedSigner;
 
+    /// <inheritdoc />
     public event EventHandler? KeysChanged;
 
+    /// <inheritdoc />
     public IReadOnlyList<SigningKey> GetSigningKeys()
     {
         EnsureLoaded();
         return _signing!;
     }
 
+    /// <summary>
+    /// The keys that encrypt the tokens the server reads back itself (refresh tokens and codes), newest first. Created on
+    /// first use and not rotated.
+    /// </summary>
     public IReadOnlyList<RSA> GetEncryptionKeys()
     {
         EnsureLoaded();

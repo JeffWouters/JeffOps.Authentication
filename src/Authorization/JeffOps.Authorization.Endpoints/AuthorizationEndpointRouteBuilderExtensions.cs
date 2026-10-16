@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Routing;
 
 namespace JeffOps.Authorization.Endpoints;
 
+/// <summary>Maps the authorization management endpoints.</summary>
 public static class AuthorizationEndpointRouteBuilderExtensions
 {
     /// <summary>

@@ -8,6 +8,7 @@ namespace JeffOps.Authentication.Bff.Middleware;
 /// <summary>The session cookie: <c>__Host-</c> prefixed on HTTPS, HttpOnly, SameSite=Lax.</summary>
 public static class BffCookie
 {
+    /// <summary>The session cookie's name: <see cref="BffOptions.CookieName"/>, with a <c>__Host-</c> prefix on HTTPS.</summary>
     public static string Name(HttpRequest request, BffOptions options)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -23,6 +24,10 @@ public static class BffCookie
         return request.IsHttps ? "__Host-" + options.Delegation.CookieName : options.Delegation.CookieName;
     }
 
+    /// <summary>
+    /// Options for a BFF cookie expiring at <paramref name="expires"/>: HttpOnly, SameSite=Lax, path <c>/</c>, and Secure on
+    /// HTTPS. Pass <see cref="DateTimeOffset.UnixEpoch"/> when deleting the cookie.
+    /// </summary>
     public static CookieOptions Options(HttpRequest request, DateTimeOffset expires)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -46,6 +51,7 @@ public static class BffCookie
 /// </summary>
 public sealed class CsrfMiddleware(RequestDelegate next, IOptions<BffOptions> options)
 {
+    /// <summary>Answers 403 with problem details to a state-changing request missing the CSRF header; otherwise calls the next middleware.</summary>
     public async Task InvokeAsync(HttpContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -78,6 +84,7 @@ public sealed class CsrfMiddleware(RequestDelegate next, IOptions<BffOptions> op
 /// </summary>
 public sealed class CookieToBearerMiddleware(RequestDelegate next, BffSessionManager sessions, IServiceProvider services, IOptions<BffOptions> options)
 {
+    /// <summary>Sets the bearer from the session (or acting session) cookie, then calls the next middleware.</summary>
     public async Task InvokeAsync(HttpContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -150,13 +157,22 @@ public sealed class CookieToBearerMiddleware(RequestDelegate next, BffSessionMan
 /// <summary>The BFF's own endpoints.</summary>
 public static class BffPaths
 {
+    /// <summary>Starts sign-in with the authorization code flow and PKCE; an optional local <c>returnUrl</c> is where it ends.</summary>
     public const string Login = "/bff/login";
+    /// <summary>The redirect URI the token server returns to; it creates the session and sets the session cookie.</summary>
     public const string Callback = "/bff/callback";
+    /// <summary>Ends the session (a POST with the CSRF header) and answers the token server's end-session URL.</summary>
     public const string Logout = "/bff/logout";
+    /// <summary>Answers the signed-in user's claims (<see cref="BffOptions.UserClaims"/>).</summary>
     public const string Me = "/bff/me";
+    /// <summary>Receives OpenID Connect back-channel logout tokens from the token server; exempt from the CSRF header.</summary>
     public const string BackchannelLogout = "/bff/backchannel-logout";
+    /// <summary>Answers what the browser is acting as: an impersonation, a tenant switch, or nothing.</summary>
     public const string Acting = "/bff/acting";
+    /// <summary>Starts an impersonation session from an approved grant (POST).</summary>
     public const string StartImpersonation = "/bff/impersonation/{grantId}/start";
+    /// <summary>Starts a session acting in another tenant (POST).</summary>
     public const string SwitchTenant = "/bff/tenants/{tenantId}/switch";
+    /// <summary>Ends the derived session, and an impersonation grant at the token server (POST).</summary>
     public const string StopActing = "/bff/acting/stop";
 }

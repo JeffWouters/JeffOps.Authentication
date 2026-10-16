@@ -6,26 +6,37 @@ namespace JeffOps.Authorization.Infrastructure.Persistence;
 /// <summary>The authorization management store. Provider-neutral; migrations come from a persistence package.</summary>
 public sealed class AuthorizationDbContext(DbContextOptions<AuthorizationDbContext> options) : DbContext(options)
 {
+    /// <summary>The database schema that holds the authorization management tables.</summary>
     public const string Schema = "authz";
 
+    /// <summary>Roles: built-in ones from the host's role provider, and each tenant's custom ones.</summary>
     public DbSet<Role> Roles => Set<Role>();
 
+    /// <summary>Roles assigned to users, per tenant and scope, optionally expiring.</summary>
     public DbSet<Assignment> Assignments => Set<Assignment>();
 
+    /// <summary>Changes waiting for, or decided by, a second person's approval (four-eyes).</summary>
     public DbSet<RoleChangeRequest> RoleChangeRequests => Set<RoleChangeRequest>();
 
+    /// <summary>Whether role changes need four-eyes approval, per tenant and as the global default.</summary>
     public DbSet<ApprovalSetting> ApprovalSettings => Set<ApprovalSetting>();
 
+    /// <summary>The permissions services have declared to the registry.</summary>
     public DbSet<RegisteredPermission> RegisteredPermissions => Set<RegisteredPermission>();
 
+    /// <summary>The managed ABAC policies.</summary>
     public DbSet<StoredPolicy> Policies => Set<StoredPolicy>();
 
+    /// <summary>The nodes of the scope hierarchy, from the built-in <c>system</c> root down.</summary>
     public DbSet<Scope> Scopes => Set<Scope>();
 
+    /// <summary>Roles assigned to groups, held by every member of the group.</summary>
     public DbSet<GroupAssignment> GroupAssignments => Set<GroupAssignment>();
 
+    /// <summary>Group memberships, mirrored from the group's source (SCIM provisioning or the host).</summary>
     public DbSet<GroupMember> GroupMembers => Set<GroupMember>();
 
+    /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

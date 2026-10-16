@@ -188,4 +188,6 @@ internal sealed record ValidatedService(Type ServiceType);
 /// Records the original implementation behind a decorated registration, so tooling (and the architecture tests)
 /// can still see which concrete handler a service resolves to.
 /// </summary>
+/// <param name="ServiceType">The handler interface that was decorated.</param>
+/// <param name="ImplementationType">The concrete handler behind the decorators.</param>
 public sealed record DecoratedService(Type ServiceType, Type ImplementationType);

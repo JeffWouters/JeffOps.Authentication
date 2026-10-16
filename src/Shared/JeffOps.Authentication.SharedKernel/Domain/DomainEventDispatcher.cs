@@ -8,6 +8,7 @@ namespace JeffOps.Authentication.SharedKernel.Domain;
 /// </summary>
 public interface IDomainEventDispatcher
 {
+    /// <summary>Runs every registered handler for each event, in order; an exception from a handler stops dispatch and propagates.</summary>
     Task DispatchAsync(IEnumerable<IDomainEvent> domainEvents, CancellationToken cancellationToken);
 }
 
@@ -18,6 +19,7 @@ public sealed class DomainEventDispatcher(IServiceProvider services) : IDomainEv
 {
     private static readonly ConcurrentDictionary<Type, Invoker> Invokers = new();
 
+    /// <inheritdoc />
     public async Task DispatchAsync(IEnumerable<IDomainEvent> domainEvents, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(domainEvents);

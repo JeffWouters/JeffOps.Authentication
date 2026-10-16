@@ -28,6 +28,7 @@ public static class GrantErrors
     public const string MfaRequired = "mfa_required";
     public const string AccountInactive = "account_inactive";
     public const string SessionExpired = "session_expired";
+    public const string SessionRevoked = "session_revoked";
     public const string TenantInactive = "tenant_inactive";
     public const string NoMembership = "no_membership";
     public const string TokenInvalid = "token_invalid";

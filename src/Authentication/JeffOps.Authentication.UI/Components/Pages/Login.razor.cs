@@ -28,15 +28,22 @@ public sealed partial class Login
         ["sso_required"] = "Your organization requires signing in with its identity provider.",
     };
 
+    /// <summary>
+    /// Where to go after signing in, from the <c>returnUrl</c> query value. Only a local path is honoured; anything else falls
+    /// back to <c>/</c>.
+    /// </summary>
     [SupplyParameterFromQuery(Name = "returnUrl")]
     public string? ReturnUrl { get; set; }
 
+    /// <summary>The email address entered for home realm discovery, from the <c>email</c> query value; with local accounts on, it shows the password form.</summary>
     [SupplyParameterFromQuery(Name = "email")]
     public string? Email { get; set; }
 
+    /// <summary>The error code of a failed sign-in, from the <c>error</c> query value, shown as a friendly message.</summary>
     [SupplyParameterFromQuery(Name = "error")]
     public string? Error { get; set; }
 
+    /// <summary>The current request, cascaded during static server rendering; used to set the response's security headers.</summary>
     [CascadingParameter]
     public HttpContext? HttpContext { get; set; }
 
@@ -49,6 +56,7 @@ public sealed partial class Login
     /// <summary>Where the password form posts, when local accounts are on.</summary>
     private string? PasswordAction { get; set; }
 
+    /// <inheritdoc />
     protected override void OnInitialized()
     {
         if (HttpContext is { Response.HasStarted: false } http)

@@ -12,7 +12,8 @@ using OpenIddict.Abstractions;
 namespace JeffOps.Authentication.Infrastructure.Server;
 
 /// <summary>
-/// When an operator disables an account, its sessions end everywhere at once instead of at their next refresh: every token
+/// When an operator disables an account, or its sessions are revoked (credentials changed, "sign out everywhere"), its
+/// sessions end everywhere at once instead of at their next refresh: every token
 /// of the account is revoked here, and every client with a back-channel logout URI receives a signed
 /// <c>logout_token</c> (OpenID Connect Back-Channel Logout 1.0) so it can drop its server-side sessions too.
 /// </summary>
@@ -22,7 +23,7 @@ internal sealed partial class BackchannelLogoutNotifier(
     IHttpClientFactory httpClientFactory,
     IOptions<TokenServerOptions> options,
     TimeProvider time,
-    ILogger<BackchannelLogoutNotifier> logger) : IDomainEventHandler<AccountStatusChanged>
+    ILogger<BackchannelLogoutNotifier> logger) : IDomainEventHandler<AccountStatusChanged>, IDomainEventHandler<AccountSessionsRevoked>
 {
     public const string HttpClientName = "JeffOps.BackchannelLogout";
     private const string BackchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout";
@@ -35,7 +36,19 @@ internal sealed partial class BackchannelLogoutNotifier(
             return;
         }
 
-        var subject = domainEvent.AccountId.ToString();
+        await EndSessionsAsync(domainEvent.AccountId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Signing out everywhere (a password change, a user's or operator's request) ends sessions the same way.</summary>
+    public Task HandleAsync(AccountSessionsRevoked domainEvent, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(domainEvent);
+        return EndSessionsAsync(domainEvent.AccountId, cancellationToken);
+    }
+
+    private async Task EndSessionsAsync(Guid accountId, CancellationToken cancellationToken)
+    {
+        var subject = accountId.ToString();
         await tokens.RevokeBySubjectAsync(subject, cancellationToken).ConfigureAwait(false);
 
         foreach (var client in options.Value.Clients.Where(client => client.BackchannelLogoutUri is not null))

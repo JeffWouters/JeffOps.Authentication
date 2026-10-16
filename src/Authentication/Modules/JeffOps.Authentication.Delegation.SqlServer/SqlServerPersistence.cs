@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.Delegation.SqlServer;
 
+/// <summary>Registers SQL Server as the delegation module's database.</summary>
 public static class DelegationSqlServerExtensions
 {
     /// <summary>

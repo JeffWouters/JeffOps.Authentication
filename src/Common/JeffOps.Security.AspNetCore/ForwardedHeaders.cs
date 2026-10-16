@@ -12,6 +12,7 @@ namespace JeffOps.Security.AspNetCore;
 /// </summary>
 public sealed class TrustedProxyOptions
 {
+    /// <summary>The configuration section the options bind from.</summary>
     public const string SectionName = "JeffOps:ForwardedHeaders";
 
     /// <summary>How many proxy hops to trust. 0 means no proxy: the socket peer is the client.</summary>
@@ -27,6 +28,7 @@ public sealed class TrustedProxyOptions
     public IList<string> KnownNetworks { get; } = [];
 }
 
+/// <summary>Registers and applies trusted forwarded-header handling.</summary>
 public static class ForwardedHeadersExtensions
 {
     /// <summary>

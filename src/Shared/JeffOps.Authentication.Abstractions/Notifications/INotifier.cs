@@ -1,9 +1,13 @@
 namespace JeffOps.Authentication.Abstractions.Notifications;
 
+/// <summary>How urgently a <see cref="UserNotification"/> should reach its user; hosts can pick a channel by it.</summary>
 public enum NotificationPriority
 {
+    /// <summary>Informational; any channel will do.</summary>
     Normal,
+    /// <summary>Needs the user's attention soon, for example a request to impersonate them.</summary>
     High,
+    /// <summary>Needs the user's attention now, for example a break-glass impersonation that started without their consent.</summary>
     Urgent,
 }
 
@@ -14,6 +18,7 @@ public enum NotificationPriority
 /// <param name="Message">Full text.</param>
 public sealed record UserNotification(Guid UserId, string Kind, string Title, string Message)
 {
+    /// <summary>How urgent the notification is; <see cref="NotificationPriority.Normal"/> by default.</summary>
     public NotificationPriority Priority { get; init; } = NotificationPriority.Normal;
 
     /// <summary>What the notification is about, for example a grant id, so the host can link to it.</summary>
@@ -26,5 +31,6 @@ public sealed record UserNotification(Guid UserId, string Kind, string Title, st
 /// </summary>
 public interface INotifier
 {
+    /// <summary>Delivers <paramref name="notification"/> to its user.</summary>
     Task NotifyAsync(UserNotification notification, CancellationToken cancellationToken);
 }

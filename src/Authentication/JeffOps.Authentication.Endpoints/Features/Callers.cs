@@ -33,6 +33,13 @@ internal static class Callers
     }
 
     /// <summary>
+    /// The account of a user acting as themselves: an interactive session that is not impersonating, not acting on a managed
+    /// tenant and not derived from a personal access token. Null otherwise.
+    /// </summary>
+    public static Guid? OwnSessionAccount(ClaimsPrincipal user, ClaimNames names) =>
+        AsUser(user, names) is { IsImpersonation: false, IsDelegated: false, IsPatDerived: false } caller ? caller.AccountId : null;
+
+    /// <summary>
     /// Whether the caller is a service principal granted <paramref name="permission"/> (exact, <c>*</c>, or a <c>prefix.*</c>
     /// grant), as user lookups require (docs/DESIGN.md §17, I8).
     /// </summary>

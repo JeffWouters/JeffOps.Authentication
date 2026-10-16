@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authorization.Persistence.SqlServer;
 
+/// <summary>Registers SQL Server as the authorization management database.</summary>
 public static class SqlServerPersistenceExtensions
 {
     /// <summary>

@@ -62,7 +62,7 @@ public sealed class HandlerRegistrationTests
         from type in assembly.GetExportedTypes()
         where type is { IsAbstract: true, IsSealed: true }
         from method in type.GetMethods(BindingFlags.Public | BindingFlags.Static)
-        where method.Name.StartsWith("AddJeffOps", StringComparison.Ordinal)
+        where method.Name.StartsWith("AddJeffOps", StringComparison.Ordinal) && !method.IsGenericMethodDefinition
         let parameters = method.GetParameters().Select(parameter => parameter.ParameterType).ToArray()
         where parameters is [var first] && first == typeof(IServiceCollection)
             || parameters is [var head, var second] && head == typeof(IServiceCollection) && second == typeof(IConfiguration)

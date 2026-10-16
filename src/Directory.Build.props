@@ -2,7 +2,9 @@
 
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
-  <!-- Every project under src/ ships as a public NuGet package (docs/DESIGN.md D4). -->
+  <!-- Every project under src/ ships as a public NuGet package (docs/DESIGN.md D4). The version is VersionPrefix plus
+       VersionSuffix; CI overrides both from the release tag (-p:Version=...). Package validation checks each package;
+       after 1.0, PackageValidationBaselineVersion makes it flag breaking changes too. -->
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <VersionPrefix>0.1.0</VersionPrefix>
@@ -13,7 +15,28 @@
     <EnablePackageValidation>true</EnablePackageValidation>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>authentication;authorization;openid-connect;oauth2;openiddict;multi-tenant;bff;jeffops</PackageTags>
+    <!-- Source Link: debuggers step into the exact sources of a release, including generated ones. -->
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <!-- Set by CI once the repository is public, e.g. -p:JeffOpsRepositoryUrl=https://github.com/... -->
+    <PackageProjectUrl Condition="'$(JeffOpsRepositoryUrl)' != ''">$(JeffOpsRepositoryUrl)</PackageProjectUrl>
+    <RepositoryUrl Condition="'$(JeffOpsRepositoryUrl)' != ''">$(JeffOpsRepositoryUrl)</RepositoryUrl>
   </PropertyGroup>
+
+  <!-- XML docs (CS1591) are required on the packages consumers program against. The engines (Domain, Application and
+       the feature modules) are public for composition across their own packages; their entry points (options, DI and
+       endpoint extensions) are documented by hand, but member docs are not enforced there (docs/DESIGN.md D23). -->
+  <PropertyGroup>
+    <JeffOpsEngine Condition="$(MSBuildProjectName.EndsWith('.Domain')) Or $(MSBuildProjectName.EndsWith('.Application'))
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Delegation' Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.LocalAccounts'
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Enterprise'">true</JeffOpsEngine>
+    <NoWarn Condition="'$(JeffOpsEngine)' != 'true'">$(NoWarn.Replace('CS1591', ''))</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../README.md" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
 
   <!-- Deterministic paths in CI builds so packages are reproducible. -->
   <PropertyGroup Condition="'$(CI)' == 'true' Or '$(GITHUB_ACTIONS)' == 'true'">

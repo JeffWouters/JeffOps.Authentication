@@ -47,6 +47,7 @@ public static class AuthenticationBuilderExtensions
     }
 }
 
+/// <summary>Registers the JeffOps token server.</summary>
 public static class AuthenticationServiceCollectionExtensions
 {
     /// <summary>

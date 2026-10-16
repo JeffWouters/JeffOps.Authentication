@@ -12,6 +12,7 @@ public sealed record ChangePasswordCommand(Guid AccountId, string CurrentPasswor
 public sealed class ChangePasswordHandler(
     ILocalCredentialRepository credentials,
     ILocalUnitOfWork unitOfWork,
+    CredentialChangeSessions sessions,
     IOptions<LocalAccountOptions> options,
     TimeProvider time) : ICommandHandler<ChangePasswordCommand>
 {
@@ -43,6 +44,7 @@ public sealed class ChangePasswordHandler(
 
         credential.SetPassword(PasswordHasher.Hash(command.NewPassword, settings.HashIterations), now);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await sessions.RevokeAsync(command.AccountId, "password_changed", cancellationToken).ConfigureAwait(false);
         return Result.Success();
     }
 }
@@ -120,8 +122,11 @@ public sealed class ResetPasswordHandler(
         credential.SetPassword(PasswordHasher.Hash(command.NewPassword, settings.HashIterations), now);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-        if (await accounts.FindAsync(token.AccountId, cancellationToken).ConfigureAwait(false) is { } account && account.MarkEmailVerified(now))
+        // A reset proves control of the email address, and whoever knew the old password is signed out.
+        if (await accounts.FindAsync(token.AccountId, cancellationToken).ConfigureAwait(false) is { } account)
         {
+            account.MarkEmailVerified(now);
+            account.RevokeSessions(now, "password_reset");
             await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 

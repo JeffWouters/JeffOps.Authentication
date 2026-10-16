@@ -28,6 +28,19 @@ internal static class AccountEndpoints
         admin.MapPost("/{id:guid}/enable", (Guid id, HttpContext context, ICommandHandler<SetAccountStatusCommand> handler, ClaimNames names) =>
             SetStatusAsync(id, disable: false, context, handler, names));
 
+        admin.MapPost("/{id:guid}/sessions/revoke", async (Guid id, HttpContext context, ICommandHandler<RevokeSessionsCommand> handler, ClaimNames names) =>
+            Callers.OwnSessionAccount(context.User, names) is { } operatorId
+                ? (await handler.HandleAsync(new RevokeSessionsCommand(operatorId, id), context.RequestAborted).ConfigureAwait(false)).ToHttpResult()
+                : TypedResults.NotFound());
+
+        // Users: sign out everywhere (every device and client), from their own session.
+        endpoints.MapPost("account/sessions/revoke", async (HttpContext context, ICommandHandler<RevokeSessionsCommand> handler, ClaimNames names) =>
+            Callers.OwnSessionAccount(context.User, names) is { } accountId
+                ? (await handler.HandleAsync(new RevokeSessionsCommand(accountId, accountId), context.RequestAborted).ConfigureAwait(false)).ToHttpResult()
+                : TypedResults.Forbid())
+            .WithTags("Account")
+            .RequireAuthorization(Callers.TokenPolicy);
+
         // Services only: a service principal holding the lookup permission (I8). Users can't enumerate accounts.
         var directory = endpoints.MapGroup("directory/accounts")
             .WithTags("Account directory")
@@ -48,12 +61,12 @@ internal static class AccountEndpoints
     private static async Task<IResult> SetStatusAsync(Guid id, bool disable, HttpContext context, ICommandHandler<SetAccountStatusCommand> handler, ClaimNames names)
     {
         // Only an operator acting as themselves: not while impersonating, acting on a managed tenant, or through a PAT.
-        if (Callers.AsUser(context.User, names) is not { IsImpersonation: false, IsDelegated: false, IsPatDerived: false } caller)
+        if (Callers.OwnSessionAccount(context.User, names) is not { } operatorId)
         {
             return TypedResults.NotFound();
         }
 
-        return (await handler.HandleAsync(new SetAccountStatusCommand(caller.AccountId, id, disable), context.RequestAborted).ConfigureAwait(false)).ToHttpResult();
+        return (await handler.HandleAsync(new SetAccountStatusCommand(operatorId, id, disable), context.RequestAborted).ConfigureAwait(false)).ToHttpResult();
     }
 
     private static IResult ToDto(AccountContact contact) =>

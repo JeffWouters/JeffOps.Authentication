@@ -79,6 +79,7 @@ public sealed record DisableAuthenticatorCommand(Guid AccountId, string Password
 public sealed class DisableAuthenticatorHandler(
     ILocalCredentialRepository credentials,
     ILocalUnitOfWork unitOfWork,
+    CredentialChangeSessions sessions,
     IOptions<LocalAccountOptions> options,
     TimeProvider time) : ICommandHandler<DisableAuthenticatorCommand>
 {
@@ -100,6 +101,11 @@ public sealed class DisableAuthenticatorHandler(
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (check == PasswordSignInResult.Success)
+        {
+            await sessions.RevokeAsync(command.AccountId, "authenticator_removed", cancellationToken).ConfigureAwait(false);
+        }
+
         return check == PasswordSignInResult.Success
             ? Result.Success()
             : Error.Forbidden(check == PasswordSignInResult.LockedOut ? LocalAccountErrors.LockedOut : LocalAccountErrors.InvalidCredentials, "The password is wrong.");

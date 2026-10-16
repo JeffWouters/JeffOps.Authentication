@@ -16,6 +16,7 @@ namespace JeffOps.Authentication.KeyVault;
 /// <summary>Key Vault signing. Bound from <see cref="SectionName"/>.</summary>
 public sealed class KeyVaultSigningOptions
 {
+    /// <summary>The configuration section the options bind from.</summary>
     public const string SectionName = "JeffOps:TokenServer:KeyVault";
 
     /// <summary>The vault or Managed HSM URL.</summary>
@@ -30,6 +31,7 @@ public sealed class KeyVaultSigningOptions
     public TimeSpan RefreshInterval { get; set; } = TimeSpan.FromHours(1);
 }
 
+/// <summary>Registers Azure Key Vault as the source of token signing keys.</summary>
 public static class KeyVaultSigningExtensions
 {
     /// <summary>

@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.Persistence.SqlServer;
 
+/// <summary>Registers SQL Server as the token server's database.</summary>
 public static class SqlServerPersistenceExtensions
 {
     /// <summary>

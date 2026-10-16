@@ -60,9 +60,11 @@
     <Project Path="tests/JeffOps.Authentication.KeyVault.Tests/JeffOps.Authentication.KeyVault.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Server.Tests/JeffOps.Authentication.Server.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.SharedKernel.Tests/JeffOps.Authentication.SharedKernel.Tests.csproj" />
+    <Project Path="tests/JeffOps.Authentication.Testing.Tests/JeffOps.Authentication.Testing.Tests.csproj" />
     <Project Path="tests/JeffOps.Authorization.AspNetCore.Tests/JeffOps.Authorization.AspNetCore.Tests.csproj" />
     <Project Path="tests/JeffOps.Authorization.Domain.Tests/JeffOps.Authorization.Domain.Tests.csproj" />
     <Project Path="tests/JeffOps.Authorization.Management.Tests/JeffOps.Authorization.Management.Tests.csproj" />
+    <Project Path="tests/JeffOps.Entitlements.Tests/JeffOps.Entitlements.Tests.csproj" />
     <Project Path="tests/JeffOps.Security.AspNetCore.Tests/JeffOps.Security.AspNetCore.Tests.csproj" />
   </Folder>
 </Solution>

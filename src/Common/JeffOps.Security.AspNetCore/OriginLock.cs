@@ -11,8 +11,10 @@ namespace JeffOps.Security.AspNetCore;
 /// </summary>
 public sealed class OriginLockOptions
 {
+    /// <summary>The configuration section the options bind from.</summary>
     public const string SectionName = "JeffOps:OriginLock";
 
+    /// <summary>The header the edge stamps on every request it forwards. Default: <c>X-Azure-FDID</c> (Azure Front Door).</summary>
     public string HeaderName { get; set; } = "X-Azure-FDID";
 
     /// <summary>The value the edge stamps. Unset disables the lock.</summary>
@@ -22,6 +24,7 @@ public sealed class OriginLockOptions
     public IList<string> ExemptPaths { get; } = ["/health", "/alive"];
 }
 
+/// <summary>Applies the edge origin lock.</summary>
 public static class OriginLockExtensions
 {
     /// <summary>Answers 403 to any request without the expected edge header. Register first in the pipeline.</summary>

@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.Enterprise.SqlServer;
 
+/// <summary>Registers SQL Server as the enterprise module's database.</summary>
 public static class EnterpriseSqlServerExtensions
 {
     /// <summary>

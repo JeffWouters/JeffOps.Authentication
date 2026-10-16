@@ -6,8 +6,10 @@ namespace JeffOps.Authentication.Federation.Saml;
 /// </summary>
 public sealed class SamlProviderOptions
 {
+    /// <summary>The configuration section that holds one subsection per provider, keyed by name.</summary>
     public const string SectionName = "JeffOps:TokenServer:Federation:Saml";
 
+    /// <summary>The button label on the login page. Default: the provider's name.</summary>
     public string? DisplayName { get; set; }
 
     /// <summary>The identity provider's entity id: the issuer its assertions must carry, and half of every linked login.</summary>

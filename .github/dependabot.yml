@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Central package versions (Directory.Packages.props). Group the families that must move together.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      openiddict:
+        patterns: ['OpenIddict*']
+      # Before "microsoft": the first matching group wins.
+      identitymodel:
+        patterns: ['Microsoft.IdentityModel.*']
+      microsoft:
+        patterns: ['Microsoft.*', 'System.*']
+      test:
+        patterns: ['xunit*', 'Shouldly', 'NSubstitute', 'Verify*', 'TngTech.ArchUnitNET']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -71,6 +71,7 @@ public static class LocalAccountsServiceCollectionExtensions
         services.TryAddScoped<ILocalUnitOfWork, LocalUnitOfWork>();
         services.TryAddSingleton<ITotpSecretProtector, DataProtectionTotpProtector>();
         services.TryAddScoped<IAccountEmailSender, LoggingAccountEmailSender>();
+        services.TryAddScoped<CredentialChangeSessions>();
         services.TryAddSingleton<INotifier, LoggingNotifier>();
         services.AddDataProtection();
 

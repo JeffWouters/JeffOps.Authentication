@@ -13,6 +13,7 @@ using static OpenIddict.Abstractions.OpenIddictConstants;
 
 namespace JeffOps.Authentication.Bff;
 
+/// <summary>Registers, wires up and maps the backend-for-frontend.</summary>
 public static class BffServiceCollectionExtensions
 {
     /// <summary>

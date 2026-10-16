@@ -61,6 +61,38 @@ public sealed class SetAccountStatusHandler(
 
 // ---- GetAccountContact / FindAccountByEmail ----------------------------------------------------------------------------
 
+/// <summary>
+/// Signs an account out everywhere: the user themselves (<paramref name="ActorId"/> equals <paramref name="AccountId"/>), or an
+/// operator for someone else (for example after a reported compromise).
+/// </summary>
+public sealed record RevokeSessionsCommand(Guid ActorId, Guid AccountId);
+
+public sealed class RevokeSessionsHandler(IAccountRepository accounts, IUnitOfWork unitOfWork, IAuditSink audit, TimeProvider time)
+    : ICommandHandler<RevokeSessionsCommand>
+{
+    public async Task<Result> HandleAsync(RevokeSessionsCommand command, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        var account = await accounts.FindAsync(command.AccountId, cancellationToken).ConfigureAwait(false);
+        if (account is null)
+        {
+            return Error.NotFound(AccountErrors.NotFound, "No such account.");
+        }
+
+        var now = time.GetUtcNow();
+        var self = command.ActorId == command.AccountId;
+        account.RevokeSessions(now, self ? "signed_out_everywhere" : "revoked_by_operator");
+        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await audit.WriteAsync(new AuditRecord("account.sessions_revoked", "account", account.Id.ToString())
+        {
+            ActorId = command.ActorId,
+            OccurredAt = now,
+            Severity = self ? AuditSeverity.Information : AuditSeverity.Warning,
+        }, cancellationToken).ConfigureAwait(false);
+        return Result.Success();
+    }
+}
+
 public sealed record GetAccountContactQuery(Guid AccountId);
 
 public sealed class GetAccountContactHandler(IAccountRepository accounts) : IQueryHandler<GetAccountContactQuery, AccountContact>

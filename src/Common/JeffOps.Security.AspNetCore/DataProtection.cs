@@ -17,6 +17,7 @@ namespace JeffOps.Security.AspNetCore;
 /// </summary>
 public sealed class DataProtectionSettings
 {
+    /// <summary>The configuration section the settings bind from.</summary>
     public const string SectionName = "JeffOps:DataProtection";
 
     /// <summary>Isolates this application's keys; hosts that must read each other's payloads share it.</summary>
@@ -25,6 +26,7 @@ public sealed class DataProtectionSettings
     /// <summary>The KEK: a base64-encoded PKCS#12 certificate with its private key.</summary>
     public string? KekCertificate { get; set; }
 
+    /// <summary>The password of <see cref="KekCertificate"/>, if it has one.</summary>
     public string? KekCertificatePassword { get; set; }
 
     /// <summary>Earlier KEK certificates (base64 PKCS#12), kept so keys they encrypted stay readable during rotation.</summary>
@@ -34,6 +36,7 @@ public sealed class DataProtectionSettings
     public string? PreviousKekCertificatesPassword { get; set; }
 }
 
+/// <summary>Registers Data Protection for a JeffOps host.</summary>
 public static class DataProtectionExtensions
 {
     /// <summary>

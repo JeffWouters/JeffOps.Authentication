@@ -37,9 +37,11 @@ public interface ITenantDirectory
 /// </summary>
 public sealed class NoTenantDirectory : ITenantDirectory
 {
+    /// <summary>Always returns no memberships.</summary>
     public Task<IReadOnlyList<TenantMembership>> GetMembershipsAsync(Guid accountId, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<TenantMembership>>([]);
 
+    /// <summary>Always returns null: a single-tenant host has no tenants.</summary>
     public Task<TenantInfo?> FindTenantAsync(Guid tenantId, CancellationToken cancellationToken) =>
         Task.FromResult<TenantInfo?>(null);
 }

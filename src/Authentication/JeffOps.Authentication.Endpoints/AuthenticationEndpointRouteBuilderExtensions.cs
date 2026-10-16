@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.Endpoints;
 
+/// <summary>Maps the token server's HTTP endpoints.</summary>
 public static class AuthenticationEndpointRouteBuilderExtensions
 {
     /// <summary>

@@ -8,11 +8,13 @@ namespace JeffOps.Authentication.Infrastructure.Keys;
 /// <summary>Signing certificates for <see cref="CertificateKeyProvider"/>. Bound from <c>JeffOps:TokenServer:SigningCertificates</c>.</summary>
 public sealed class SigningCertificateOptions
 {
+    /// <summary>The configuration section the options bind from.</summary>
     public const string SectionName = "JeffOps:TokenServer:SigningCertificates";
 
     /// <summary>Base64 PKCS#12 certificates with private keys, newest first. The first signs; the others stay published.</summary>
     public IList<string> Certificates { get; } = [];
 
+    /// <summary>The password shared by the certificates, if they have one.</summary>
     public string? Password { get; set; }
 }
 
@@ -24,18 +26,22 @@ public sealed class CertificateKeyProvider : ITokenKeyProvider
 {
     private readonly Lazy<IReadOnlyList<SigningKey>> _keys;
 
+    /// <summary>Creates the provider. The certificates are loaded on first use; an empty list or a certificate without an RSA private key fails then.</summary>
     public CertificateKeyProvider(IOptions<SigningCertificateOptions> options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _keys = new Lazy<IReadOnlyList<SigningKey>>(() => Load(options.Value));
     }
 
+    /// <inheritdoc />
+    /// <remarks>Never raised: the certificates are fixed for the life of the process, so rotating them needs a restart.</remarks>
     public event EventHandler? KeysChanged
     {
         add { }
         remove { }
     }
 
+    /// <inheritdoc />
     public IReadOnlyList<SigningKey> GetSigningKeys() => _keys.Value;
 
     private static IReadOnlyList<SigningKey> Load(SigningCertificateOptions options)

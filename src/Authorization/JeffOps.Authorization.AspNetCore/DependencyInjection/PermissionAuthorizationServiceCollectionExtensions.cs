@@ -35,6 +35,7 @@ public sealed record PermissionAuthorizationBuilder(IServiceCollection Services,
     }
 }
 
+/// <summary>Registers permission-based authorization in a resource service.</summary>
 public static class PermissionAuthorizationServiceCollectionExtensions
 {
     /// <summary>

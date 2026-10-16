@@ -52,6 +52,11 @@ public sealed class RefreshSessionHandler(
             return Error.Unauthorized(GrantErrors.AccountInactive, "The account no longer exists or is not active.");
         }
 
+        if (account.IsSessionRevoked(signedInAt))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "This session was ended, for example after a password change. Sign in again.");
+        }
+
         var strength = new AuthenticationStrength(stored.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         if (!sessions.AllowsSignIn(strength))
         {

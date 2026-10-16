@@ -13,8 +13,10 @@ namespace JeffOps.Authorization.AspNetCore.Evaluation;
 /// </summary>
 public sealed class PermissionRequirement(string permission, string? scopeKey = null, string? instanceRouteValue = null) : IAuthorizationRequirement
 {
+    /// <summary>The permission code required, for example <c>billing.invoice.read</c>.</summary>
     public string Permission { get; } = permission;
 
+    /// <summary>The scope the permission is checked at; null means <see cref="PermissionAuthorizationOptions.DefaultScopeKey"/>.</summary>
     public string? ScopeKey { get; } = scopeKey;
 
     /// <summary>Name of the route value holding the targeted scope instance id.</summary>
@@ -31,10 +33,16 @@ public sealed class PermissionPolicyProvider(IOptions<AuthorizationOptions> opti
     private readonly DefaultAuthorizationPolicyProvider _fallback = new(options);
     private readonly ConcurrentDictionary<string, AuthorizationPolicy> _policies = new(StringComparer.Ordinal);
 
+    /// <inheritdoc />
     public Task<AuthorizationPolicy> GetDefaultPolicyAsync() => _fallback.GetDefaultPolicyAsync();
 
+    /// <inheritdoc />
     public Task<AuthorizationPolicy?> GetFallbackPolicyAsync() => _fallback.GetFallbackPolicyAsync();
 
+    /// <summary>
+    /// The policy registered as <paramref name="policyName"/> if there is one; otherwise, for a permission code, a policy
+    /// requiring an authenticated user with that permission (built once and reused), and null for any other name.
+    /// </summary>
     public async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
     {
         // An explicitly registered policy wins over the permission convention.
@@ -48,6 +56,7 @@ public sealed class PermissionPolicyProvider(IOptions<AuthorizationOptions> opti
             : null;
     }
 
+    /// <summary>Whether <paramref name="policyName"/> is read as a permission code: any name containing a dot.</summary>
     public static bool IsPermissionPolicy(string policyName) => policyName.Contains('.', StringComparison.Ordinal);
 
     internal static AuthorizationPolicy Build(PermissionRequirement requirement) =>

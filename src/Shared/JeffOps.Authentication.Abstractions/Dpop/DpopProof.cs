@@ -18,7 +18,9 @@ public sealed record DpopProof(string Jkt, string Jti, DateTimeOffset IssuedAt);
 /// </summary>
 public static class DpopProofValidator
 {
+    /// <summary>The HTTP request header that carries the DPoP proof.</summary>
     public const string HeaderName = "DPoP";
+    /// <summary>The <c>Authorization</c> scheme for a DPoP-bound access token, used in place of <c>Bearer</c>.</summary>
     public const string Scheme = "DPoP";
 
     /// <summary>The signature algorithms accepted (and advertised as <c>dpop_signing_alg_values_supported</c>).</summary>
@@ -122,6 +124,7 @@ public static class DpopProofValidator
         return canonical is null ? null : Base64Url(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
+    /// <summary>Encodes <paramref name="bytes"/> as unpadded base64url (RFC 4648 §5), the encoding JWS segments and <c>ath</c> use.</summary>
     public static string Base64Url(byte[] bytes)
     {
         ArgumentNullException.ThrowIfNull(bytes);

@@ -252,3 +252,50 @@ public sealed class StartupTests
             ["JeffOps:TokenServer:Issuer"] = null,
         }));
 }
+
+public sealed class SessionRevocationTests
+{
+    [Fact]
+    public async Task A_user_signs_out_everywhere_and_every_refresh_token_stops_working()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+        var first = await server.SignInAsync(account.Id);
+        var second = await server.SignInAsync(account.Id);
+
+        var revoked = await server.SendAsync(HttpMethod.Post, "account/sessions/revoke", first.AccessToken);
+
+        revoked.StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await server.RefreshAsync(first.RefreshToken!)).Error.ShouldBe("invalid_grant");
+        (await server.RefreshAsync(second.RefreshToken!)).Error.ShouldBe("invalid_grant");
+
+        // A new sign-in afterwards works.
+        server.Time.Advance(TimeSpan.FromSeconds(2));
+        var fresh = await server.SignInAsync(account.Id);
+        (await server.RefreshAsync(fresh.RefreshToken!)).Status.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task An_operator_can_end_someone_else_s_sessions()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var user = await server.CreateAccountAsync("user@example.com");
+        var tokens = await server.SignInAsync(user.Id);
+        var operatorAccount = await server.CreateAccountAsync("operator@example.com");
+        var operatorTokens = await server.SignInAsync(operatorAccount.Id);
+
+        // Without the administration permission, the route is forbidden.
+        (await server.SendAsync(HttpMethod.Post, $"admin/accounts/{user.Id}/sessions/revoke", operatorTokens.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await server.RefreshAsync(tokens.RefreshToken!)).Status.ShouldBe(HttpStatusCode.OK);
+
+        // An operator (permission decided by the host) ends them.
+        await using (var scope = server.Services.CreateAsyncScope())
+        {
+            var revoked = await scope.ServiceProvider.GetRequiredService<SharedKernel.Handlers.ICommandHandler<Application.Features.Accounts.RevokeSessionsCommand>>()
+                .HandleAsync(new Application.Features.Accounts.RevokeSessionsCommand(operatorAccount.Id, user.Id), TestContext.Current.CancellationToken);
+            revoked.IsSuccess.ShouldBeTrue();
+        }
+
+        (await server.RefreshAsync(tokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
+    }
+}

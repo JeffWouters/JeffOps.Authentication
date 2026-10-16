@@ -13,12 +13,16 @@ namespace JeffOps.Authorization.AspNetCore.Data;
 /// </summary>
 public interface IAuthorizationData
 {
+    /// <summary>The role assignments of <paramref name="userId"/> in <paramref name="tenantId"/>, cached for <see cref="DecisionCacheOptions.Assignments"/>.</summary>
     Task<IReadOnlyList<RoleAssignment>> GetAssignmentsAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken);
 
+    /// <summary>The permissions each role grants, keyed by role id.</summary>
     Task<IReadOnlyDictionary<Guid, PermissionSet>> GetRolePermissionsAsync(CancellationToken cancellationToken);
 
+    /// <summary>The attribute policies, compiled for evaluation.</summary>
     Task<IReadOnlyList<AttributePolicy>> GetPoliciesAsync(CancellationToken cancellationToken);
 
+    /// <summary>The scope hierarchy role assignments and permission checks are resolved against.</summary>
     Task<ScopeTree> GetScopesAsync(CancellationToken cancellationToken);
 }
 

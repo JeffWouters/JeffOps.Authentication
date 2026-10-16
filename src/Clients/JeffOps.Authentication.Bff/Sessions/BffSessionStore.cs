@@ -34,22 +34,26 @@ public sealed record BffSession(
     /// <summary>For tenant switch: the tenant acted in.</summary>
     public string? ActingTenantId { get; init; }
 
+    /// <summary>Whether this is a derived (impersonation or tenant-switch) session rather than an own session.</summary>
     public bool IsDerived => Kind is not null;
 }
 
 /// <summary>The session store could not be reached; the request is answered 503 rather than treated as signed out.</summary>
 public sealed class SessionStoreUnavailableException : Exception
 {
+    /// <summary>Creates the exception with a default message.</summary>
     public SessionStoreUnavailableException()
         : base("The session store is unavailable.")
     {
     }
 
+    /// <summary>Creates the exception with <paramref name="message"/>.</summary>
     public SessionStoreUnavailableException(string message)
         : base(message)
     {
     }
 
+    /// <summary>Creates the exception with <paramref name="message"/> and the store failure behind it.</summary>
     public SessionStoreUnavailableException(string message, Exception innerException)
         : base(message, innerException)
     {
@@ -69,11 +73,13 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
 
     private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.Bff.Session");
 
+    /// <summary>A new session id: 256 random bits as lowercase hex. It goes in the cookie; the store keys on its hash.</summary>
     public static string NewId() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
 
     /// <summary>The store key of a session id: what a derived session records as its owner, never the id itself.</summary>
     public static string KeyFor(string id) => KeyOf(id);
 
+    /// <summary>Stores a new session and indexes it under its subject; returns the session id for the cookie.</summary>
     public async Task<string> CreateAsync(BffSession session, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -84,8 +90,13 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
         return id;
     }
 
+    /// <summary>Overwrites session <paramref name="id"/>, for example after a token refresh.</summary>
     public Task UpdateAsync(string id, BffSession session, CancellationToken cancellationToken) => WriteAsync(id, session, cancellationToken);
 
+    /// <summary>
+    /// Session <paramref name="id"/>, or null when it is missing, past its deadline or can't be decrypted. Throws
+    /// <see cref="SessionStoreUnavailableException"/> when the store can't be reached.
+    /// </summary>
     public async Task<BffSession?> GetAsync(string id, CancellationToken cancellationToken)
     {
         var blob = await ReadAsync(KeyOf(id), cancellationToken).ConfigureAwait(false);
@@ -111,6 +122,7 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
         return session is not null && session.SessionEndsAt > time.GetUtcNow() ? session : null;
     }
 
+    /// <summary>Deletes session <paramref name="id"/>; with <paramref name="subject"/>, also removes it from that user's index.</summary>
     public async Task DeleteAsync(string id, string? subject, CancellationToken cancellationToken)
     {
         await RemoveAsync(KeyOf(id), cancellationToken).ConfigureAwait(false);

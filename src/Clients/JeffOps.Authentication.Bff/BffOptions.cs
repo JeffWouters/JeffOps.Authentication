@@ -8,15 +8,18 @@ namespace JeffOps.Authentication.Bff;
 /// </summary>
 public sealed class BffOptions
 {
+    /// <summary>The configuration section the options bind from: <c>JeffOps:Bff</c>.</summary>
     public const string SectionName = "JeffOps:Bff";
 
     /// <summary>The token server's issuer URL.</summary>
     [Required]
     public Uri? Authority { get; set; }
 
+    /// <summary>The BFF's client id at the token server. Required.</summary>
     [Required]
     public string? ClientId { get; set; }
 
+    /// <summary>The BFF's client secret; the BFF is a confidential client. Required.</summary>
     [Required]
     public string? ClientSecret { get; set; }
 
@@ -77,7 +80,9 @@ public sealed class DelegatedSessionOptions
     /// <summary>The token server route that ends an impersonation grant; <c>{0}</c> is the grant id.</summary>
     public string EndImpersonationPath { get; set; } = "delegation/impersonation/{0}/end";
 
+    /// <summary>The extension grant type that mints impersonation tokens: <see cref="GrantTypeNamespace"/> plus <c>:impersonation</c>.</summary>
     public string ImpersonationGrantType => GrantTypeNamespace + ":impersonation";
 
+    /// <summary>The extension grant type that mints tenant-switch tokens: <see cref="GrantTypeNamespace"/> plus <c>:tenant-switch</c>.</summary>
     public string TenantSwitchGrantType => GrantTypeNamespace + ":tenant-switch";
 }

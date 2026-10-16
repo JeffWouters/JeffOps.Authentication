@@ -44,6 +44,9 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.Property<bool>("EmailVerified")
                         .HasColumnType("bit");
 
+                    b.Property<DateTimeOffset?>("SessionsRevokedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)

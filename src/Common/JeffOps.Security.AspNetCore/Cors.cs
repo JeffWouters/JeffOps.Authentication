@@ -4,10 +4,13 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Security.AspNetCore;
 
+/// <summary>Registers and applies the JeffOps CORS policy.</summary>
 public static class CorsExtensions
 {
+    /// <summary>The name of the CORS policy added by <see cref="AddJeffOpsCors"/>.</summary>
     public const string PolicyName = "JeffOps";
 
+    /// <summary>The configuration section that holds <c>AllowedOrigins</c>.</summary>
     public const string SectionName = "JeffOps:Cors";
 
     /// <summary>
@@ -37,5 +40,6 @@ public static class CorsExtensions
         }));
     }
 
+    /// <summary>Applies the <see cref="PolicyName"/> CORS policy to every request.</summary>
     public static IApplicationBuilder UseJeffOpsCors(this IApplicationBuilder app) => app.UseCors(PolicyName);
 }

@@ -122,7 +122,8 @@ public sealed class ListPasskeysHandler(ILocalCredentialRepository credentials) 
 
 public sealed record RemovePasskeyCommand(Guid AccountId, string PasskeyId);
 
-public sealed class RemovePasskeyHandler(ILocalCredentialRepository credentials, ILocalUnitOfWork unitOfWork) : ICommandHandler<RemovePasskeyCommand>
+public sealed class RemovePasskeyHandler(ILocalCredentialRepository credentials, ILocalUnitOfWork unitOfWork, CredentialChangeSessions sessions)
+    : ICommandHandler<RemovePasskeyCommand>
 {
     public async Task<Result> HandleAsync(RemovePasskeyCommand command, CancellationToken cancellationToken)
     {
@@ -134,6 +135,7 @@ public sealed class RemovePasskeyHandler(ILocalCredentialRepository credentials,
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await sessions.RevokeAsync(command.AccountId, "passkey_removed", cancellationToken).ConfigureAwait(false);
         return Result.Success();
     }
 }

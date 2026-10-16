@@ -12,6 +12,7 @@ public interface IDomainEvent;
 public interface IDomainEventHandler<in TEvent>
     where TEvent : IDomainEvent
 {
+    /// <summary>Reacts to <paramref name="domainEvent"/>, after the unit of work that raised it has saved.</summary>
     Task HandleAsync(TEvent domainEvent, CancellationToken cancellationToken);
 }
 
@@ -20,8 +21,10 @@ public interface IDomainEventHandler<in TEvent>
 /// </summary>
 public interface IHasDomainEvents
 {
+    /// <summary>The events raised since they were last cleared, in the order they were raised.</summary>
     IReadOnlyCollection<IDomainEvent> DomainEvents { get; }
 
+    /// <summary>Discards the pending events; the unit of work calls it once it has collected them.</summary>
     void ClearDomainEvents();
 }
 
@@ -33,6 +36,7 @@ public abstract class AggregateRoot<TId> : Entity<TId>, IHasDomainEvents
 {
     private readonly List<IDomainEvent> _domainEvents = [];
 
+    /// <summary>Creates an aggregate root with the given identity.</summary>
     protected AggregateRoot(TId id)
         : base(id)
     {
@@ -43,10 +47,13 @@ public abstract class AggregateRoot<TId> : Entity<TId>, IHasDomainEvents
     {
     }
 
+    /// <inheritdoc />
     public IReadOnlyCollection<IDomainEvent> DomainEvents => _domainEvents.AsReadOnly();
 
+    /// <inheritdoc />
     public void ClearDomainEvents() => _domainEvents.Clear();
 
+    /// <summary>Records <paramref name="domainEvent"/> for dispatch after the next save.</summary>
     protected void Raise(IDomainEvent domainEvent)
     {
         ArgumentNullException.ThrowIfNull(domainEvent);

@@ -14,6 +14,7 @@ public sealed class AccessContextPropagationHandler(
     ClaimNames names,
     IOptions<AuthenticationClientOptions> options) : DelegatingHandler
 {
+    /// <inheritdoc />
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);

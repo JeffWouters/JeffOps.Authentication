@@ -17,19 +17,23 @@ namespace JeffOps.Authentication.Federation.Oidc;
 /// <summary>An upstream OpenID Connect provider. Bound from <c>JeffOps:TokenServer:Federation:Providers:{name}</c>.</summary>
 public sealed class OidcProviderOptions
 {
+    /// <summary>The button label on the login page. Default: the provider's name.</summary>
     public string? DisplayName { get; set; }
 
     /// <summary>The provider's issuer; its discovery document is fetched from here.</summary>
     public Uri? Authority { get; set; }
 
+    /// <summary>This server's client id at the provider. Required.</summary>
     public string? ClientId { get; set; }
 
+    /// <summary>This server's client secret at the provider, when it issued one. Keep it out of source control.</summary>
     public string? ClientSecret { get; set; }
 
     /// <summary>Scopes to request besides <c>openid</c>. Default: <c>profile</c>, <c>email</c>.</summary>
     public IList<string> Scopes { get; } = [OpenIddict.Abstractions.OpenIddictConstants.Scopes.Profile, OpenIddict.Abstractions.OpenIddictConstants.Scopes.Email];
 }
 
+/// <summary>Registers upstream OpenID Connect providers and the OpenIddict client they share.</summary>
 public static class OidcFederationExtensions
 {
     /// <summary>The path an upstream provider redirects back to: <c>signin/callback/{provider}</c>.</summary>
@@ -125,8 +129,10 @@ public static class OidcFederationExtensions
 /// <summary>Maps standard OpenID Connect claims to an <see cref="ExternalIdentity"/>.</summary>
 public sealed class OidcIdentityMapper(ExternalProviderInfo provider, IOptions<FederationOptions> options) : IExternalIdentityMapper
 {
+    /// <inheritdoc />
     public IReadOnlyCollection<ExternalProviderInfo> Providers { get; } = [provider];
 
+    /// <inheritdoc />
     public Result<ExternalIdentity> Map(string provider, ClaimsPrincipal providerClaims)
     {
         ArgumentNullException.ThrowIfNull(providerClaims);

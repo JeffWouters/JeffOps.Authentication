@@ -8,5 +8,6 @@ namespace JeffOps.Authentication.SharedKernel.Validation;
 /// </summary>
 public interface IValidator<in T>
 {
+    /// <summary>Checks <paramref name="instance"/> and returns every failure found; empty when it is valid.</summary>
     IEnumerable<ValidationFailure> Validate(T instance);
 }

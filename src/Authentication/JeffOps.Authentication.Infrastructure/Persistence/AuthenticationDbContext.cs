@@ -12,16 +12,22 @@ namespace JeffOps.Authentication.Infrastructure.Persistence;
 /// </summary>
 public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbContext> options) : DbContext(options)
 {
+    /// <summary>The database schema that holds the token server's tables.</summary>
     public const string Schema = "auth";
 
+    /// <summary>The platform's user accounts.</summary>
     public DbSet<Account> Accounts => Set<Account>();
 
+    /// <summary>External logins (provider issuer and subject) linked to accounts.</summary>
     public DbSet<ExternalLogin> ExternalLogins => Set<ExternalLogin>();
 
+    /// <summary>Personal access tokens, stored as hashes of their secrets.</summary>
     public DbSet<PersonalAccessToken> PersonalAccessTokens => Set<PersonalAccessToken>();
 
+    /// <summary>Token signing and encryption keys, their private keys protected with Data Protection.</summary>
     public DbSet<StoredKey> StoredKeys => Set<StoredKey>();
 
+    /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

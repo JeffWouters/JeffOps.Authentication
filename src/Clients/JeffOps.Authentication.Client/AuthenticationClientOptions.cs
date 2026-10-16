@@ -7,6 +7,7 @@ namespace JeffOps.Authentication.Client;
 /// </summary>
 public sealed class AuthenticationClientOptions
 {
+    /// <summary>The configuration section the options bind from: <c>JeffOps:Authentication</c>.</summary>
     public const string SectionName = "JeffOps:Authentication";
 
     /// <summary>The token server's issuer URL; its discovery document and signing keys are fetched from here.</summary>
@@ -47,7 +48,9 @@ public sealed class ServiceTokenTenantScopingOptions
     /// <summary>Scope Service-level (per-service) tokens by the headers.</summary>
     public bool TrustForServiceTokens { get; set; }
 
+    /// <summary>The header carrying the caller's tenant id. Default: <c>X-Tenant-Id</c>.</summary>
     public string TenantHeader { get; set; } = "X-Tenant-Id";
 
+    /// <summary>The header carrying the tenant a delegated caller acts in. Default: <c>X-Acting-Tenant-Id</c>.</summary>
     public string ActingTenantHeader { get; set; } = "X-Acting-Tenant-Id";
 }

@@ -10,20 +10,26 @@ namespace JeffOps.Authorization.AspNetCore.Data;
 /// </summary>
 public sealed class HttpAuthorizationDataSource(HttpClient http) : IAuthorizationDataSource, IPermissionRegistry
 {
+    /// <summary>The name of the HTTP client that reads the management API.</summary>
     public const string HttpClientName = "JeffOps.Authorization";
 
+    /// <summary>Reads the role assignments of <paramref name="userId"/> in <paramref name="tenantId"/> from the management API.</summary>
     public async Task<IReadOnlyList<UserAssignmentDto>> GetUserAssignmentsAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken) =>
         await http.GetFromJsonAsync<UserAssignmentDto[]>(AuthorizationRoutes.UserAssignmentsOf(userId, tenantId), cancellationToken).ConfigureAwait(false) ?? [];
 
+    /// <summary>Reads the permission codes each role grants, keyed by role id, from the management API.</summary>
     public async Task<IReadOnlyDictionary<Guid, string[]>> GetRolePermissionsAsync(CancellationToken cancellationToken) =>
         await http.GetFromJsonAsync<Dictionary<Guid, string[]>>(AuthorizationRoutes.RolePermissions, cancellationToken).ConfigureAwait(false) ?? [];
 
+    /// <summary>Reads the attribute policies from the management API.</summary>
     public async Task<IReadOnlyList<AttributePolicyDto>> GetPoliciesAsync(CancellationToken cancellationToken) =>
         await http.GetFromJsonAsync<AttributePolicyDto[]>(AuthorizationRoutes.Policies, cancellationToken).ConfigureAwait(false) ?? [];
 
+    /// <summary>Reads the scope hierarchy from the management API.</summary>
     public async Task<IReadOnlyList<ScopeDto>> GetScopesAsync(CancellationToken cancellationToken) =>
         await http.GetFromJsonAsync<ScopeDto[]>(AuthorizationRoutes.Scopes, cancellationToken).ConfigureAwait(false) ?? [];
 
+    /// <summary>Pushes this service's permission definitions to the management registry; a refusal throws <see cref="HttpRequestException"/>.</summary>
     public async Task RegisterAsync(RegisterPermissionsRequest request, CancellationToken cancellationToken)
     {
         using var response = await http.PostAsJsonAsync(AuthorizationRoutes.RegisterPermissions, request, cancellationToken).ConfigureAwait(false);

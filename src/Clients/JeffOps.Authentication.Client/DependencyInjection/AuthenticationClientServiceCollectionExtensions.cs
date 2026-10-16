@@ -13,6 +13,7 @@ using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.Client.DependencyInjection;
 
+/// <summary>Registers token validation, service tokens and access-context propagation in a resource service.</summary>
 public static class AuthenticationClientServiceCollectionExtensions
 {
     /// <summary>

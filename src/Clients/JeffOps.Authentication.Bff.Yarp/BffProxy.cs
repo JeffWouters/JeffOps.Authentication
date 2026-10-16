@@ -18,6 +18,7 @@ using Yarp.ReverseProxy.Transforms;
 
 namespace JeffOps.Authentication.Bff.Yarp;
 
+/// <summary>Puts the BFF in front of a YARP reverse proxy: request transforms, and PAT exchange at the edge.</summary>
 public static class BffProxyExtensions
 {
     /// <summary>
@@ -62,22 +63,28 @@ public static class BffProxyExtensions
 /// <summary>The edge's client identity for exchanging PATs. Bound from <c>JeffOps:PatExchange</c>.</summary>
 public sealed class PatExchangeOptions
 {
+    /// <summary>The configuration section the options bind from: <c>JeffOps:PatExchange</c>.</summary>
     public const string SectionName = "JeffOps:PatExchange";
 
+    /// <summary>The token server's token endpoint, where PATs are exchanged. Required.</summary>
     [Required]
     public Uri? TokenEndpoint { get; set; }
 
+    /// <summary>The edge's client id at the token server. Required.</summary>
     [Required]
     public string? ClientId { get; set; }
 
+    /// <summary>The edge's client secret. Required.</summary>
     [Required]
     public string? ClientSecret { get; set; }
 
+    /// <summary>The extension grant type of the exchange. Default: <c>urn:jeffops:grant-type:pat</c>.</summary>
     public string GrantType { get; set; } = "urn:jeffops:grant-type:pat";
 
     /// <summary>The prefix PATs start with; other bearer tokens pass through untouched.</summary>
     public string Prefix { get; set; } = "pat_";
 
+    /// <summary>Space-separated scopes to request for the exchanged token; optional.</summary>
     public string? Scope { get; set; }
 
     /// <summary>How long a refused PAT is remembered as refused, so a leaked bad token can't hammer the token server.</summary>
@@ -96,18 +103,29 @@ public sealed partial class PatExchanger(
     IOptions<PatExchangeOptions> options,
     ILogger<PatExchanger> logger)
 {
+    /// <summary>The name of the HTTP client that calls the token endpoint.</summary>
     public const string HttpClientName = "JeffOps.PatExchange";
     private const string Refused = "refused";
 
     private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.PatExchange");
 
+    /// <summary>The result of exchanging a PAT.</summary>
     public enum Outcome
     {
+        /// <summary>The PAT was exchanged; the access token comes with it.</summary>
         Exchanged,
+
+        /// <summary>The token server refused the PAT; the refusal is cached for <see cref="PatExchangeOptions.NegativeCacheDuration"/>.</summary>
         Refused,
+
+        /// <summary>The token server was unreachable, throttling or failing; nothing is cached, so the next request tries again.</summary>
         Unavailable,
     }
 
+    /// <summary>
+    /// Exchanges <paramref name="pat"/> for a short-lived JWT, from the cache when it can. The access token is set only when
+    /// the outcome is <see cref="Outcome.Exchanged"/>.
+    /// </summary>
     public async Task<(Outcome Outcome, string? AccessToken)> ExchangeAsync(string pat, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(pat);
@@ -194,6 +212,7 @@ public sealed partial class PatExchanger(
 /// <summary>Replaces a PAT bearer with the exchanged JWT; answers 401 for a refused PAT and 503 when the token server is down.</summary>
 public sealed class PatExchangeMiddleware(RequestDelegate next, PatExchanger exchanger, IOptions<PatExchangeOptions> options)
 {
+    /// <summary>Swaps a PAT bearer for its JWT, or answers the request when the exchange fails; other requests pass through.</summary>
     public async Task InvokeAsync(HttpContext context)
     {
         ArgumentNullException.ThrowIfNull(context);

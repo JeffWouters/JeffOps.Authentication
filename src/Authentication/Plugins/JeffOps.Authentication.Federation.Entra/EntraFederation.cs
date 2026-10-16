@@ -14,11 +14,13 @@ namespace JeffOps.Authentication.Federation.Entra;
 /// <summary>Microsoft Entra ID sign-in. Bound from <c>JeffOps:TokenServer:Federation:Providers:{name}</c>.</summary>
 public sealed class EntraOptions
 {
+    /// <summary>The button label on the login page. Default: <c>Microsoft</c>.</summary>
     public string DisplayName { get; set; } = "Microsoft";
 
     /// <summary>The app registration's client id.</summary>
     public string? ClientId { get; set; }
 
+    /// <summary>The app registration's client secret, when it uses one. Keep it out of source control.</summary>
     public string? ClientSecret { get; set; }
 
     /// <summary>
@@ -28,6 +30,7 @@ public sealed class EntraOptions
     public string Tenant { get; set; } = "organizations";
 }
 
+/// <summary>Registers Microsoft Entra ID as an external identity provider.</summary>
 public static class EntraFederationExtensions
 {
     /// <summary>
@@ -79,8 +82,10 @@ public sealed class EntraIdentityMapper(ExternalProviderInfo provider, IOptions<
     private const string TenantIdClaim = "tid";
     private const string ObjectIdClaim = "oid";
 
+    /// <inheritdoc />
     public IReadOnlyCollection<ExternalProviderInfo> Providers { get; } = [provider];
 
+    /// <inheritdoc />
     public Result<ExternalIdentity> Map(string provider, ClaimsPrincipal providerClaims)
     {
         ArgumentNullException.ThrowIfNull(providerClaims);

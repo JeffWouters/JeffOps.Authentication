@@ -184,6 +184,26 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Changing_the_password_signs_out_every_other_session()
+    {
+        var host = await StartAsync();
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        using var laptop = new Browser(host);
+        using var phone = new Browser(host);
+        await LoginAsync(laptop, "ada@example.com", Password);
+        await LoginAsync(phone, "ada@example.com", Password);
+        var onLaptop = await AuthorizeAsync(host, laptop, "openid offline_access api");
+        var onPhone = await AuthorizeAsync(host, phone, "openid offline_access api");
+
+        var changed = await host.SendAsync(HttpMethod.Post, "account/local/manage/password", onLaptop.AccessToken,
+            JsonContent.Create(new { currentPassword = Password, newPassword = "a completely new passphrase" }));
+        changed.StatusCode.ShouldBe(HttpStatusCode.NoContent, await changed.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+        (await host.RefreshAsync(onPhone.RefreshToken!)).Error.ShouldBe("invalid_grant");
+        (await host.RefreshAsync(onLaptop.RefreshToken!)).Error.ShouldBe("invalid_grant");
+    }
+
+    [Fact]
     public async Task Local_accounts_are_off_unless_enabled_outside_development()
     {
         var host = await StartAsync(enabled: false);
@@ -290,13 +310,13 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     }
 
     /// <summary>Runs the code flow with PKCE in the signed-in browser and redeems the code.</summary>
-    private static async Task<TokenResponse> AuthorizeAsync(TokenServerHost host, Browser browser)
+    private static async Task<TokenResponse> AuthorizeAsync(TokenServerHost host, Browser browser, string scope = "openid api")
     {
         var verifier = SoftwareAuthenticator.Base64Url(RandomNumberGenerator.GetBytes(32));
         var challenge = SoftwareAuthenticator.Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         var authorize = await browser.GetAsync(null!,
             $"connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
-            $"&scope={Uri.EscapeDataString("openid api")}&code_challenge={challenge}&code_challenge_method=S256&state=xyz");
+            $"&scope={Uri.EscapeDataString(scope)}&code_challenge={challenge}&code_challenge_method=S256&state=xyz");
         authorize.StatusCode.ShouldBe(HttpStatusCode.Redirect);
         var code = TokenServerHost.QueryValue(authorize.Headers.Location!, "code").ShouldNotBeNull(authorize.Headers.Location!.ToString());
 

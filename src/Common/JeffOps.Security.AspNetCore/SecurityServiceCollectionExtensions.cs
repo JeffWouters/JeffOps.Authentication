@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Security.AspNetCore;
 
+/// <summary>Registers and applies the JeffOps ASP.NET Core hardening baseline.</summary>
 public static class SecurityServiceCollectionExtensions
 {
     /// <summary>

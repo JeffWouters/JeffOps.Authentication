@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace JeffOps.Authentication.LocalAccounts.SqlServer;
 
+/// <summary>Registers SQL Server as the local accounts module's database.</summary>
 public static class LocalAccountsSqlServerExtensions
 {
     /// <summary>

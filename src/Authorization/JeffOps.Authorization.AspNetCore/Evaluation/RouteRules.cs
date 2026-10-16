@@ -14,6 +14,7 @@ public sealed class ImpersonationRouteRule
     {
     }
 
+    /// <summary>The rule's single instance, added as endpoint metadata by <c>RefuseUnderImpersonation()</c>.</summary>
     public static ImpersonationRouteRule Refuse { get; } = new();
 }
 

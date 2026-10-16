@@ -304,8 +304,8 @@ Inside these projects the `Domain/`, `Application/`, `Infrastructure/` and `Endp
 | `JeffOps.Authentication.Bff` | Slices as minimal API endpoints (`Login`, `Callback`, `Logout`, `Me`, `SessionContext`); `Sessions/` (store, manager, single-flight refresh); cookie→bearer and CSRF middleware |
 | `JeffOps.Authentication.Bff.Yarp` | YARP transforms: strip cookie, attach bearer, PAT→JWT edge exchange |
 | `JeffOps.Security.AspNetCore` | Security headers, forwarded-headers hardening, CORS defaults, Data Protection (Redis + KEK), origin lock, rate-limit partitions |
-| `JeffOps.Entitlements` | `IEntitlementChecker`, `RequireEntitlement` endpoint filter, 402 responses (optional) |
-| `JeffOps.Authentication.Testing` | Test token issuer, fake `ICurrentUser`, architecture-test helpers |
+| `JeffOps.Entitlements` | `IEntitlementChecker` (default: allow all), `RequireEntitlement(name)` endpoint convention answering 402 with `code: entitlement_required` and the entitlement's name (optional) |
+| `JeffOps.Authentication.Testing` | `TestTokenIssuer` + `TestPrincipal` (signed tokens following the claims contract, trusted through `AddJeffOpsTestTokens`), `FakeCurrentUser`, `FakeAccessContextAccessor` |
 
 ### 6.3 Dependency rules
 
@@ -359,7 +359,8 @@ app.Run();
 4. Re-check the licence on every major version bump. Several popular .NET libraries moved to commercial licences in a major version.
 5. Enforcement:
    - `Directory.Build.targets` fails the build when a banned package id is referenced.
-   - A licence scan in CI fails on any licence not on the allow-list. The scanning tool is chosen in phase 0 and must itself be under an allowed licence.
+   - A licence scan fails on any licence not on the allow-list: the architecture test `Every_resolved_package_has_a_permissive_licence` reads every restored package's nuspec (direct and transitive) and checks its licence expression; packages that only carry a licence URL are allowed when the URL is on a reviewed list. No third-party scanning tool is needed.
+   - Exceptions are explicit and reviewed (D24): Microsoft's free native runtime components that SQL Server support depends on (`Microsoft.Data.SqlClient.SNI.runtime`, `Microsoft.Identity.Client.NativeInterop`).
 
 **Banned** (non-exhaustive)
 
@@ -656,7 +657,8 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Passkeys** through ASP.NET Core Identity's WebAuthn (`PasskeyHandler<T>` with a narrow `IUserPasskeyStore` over our stores; nothing else of Identity). Registration needs a stepped-up session; sign-in is passwordless (`amr`: `hwk`/`swk` + `user mfa` when user-verified). Ceremony state lives in a 5-minute Data-Protected cookie. Configure `PasskeyServerDomain` and `PasskeyAllowedOrigins` explicitly in production.
 - **Hosted UI**: the login page shows a password form (with antiforgery) when the email has no federated provider; `account/login/code` takes the authenticator or a recovery code. Credential management is a JSON API under `account/local/manage/*` for the signed-in user's own session (never under impersonation, delegation or PAT tokens).
 - **Events**: every credential change is audited and the user is notified (`INotifier`).
-- **Not yet**: email OTP as a second factor; session revocation on password change (the security stamp is recorded, not yet checked at refresh); hosted UI pages for reset/verify (hosts render them or use the JSON API).
+- **Session revocation** (release readiness): changing or resetting the password, removing the authenticator or a passkey ends every session of the account (`Account.RevokeSessions`): all its tokens are revoked at once, clients with a back-channel logout URI are notified, and refreshes of sessions that signed in earlier are refused (`session_revoked`) as a second line of defence. Users can also sign out everywhere (`POST account/sessions/revoke`) and operators can do it for an account (`POST admin/accounts/{id}/sessions/revoke`). Personal access tokens are separate credentials and stay valid.
+- **Not yet**: email OTP as a second factor; hosted UI pages for reset/verify (hosts render them or use the JSON API).
 
 ---
 
@@ -1003,6 +1005,8 @@ These requirements differ from the origin implementation. They are listed here s
 | D20 | Paid / commercial dependencies | — | **Decided: none allowed** (§6.5) |
 | D21 | Test framework | xUnit v3 / TUnit / MSTest / NUnit | **Decided: xUnit v3.** The source tests port with little change, and the ecosystem (Testcontainers, `WebApplicationFactory`) is strongest. Revisit TUnit (source-generated, AOT) after 1.0. |
 | D22 | Delegated token requests | RFC 8693 `token-exchange` grant / extension grants | **Extension grants with RFC 8693 `actor_token`.** OpenIddict's token exchange validates a `subject_token` it issued; an impersonation's subject is a server-side grant, not a token. The extension grants keep RFC 8693's actor semantics (`actor_token`, `act` claim) while the grant id and target tenant stay ordinary parameters. |
+| D23 | XML documentation of public APIs | everywhere / consumer-facing packages | **Required (CS1591 as error) on the packages consumers program against**: Kernel, Contracts, client adapters, Common, plug-ins, Infrastructure, Endpoints, UI and persistence. The engines (Domain, Application, the feature modules) are public for composition across their own packages; their entry points (options, DI and endpoint extensions) are documented by hand, member docs are not enforced. Revisit before 1.0. |
+| D24 | Proprietary Microsoft runtime components | ban / accept as exceptions | **Accepted as named exceptions**: `Microsoft.Data.SqlClient.SNI.runtime` and `Microsoft.Identity.Client.NativeInterop` are free, redistributable native components (Microsoft Software License Terms) without which SQL Server support is impossible. They are not open source; hosts that can't accept them use another database provider. The licence test lists them explicitly, so a new exception needs a decision. |
 
 ---
 

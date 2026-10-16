@@ -8,6 +8,7 @@ namespace JeffOps.Authentication.Abstractions.Messaging;
 /// </summary>
 public abstract record IntegrationEvent
 {
+    /// <summary>Unique id of this occurrence, so consumers can recognise a redelivered event; a new GUID by default.</summary>
     public Guid Id { get; init; } = Guid.NewGuid();
 
     /// <summary>When the event happened; set by the publisher from its <see cref="TimeProvider"/>.</summary>
@@ -22,6 +23,7 @@ public abstract record IntegrationEvent
 /// </summary>
 public interface IEventPublisher
 {
+    /// <summary>Publishes <paramref name="integrationEvent"/>, now or through an outbox, as the implementation decides.</summary>
     Task PublishAsync(IntegrationEvent integrationEvent, CancellationToken cancellationToken);
 }
 
@@ -32,5 +34,6 @@ public interface IEventPublisher
 public interface IIntegrationEventHandler<in TEvent>
     where TEvent : IntegrationEvent
 {
+    /// <summary>Handles one received <paramref name="integrationEvent"/>. Brokers may deliver an event more than once, so handle it idempotently.</summary>
     Task HandleAsync(TEvent integrationEvent, CancellationToken cancellationToken);
 }

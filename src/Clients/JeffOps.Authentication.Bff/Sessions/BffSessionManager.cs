@@ -93,6 +93,7 @@ public sealed partial class BffSessionManager(
         await store.DeleteAsync(id, session.Subject, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Drops session <paramref name="id"/> from this process's memory, so the next read goes to the store.</summary>
     public void Forget(string id)
     {
         local.Remove(LocalKey(id));

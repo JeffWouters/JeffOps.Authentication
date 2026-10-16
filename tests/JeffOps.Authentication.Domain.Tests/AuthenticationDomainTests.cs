@@ -45,6 +45,20 @@ public sealed class AccountTests
         account.Enable(Now).ShouldBeFalse();
         account.DomainEvents.Count.ShouldBe(2);
     }
+
+    [Fact]
+    public void Revoking_sessions_ends_those_signed_in_before_it_to_the_second()
+    {
+        var account = Account.Register("ada@example.com", "Ada", true, Now);
+        account.IsSessionRevoked(Now.AddDays(-1)).ShouldBeFalse();
+
+        account.RevokeSessions(Now.AddMilliseconds(500), "password_changed");
+
+        account.IsSessionRevoked(Now.AddSeconds(-1)).ShouldBeTrue();
+        account.IsSessionRevoked(Now).ShouldBeFalse("a sign-in in the same second (auth_time has second precision) stays valid");
+        account.IsSessionRevoked(Now.AddSeconds(1)).ShouldBeFalse();
+        account.DomainEvents.OfType<AccountSessionsRevoked>().ShouldHaveSingleItem().Reason.ShouldBe("password_changed");
+    }
 }
 
 public sealed class PersonalAccessTokenTests
