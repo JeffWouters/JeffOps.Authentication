@@ -29,6 +29,20 @@ public interface IPersonalAccessTokenRepository
 }
 
 /// <summary>Commits the changes of one use case atomically and then dispatches the domain events they raised.</summary>
+/// <summary>Sign-in sessions ended by signing out at the token server, kept until their tokens can no longer be refreshed.</summary>
+public interface IEndedSessions
+{
+    Task<bool> IsEndedAsync(string sessionId, CancellationToken cancellationToken);
+
+    Task EndAsync(string sessionId, Guid accountId, DateTimeOffset now, CancellationToken cancellationToken);
+}
+
+/// <summary>Tells clients that one sign-in session ended (OpenID Connect Back-Channel Logout with <c>sid</c>).</summary>
+public interface ISessionLogoutNotifier
+{
+    Task SessionEndedAsync(Guid accountId, string sessionId, CancellationToken cancellationToken);
+}
+
 public interface IUnitOfWork
 {
     Task SaveChangesAsync(CancellationToken cancellationToken);

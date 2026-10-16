@@ -30,6 +30,9 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
     /// <summary>One-time values seen (DPoP proofs, SAML assertions), shared by every instance of the token server.</summary>
     public DbSet<Server.ReplayEntry> ReplayEntries => Set<Server.ReplayEntry>();
 
+    /// <summary>Sign-in sessions ended by signing out, kept while their tokens could still be refreshed.</summary>
+    public DbSet<Server.EndedSession> EndedSessions => Set<Server.EndedSession>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -100,6 +103,14 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
             entry.HasKey(entity => entity.Key);
             entry.Property(entity => entity.Key).HasMaxLength(100);
             entry.HasIndex(entity => entity.ExpiresAtUnixMs);
+        });
+
+        modelBuilder.Entity<Server.EndedSession>(session =>
+        {
+            session.ToTable("EndedSessions");
+            session.HasKey(entity => entity.SessionId);
+            session.Property(entity => entity.SessionId).HasMaxLength(64);
+            session.HasIndex(entity => entity.EndedAtUnixMs);
         });
     }
 }

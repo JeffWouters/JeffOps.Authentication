@@ -89,6 +89,7 @@ internal static class TokenIssuance
             claim.Type == names.Subject
             || claim.Type == names.AuthenticationMethods
             || claim.Type == names.AuthenticationTime
+            || claim.Type == names.SessionId
             || (claim.Type == names.Email && scopes.Contains(Scopes.Email))
             || (claim.Type == names.Name && scopes.Contains(Scopes.Profile));
 

@@ -23,7 +23,7 @@ internal sealed partial class BackchannelLogoutNotifier(
     IHttpClientFactory httpClientFactory,
     IOptions<TokenServerOptions> options,
     TimeProvider time,
-    ILogger<BackchannelLogoutNotifier> logger) : IDomainEventHandler<AccountStatusChanged>, IDomainEventHandler<AccountSessionsRevoked>
+    ILogger<BackchannelLogoutNotifier> logger) : IDomainEventHandler<AccountStatusChanged>, IDomainEventHandler<AccountSessionsRevoked>, ISessionLogoutNotifier
 {
     public const string HttpClientName = "JeffOps.BackchannelLogout";
     private const string BackchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout";
@@ -46,6 +46,18 @@ internal sealed partial class BackchannelLogoutNotifier(
         return EndSessionsAsync(domainEvent.AccountId, cancellationToken);
     }
 
+    /// <summary>
+    /// One session ended (the user signed out here): clients drop that session. Its refresh tokens are refused by the
+    /// refresh grant; the account's other sessions continue.
+    /// </summary>
+    public async Task SessionEndedAsync(Guid accountId, string sessionId, CancellationToken cancellationToken)
+    {
+        foreach (var client in options.Value.Clients.Where(client => client.BackchannelLogoutUri is not null))
+        {
+            await NotifyAsync(client, accountId.ToString(), sessionId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     private async Task EndSessionsAsync(Guid accountId, CancellationToken cancellationToken)
     {
         var subject = accountId.ToString();
@@ -53,15 +65,15 @@ internal sealed partial class BackchannelLogoutNotifier(
 
         foreach (var client in options.Value.Clients.Where(client => client.BackchannelLogoutUri is not null))
         {
-            await NotifyAsync(client, subject, cancellationToken).ConfigureAwait(false);
+            await NotifyAsync(client, subject, sessionId: null, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task NotifyAsync(ClientDefinition client, string subject, CancellationToken cancellationToken)
+    private async Task NotifyAsync(ClientDefinition client, string subject, string? sessionId, CancellationToken cancellationToken)
     {
         try
         {
-            using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["logout_token"] = CreateLogoutToken(client.ClientId, subject) });
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["logout_token"] = CreateLogoutToken(client.ClientId, subject, sessionId) });
             using var response = await httpClientFactory.CreateClient(HttpClientName)
                 .PostAsync(client.BackchannelLogoutUri, content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
@@ -77,7 +89,7 @@ internal sealed partial class BackchannelLogoutNotifier(
         }
     }
 
-    internal string CreateLogoutToken(string audience, string subject)
+    internal string CreateLogoutToken(string audience, string subject, string? sessionId = null)
     {
         var now = time.GetUtcNow();
         var signingKeys = keys.GetSigningKeys();
@@ -88,7 +100,10 @@ internal sealed partial class BackchannelLogoutNotifier(
             Issuer = options.Value.Issuer?.AbsoluteUri,
             Audience = audience,
             IssuedAt = now.UtcDateTime,
-            Subject = new ClaimsIdentity([new Claim("sub", subject), new Claim("jti", Guid.NewGuid().ToString("N"))]),
+            Subject = new ClaimsIdentity(
+                sessionId is null
+                    ? [new Claim("sub", subject), new Claim("jti", Guid.NewGuid().ToString("N"))]
+                    : [new Claim("sub", subject), new Claim("sid", sessionId), new Claim("jti", Guid.NewGuid().ToString("N"))]),
             Claims = new Dictionary<string, object> { ["events"] = new Dictionary<string, object> { [BackchannelLogoutEvent] = new Dictionary<string, object>() } },
             TokenType = "logout+jwt",
             SigningCredentials = new SigningCredentials(new RsaSecurityKey(signer.Key) { KeyId = signer.KeyId }, SecurityAlgorithms.RsaSha256),

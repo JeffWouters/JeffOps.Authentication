@@ -164,8 +164,8 @@ internal static partial class BffEndpoints
     }
 
     /// <summary>
-    /// OpenID Connect Back-Channel Logout: the token server posts a signed <c>logout_token</c> and every session of that user
-    /// ends. The token is validated against the token server's signing keys, audience, event and freshness, and each
+    /// OpenID Connect Back-Channel Logout: the token server posts a signed <c>logout_token</c>; the session it names (<c>sid</c>)
+    /// ends, or every session of that user when it names none. The token is validated against the token server's signing keys, audience, event and freshness, and each
     /// <c>jti</c> is accepted once.
     /// </summary>
     private static async Task<IResult> BackchannelLogoutAsync(
@@ -218,7 +218,10 @@ internal static partial class BffEndpoints
         if (!replay.TryGetValue("jeffops:bff:logout-jti:" + token.Id, out _))
         {
             replay.Set("jeffops:bff:logout-jti:" + token.Id, true, TimeSpan.FromMinutes(10));
-            var ended = await store.DeleteAllAsync(token.Subject, context.RequestAborted).ConfigureAwait(false);
+            // A token naming one session (sid) ends that session; without one, every session of the user.
+            var ended = token.TryGetPayloadValue<string>("sid", out var sessionId) && !string.IsNullOrEmpty(sessionId)
+                ? await store.DeleteSessionAsync(token.Subject, sessionId, context.RequestAborted).ConfigureAwait(false)
+                : await store.DeleteAllAsync(token.Subject, context.RequestAborted).ConfigureAwait(false);
             LogEnded(logger, ended);
         }
 

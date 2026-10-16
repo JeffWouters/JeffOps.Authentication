@@ -97,9 +97,11 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
     /// Session <paramref name="id"/>, or null when it is missing, past its deadline or can't be decrypted. Throws
     /// <see cref="SessionStoreUnavailableException"/> when the store can't be reached.
     /// </summary>
-    public async Task<BffSession?> GetAsync(string id, CancellationToken cancellationToken)
+    public Task<BffSession?> GetAsync(string id, CancellationToken cancellationToken) => ReadSessionAsync(KeyOf(id), cancellationToken);
+
+    private async Task<BffSession?> ReadSessionAsync(string key, CancellationToken cancellationToken)
     {
-        var blob = await ReadAsync(KeyOf(id), cancellationToken).ConfigureAwait(false);
+        var blob = await ReadAsync(key, cancellationToken).ConfigureAwait(false);
         if (blob is null)
         {
             return null;
@@ -143,6 +145,54 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
 
         await RemoveAsync(SubjectKeyOf(subject), cancellationToken).ConfigureAwait(false);
         return keys.Count;
+    }
+
+    /// <summary>
+    /// Ends the sessions of <paramref name="subject"/> that belong to the token server's session <paramref name="sessionId"/>
+    /// (back-channel logout naming one session, <c>sid</c>), with the impersonation and tenant-switch sessions derived from
+    /// them. The user's other sessions continue.
+    /// </summary>
+    public async Task<int> DeleteSessionAsync(string subject, string sessionId, CancellationToken cancellationToken)
+    {
+        var keys = await SessionKeysAsync(subject, cancellationToken).ConfigureAwait(false);
+        var sessions = new Dictionary<string, BffSession>(StringComparer.Ordinal);
+        foreach (var key in keys)
+        {
+            if (await ReadSessionAsync(key, cancellationToken).ConfigureAwait(false) is { } session)
+            {
+                sessions[key] = session;
+            }
+        }
+
+        var ending = sessions.Where(pair => string.Equals(SessionIdOf(pair.Value.IdentityToken), sessionId, StringComparison.Ordinal))
+            .Select(pair => pair.Key).ToHashSet(StringComparer.Ordinal);
+        ending.UnionWith(sessions.Where(pair => pair.Value.OwnerKey is { } owner && ending.Contains(owner)).Select(pair => pair.Key));
+
+        foreach (var key in ending)
+        {
+            await RemoveAsync(key, cancellationToken).ConfigureAwait(false);
+            await IndexAsync(subject, add: null, remove: key, cancellationToken).ConfigureAwait(false);
+        }
+
+        return ending.Count;
+    }
+
+    /// <summary>The token server session (<c>sid</c>) of a stored, already validated ID token.</summary>
+    private static string? SessionIdOf(string? identityToken)
+    {
+        if (string.IsNullOrEmpty(identityToken))
+        {
+            return null;
+        }
+
+        try
+        {
+            return new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(identityToken).TryGetPayloadValue<string>("sid", out var sid) ? sid : null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 
     private async Task WriteAsync(string id, BffSession session, CancellationToken cancellationToken)

@@ -15,17 +15,20 @@ namespace JeffOps.Authentication.Application.Features.Sessions.StartSession;
 /// <param name="SignedInAt">When the sign-in happened; the session's absolute lifetime counts from here.</param>
 /// <param name="Scopes">The scopes granted to the client.</param>
 /// <param name="TenantHint">Start in this tenant when the account has a membership there.</param>
+/// <param name="SessionId">The sign-in session (<c>sid</c>) the tokens belong to.</param>
 public sealed record StartSessionCommand(
     Guid AccountId,
     AuthenticationStrength Strength,
     DateTimeOffset SignedInAt,
     IReadOnlyCollection<string> Scopes,
-    Guid? TenantHint = null);
+    Guid? TenantHint = null,
+    string? SessionId = null);
 
 public sealed class StartSessionHandler(
     IAccountRepository accounts,
     SessionBuilder sessions,
     IEventPublisher events,
+    JeffOps.Authentication.Abstractions.Claims.ClaimNames names,
     Microsoft.Extensions.Options.IOptions<TokenServerOptions> options,
     TimeProvider time) : ICommandHandler<StartSessionCommand, IssuedIdentity>
 {
@@ -60,6 +63,10 @@ public sealed class StartSessionHandler(
         }
 
         var claims = sessions.UserClaims(account, command.Strength, command.SignedInAt, standing.Value);
+        if (command.SessionId is { } sessionId)
+        {
+            claims.Add(new System.Security.Claims.Claim(names.SessionId, sessionId));
+        }
 
         await events.PublishAsync(
             new AccountSignedInEvent(account.Id, standing.Value.Membership?.TenantId) { OccurredAt = time.GetUtcNow() },

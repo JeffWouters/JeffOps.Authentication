@@ -140,6 +140,10 @@ public static class AuthenticationServiceCollectionExtensions
                     .UseInlineHandler(context =>
                     {
                         context.Metadata["dpop_signing_alg_values_supported"] = new OpenIddict.Abstractions.OpenIddictParameter([.. Abstractions.Dpop.DpopProofValidator.Algorithms]);
+
+                        // OpenID Connect Back-Channel Logout 1.0: logout tokens carry sid, and ID tokens name the session.
+                        context.Metadata["backchannel_logout_supported"] = true;
+                        context.Metadata["backchannel_logout_session_supported"] = true;
                         return default;
                     }));
 
@@ -182,6 +186,8 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddHttpClient(ExternalTokenValidator.HttpClientName);
         services.TryAddSingleton<Application.Features.Grants.WorkloadIdentity.IExternalTokenValidator, ExternalTokenValidator>();
         services.AddDomainEventHandler<BackchannelLogoutNotifier>();
+        services.TryAddScoped<IEndedSessions, DatabaseEndedSessions>();
+        services.TryAddScoped<ISessionLogoutNotifier, BackchannelLogoutNotifier>();
 
         return new AuthenticationBuilder(services, configuration);
     }

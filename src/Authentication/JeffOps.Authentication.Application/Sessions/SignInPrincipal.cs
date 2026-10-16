@@ -20,10 +20,20 @@ public static class SignInPrincipal
         {
             new(names.Subject, accountId.ToString()),
             new(names.AuthenticationTime, signedInAt.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), ClaimValueTypes.Integer64),
+
+            // A new session per sign-in: its tokens carry it (sid), and signing out ends exactly this one.
+            new(names.SessionId, Guid.NewGuid().ToString("N")),
         };
         claims.AddRange(strength.Methods.Select(method => new Claim(names.AuthenticationMethods, method)));
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, authenticationType, names.Name, "role"));
+    }
+
+    /// <summary>The session of a sign-in (or of a token issued for it), or null for one made before sessions had ids.</summary>
+    public static string? SessionId(ClaimsPrincipal? principal, ClaimNames names)
+    {
+        ArgumentNullException.ThrowIfNull(names);
+        return principal?.FindFirst(names.SessionId)?.Value is { Length: > 0 and <= 64 } sessionId ? sessionId : null;
     }
 
     public static DateTimeOffset? SignedInAt(ClaimsPrincipal? principal, ClaimNames names)

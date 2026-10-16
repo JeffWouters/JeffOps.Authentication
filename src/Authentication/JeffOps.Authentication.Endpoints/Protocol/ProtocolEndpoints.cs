@@ -3,6 +3,7 @@ using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Features.Accounts;
 using JeffOps.Authentication.Application.Features.Grants.ClientCredentials;
 using JeffOps.Authentication.Application.Features.Grants.ExchangePat;
+using JeffOps.Authentication.Application.Features.Sessions.EndSession;
 using JeffOps.Authentication.Application.Features.Sessions.RefreshSession;
 using JeffOps.Authentication.Application.Features.Sessions.StartSession;
 using JeffOps.Authentication.Application.Sessions;
@@ -80,7 +81,7 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var result = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, signedInAt ?? time.GetUtcNow(), request.GetScopes(), TenantHintOf(request)),
+            new StartSessionCommand(accountId, strength, signedInAt ?? time.GetUtcNow(), request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names)),
             context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -224,7 +225,7 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal!.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var session = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null),
+            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names)),
             context.RequestAborted).ConfigureAwait(false);
         if (session.IsFailure)
         {
@@ -267,8 +268,20 @@ internal static class ProtocolEndpoints
         return Results.Ok(claims);
     }
 
-    private static async Task<IResult> EndSessionAsync(HttpContext context, IOptions<TokenServerOptions> options)
+    private static async Task<IResult> EndSessionAsync(
+        HttpContext context,
+        ICommandHandler<EndSessionCommand> endSession,
+        ClaimNames names,
+        IOptions<TokenServerOptions> options)
     {
+        // End this sign-in session everywhere it reached: its refresh tokens stop working and clients are told (sid).
+        var signedIn = await context.AuthenticateAsync(options.Value.SignInScheme).ConfigureAwait(false);
+        if (signedIn.Succeeded && Guid.TryParse(signedIn.Principal.FindFirst(names.Subject)?.Value, out var accountId)
+            && SignInPrincipal.SessionId(signedIn.Principal, names) is { } sessionId)
+        {
+            await endSession.HandleAsync(new EndSessionCommand(accountId, sessionId), context.RequestAborted).ConfigureAwait(false);
+        }
+
         await context.SignOutAsync(options.Value.SignInScheme).ConfigureAwait(false);
 
         // OpenIddict redirects to the validated post_logout_redirect_uri, or to the RedirectUri below without one.

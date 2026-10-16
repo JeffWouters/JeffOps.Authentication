@@ -169,6 +169,25 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.ToTable("PersonalAccessTokens", "auth");
                 });
 
+            modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.EndedSession", b =>
+                {
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("EndedAtUnixMs")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("SessionId");
+
+                    b.HasIndex("EndedAtUnixMs");
+
+                    b.ToTable("EndedSessions", "auth");
+                });
+
             modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.ReplayEntry", b =>
                 {
                     b.Property<string>("Key")

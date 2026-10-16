@@ -21,6 +21,7 @@ public sealed record RefreshSessionCommand(ClaimsPrincipal Stored, IReadOnlyColl
 public sealed class RefreshSessionHandler(
     IAccountRepository accounts,
     SessionBuilder sessions,
+    IEndedSessions endedSessions,
     ClaimNames names,
     IOptions<TokenServerOptions> options,
     TimeProvider time) : ICommandHandler<RefreshSessionCommand, IssuedIdentity>
@@ -57,6 +58,13 @@ public sealed class RefreshSessionHandler(
             return Error.Unauthorized(GrantErrors.SessionRevoked, "This session was ended, for example after a password change. Sign in again.");
         }
 
+        // Signing out at the token server ends that one session.
+        var sessionId = SignInPrincipal.SessionId(stored, names);
+        if (sessionId is not null && await endedSessions.IsEndedAsync(sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "You signed out of this session. Sign in again.");
+        }
+
         var strength = new AuthenticationStrength(stored.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         if (!sessions.AllowsSignIn(strength))
         {
@@ -70,7 +78,13 @@ public sealed class RefreshSessionHandler(
             return standing.Error;
         }
 
-        return new IssuedIdentity(account.Id.ToString(), sessions.UserClaims(account, strength, signedInAt, standing.Value), command.Scopes)
+        var claims = sessions.UserClaims(account, strength, signedInAt, standing.Value);
+        if (sessionId is not null)
+        {
+            claims.Add(new Claim(names.SessionId, sessionId));
+        }
+
+        return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {
             SessionEndsAt = signedInAt + options.Value.SessionLifetime,
         };

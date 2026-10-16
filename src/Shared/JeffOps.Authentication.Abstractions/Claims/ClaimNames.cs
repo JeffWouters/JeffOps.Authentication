@@ -71,6 +71,12 @@ public sealed record ClaimNames
     public string DelegationGrant { get; init; } = "grant_id";
 
     /// <summary>
+    /// The sign-in session a token belongs to (OpenID Connect <c>sid</c>): signing out at the token server ends it, and
+    /// back-channel logout tokens name it.
+    /// </summary>
+    public string SessionId { get; init; } = "sid";
+
+    /// <summary>
     /// Claims that mark an impersonation token (RFC 8693 actor and its companions). Any one present marks the token.
     /// </summary>
     public IReadOnlyList<string> ImpersonationMarkers { get; init; } = ["act", "act_kind", "grant_id"];

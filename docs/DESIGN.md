@@ -696,7 +696,8 @@ All models consume the same token server. The library provides a package or docu
 - **Back-channel logout:** when an operator disables an account the token server revokes all its tokens and posts a signed `logout_token` to every client with a `BackchannelLogoutUri`. The BFF validates signature, audience, event, freshness and `jti` replay, then ends every session of that user.
 - **`JeffOps.Authentication.Bff.Yarp`:** `AddBffTransforms()` strips the `Cookie` header from proxied requests; `AddJeffOpsPatExchange`/`UseJeffOpsPatExchange` swap `Bearer pat_…` for a short-lived JWT (cached encrypted under the PAT's hash; refusals cached briefly; outages not cached).
 - **Tested end to end** (token server, BFF with YARP, API with `Authentication.Client`); `samples/Spa.Bff` shows an SPA with no identity SDK.
-- **Not yet:** token-mediating mode, back-channel logout on end-session (needs session ids, `sid`).
+- **Sessions (`sid`):** every sign-in gets a session id, carried in the sign-in cookie, the ID and access tokens and across refreshes. Signing out at the token server (`connect/endsession`) ends that session only: it is recorded (`EndedSessions`, kept for the session lifetime) so its refresh tokens are refused, audited (`session.ended`), and every client with a back-channel logout URI receives a `logout_token` with `sub` and `sid`. Discovery advertises `backchannel_logout_supported` and `backchannel_logout_session_supported`. The BFF ends the session the token names (and the impersonation or tenant-switch sessions derived from it), or every session of the user when it names none (account disabled, sign out everywhere).
+- **Not yet:** token-mediating mode.
 
 ## 10. Claims contract
 

@@ -6,6 +6,7 @@ using JeffOps.Authentication.Application.Features.Federation.CompleteExternalSig
 using JeffOps.Authentication.Application.Features.Grants.ClientCredentials;
 using JeffOps.Authentication.Application.Features.Grants.ExchangePat;
 using JeffOps.Authentication.Application.Features.PersonalAccessTokens;
+using JeffOps.Authentication.Application.Features.Sessions.EndSession;
 using JeffOps.Authentication.Application.Features.Sessions.RefreshSession;
 using JeffOps.Authentication.Application.Features.Sessions.StartSession;
 using JeffOps.Authentication.Application.Sessions;
@@ -38,6 +39,7 @@ public static class ApplicationServiceCollectionExtensions
         services
             .AddHandler<StartSessionHandler>()
             .AddHandler<RefreshSessionHandler>()
+            .AddHandler<EndSessionHandler>()
             .AddHandler<ClientCredentialsHandler>()
             .AddHandler<ExchangePatHandler>()
             .AddHandler<CreatePatHandler>()

@@ -12,6 +12,7 @@ using JeffOps.Authentication.LocalAccounts.Endpoints;
 using JeffOps.Authentication.LocalAccounts.Infrastructure;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.IdentityModel.JsonWebTokens;
 
 namespace JeffOps.Authentication.Server.Tests;
 
@@ -21,6 +22,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
     private readonly string _database = TestDatabase.SqliteFile("local");
     private readonly CapturingEmailSender _email = new();
+    private readonly BackchannelReceiver _backchannel = new();
     private TokenServerHost? _host;
 
     [Fact]
@@ -203,6 +205,37 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Signing_out_ends_that_session_only_and_tells_clients_which_one()
+    {
+        var host = await StartAsync(new() { ["JeffOps:TokenServer:Clients:0:BackchannelLogoutUri"] = "https://bff.test/backchannel-logout" });
+        var accountId = await RegisterVerifiedAsync(host, "ada@example.com");
+        using var laptop = new Browser(host);
+        using var phone = new Browser(host);
+        await LoginAsync(laptop, "ada@example.com", Password);
+        await LoginAsync(phone, "ada@example.com", Password);
+        var onLaptop = await AuthorizeAsync(host, laptop, "openid offline_access api");
+        var onPhone = await AuthorizeAsync(host, phone, "openid offline_access api");
+
+        var laptopSession = new JsonWebToken(onLaptop.IdToken!).GetClaim("sid").Value;
+        var phoneSession = new JsonWebToken(onPhone.IdToken!).GetClaim("sid").Value;
+        laptopSession.ShouldNotBe(phoneSession, "each sign-in is its own session");
+        onLaptop.Access.GetClaim("sid").Value.ShouldBe(laptopSession);
+
+        await laptop.GetAsync(null!, "connect/endsession");
+
+        // The client is told which session ended, so it drops that one only.
+        var logout = new JsonWebToken(_backchannel.LogoutTokens.ShouldHaveSingleItem());
+        logout.Subject.ShouldBe(accountId.ToString());
+        logout.GetClaim("sid").Value.ShouldBe(laptopSession);
+
+        // The laptop's session is over; the phone's continues, and keeps its session id across refreshes.
+        (await host.RefreshAsync(onLaptop.RefreshToken!)).Error.ShouldBe("invalid_grant");
+        var refreshed = await host.RefreshAsync(onPhone.RefreshToken!);
+        refreshed.Status.ShouldBe(HttpStatusCode.OK, refreshed.Body.ToString());
+        new JsonWebToken(refreshed.IdToken!).GetClaim("sid").Value.ShouldBe(phoneSession);
+    }
+
+    [Fact]
     public async Task Local_accounts_are_off_unless_enabled_outside_development()
     {
         var host = await StartAsync(enabled: false);
@@ -244,6 +277,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
             configure: builder =>
             {
                 builder.Services.AddSingleton(_email);
+                builder.Services.AddHttpClient("JeffOps.BackchannelLogout").ConfigurePrimaryHttpMessageHandler(() => _backchannel);
                 new AuthenticationBuilder(builder.Services, builder.Configuration)
                     .AddLocalAccounts()
                     .UseEmailSender<CapturingEmailSender.Scoped>()
@@ -342,6 +376,19 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         }
 
         return [.. output];
+    }
+
+    /// <summary>A client's back-channel logout endpoint: records the logout tokens it receives.</summary>
+    private sealed class BackchannelReceiver : HttpMessageHandler
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<string> LogoutTokens { get; } = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var form = System.Web.HttpUtility.ParseQueryString(await request.Content!.ReadAsStringAsync(cancellationToken));
+            LogoutTokens.Enqueue(form["logout_token"]!);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
     }
 
     [GeneratedRegex("<input[^>]*name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")]
