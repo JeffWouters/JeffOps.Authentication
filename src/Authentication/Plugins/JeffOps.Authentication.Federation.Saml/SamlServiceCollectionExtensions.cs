@@ -38,6 +38,7 @@ public static class SamlServiceCollectionExtensions
             services.TryAddSingleton<ITokenReplayCache, SamlReplayCache>();
             services.TryAddSingleton<SamlProviders>();
             services.TryAddScoped<SamlServices>();
+            services.AddSingleton<IExternalSignOut, SamlSignOut>();
             services.AddSingleton<IExternalIdentityMapper>(provider => provider.GetRequiredService<SamlProviders>());
             services.AddSingleton<IExternalProviderChallenge>(provider => provider.GetRequiredService<SamlProviders>());
         }

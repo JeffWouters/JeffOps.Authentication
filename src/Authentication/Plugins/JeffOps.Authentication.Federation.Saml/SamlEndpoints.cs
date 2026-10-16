@@ -187,7 +187,22 @@ public static partial class SamlEndpoints
         }
 
         var scheme = saml.TokenServer.Value.SignInScheme;
-        await context.SignInAsync(scheme, SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, saml.Time.GetUtcNow(), names, scheme)).ConfigureAwait(false);
+        // Remember where the session came from, so signing out here can sign out at the provider too (single logout).
+        var principal = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, saml.Time.GetUtcNow(), names, scheme);
+        var session = (ClaimsIdentity)principal.Identity!;
+        session.AddClaim(new Claim(SamlSignOut.ProviderClaim, provider));
+        session.AddClaim(new Claim(SamlSignOut.NameIdClaim, assertion.Subject.NameId.Value));
+        if (assertion.Subject.NameId.Format is { } nameIdFormat)
+        {
+            session.AddClaim(new Claim(SamlSignOut.NameIdFormatClaim, nameIdFormat.OriginalString));
+        }
+
+        if (assertion.Statements.OfType<Saml2AuthenticationStatement>().FirstOrDefault()?.SessionIndex is { Length: > 0 } sessionIndex)
+        {
+            session.AddClaim(new Claim(SamlSignOut.SessionIndexClaim, sessionIndex));
+        }
+
+        await context.SignInAsync(scheme, principal).ConfigureAwait(false);
         return Results.Redirect(returnUrl);
     }
 
@@ -216,6 +231,11 @@ public static partial class SamlEndpoints
         var configuration = saml.Providers.Configuration(provider, entityId, saml.ReplayCache);
         var generic = await GenericRequestAsync(context).ConfigureAwait(false);
         Saml2Binding binding = HttpMethods.IsGet(context.Request.Method) ? new Saml2RedirectBinding() : new Saml2PostBinding();
+
+        if (!string.IsNullOrEmpty(generic.Query["SAMLResponse"]) || !string.IsNullOrEmpty(generic.Form["SAMLResponse"]))
+        {
+            return LogoutResponse(provider, generic, binding, configuration, saml, logger);
+        }
 
         // Only signed requests: anyone could otherwise sign a user out. The redirect binding signs the query string.
         var signed = HttpMethods.IsGet(context.Request.Method)
@@ -308,6 +328,45 @@ public static partial class SamlEndpoints
         }
 
         return string.IsNullOrEmpty(root.GetAttribute("ID")) ? "logout request without an ID" : null;
+    }
+
+    /// <summary>
+    /// The provider's answer to a logout this server started: the user is already signed out here, so whatever it says, the
+    /// browser goes back to finish the end-session request — but only to the local path the RelayState protects, and only
+    /// for an answer to that request.
+    /// </summary>
+    private static IResult LogoutResponse(
+        string provider, ITfoxtec.Identity.Saml2.Http.HttpRequest generic, Saml2Binding binding, Saml2Configuration configuration, SamlServices saml, ILogger logger)
+    {
+        var relay = generic.Query["RelayState"] ?? generic.Form["RelayState"];
+        if (SamlSignOut.ReadRelayState(relay, saml) is not { } state)
+        {
+            LogRejected(logger, provider, "logout response without a valid relay state");
+            return Results.Redirect("/");
+        }
+
+        var response = new Saml2LogoutResponse(configuration);
+        try
+        {
+            binding.Unbind(generic, response);
+            if (!string.Equals(response.InResponseTo?.Value, state.RequestId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("logout response to another request");
+            }
+
+            if (response.Status != Saml2StatusCodes.Success)
+            {
+                LogRejected(logger, provider, $"logout status {response.Status}");
+            }
+        }
+#pragma warning disable CA1031 // The user is signed out here regardless; an invalid answer is only logged.
+        catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            LogInvalid(logger, provider, exception);
+        }
+
+        return Results.Redirect(state.ReturnUrl);
     }
 
     private static async Task<ITfoxtec.Identity.Saml2.Http.HttpRequest> GenericRequestAsync(HttpContext context)

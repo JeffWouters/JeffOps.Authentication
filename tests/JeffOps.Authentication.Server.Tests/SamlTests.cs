@@ -160,6 +160,57 @@ public sealed class SamlTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Signing_out_here_signs_out_at_the_provider_too_and_comes_back()
+    {
+        using var serviceProvider = SelfSigned("CN=Token Server");
+        await StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Federation:Saml:corp:IdpSingleLogoutUrl"] = "https://idp.test/slo",
+            ["JeffOps:TokenServer:Federation:Saml:corp:SigningCertificatePfx"] = Convert.ToBase64String(serviceProvider.Export(X509ContentType.Pfx)),
+        });
+        using var browser = new Browser(_host);
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+        await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+
+        // Signing out at the token server sends the browser to the provider with a LogoutRequest this server signed.
+        var signOut = await browser.GetAsync(null!, "connect/endsession");
+        signOut.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        var toProvider = signOut.Headers.Location!;
+        toProvider.GetLeftPart(UriPartial.Path).ShouldBe("https://idp.test/slo");
+
+        using var spPublic = X509CertificateLoader.LoadCertificate(serviceProvider.RawData);
+        var verifying = new Saml2Configuration
+        {
+            Issuer = IdpEntityId,
+            CertificateValidationMode = System.ServiceModel.Security.X509CertificateValidationMode.None, // pinned below, self-signed
+            RevocationMode = X509RevocationMode.NoCheck,
+        };
+        verifying.SignatureValidationCertificates.Add(spPublic);
+        var logoutRequest = new Saml2LogoutRequest(verifying);
+        var query = System.Web.HttpUtility.ParseQueryString(toProvider.Query);
+        var received = new Saml2RedirectBinding();
+        received.Unbind(new ITfoxtec.Identity.Saml2.Http.HttpRequest { Method = "GET", Query = query, QueryString = toProvider.Query, Form = new NameValueCollection() }, logoutRequest);
+        logoutRequest.NameId.Value.ShouldBe("employee-4711");
+
+        // The provider signs the user out and answers; the browser comes back to finish the end-session request.
+        var answer = new Saml2LogoutResponse(new Saml2Configuration { Issuer = IdpEntityId, SigningCertificate = _idpCertificate })
+        {
+            InResponseTo = logoutRequest.Id,
+            Status = Saml2StatusCodes.Success,
+            Destination = new Uri("https://localhost/signin/saml/corp/slo"),
+        };
+        var reply = new Saml2RedirectBinding { RelayState = received.RelayState };
+        reply.Bind(answer);
+        var back = await browser.GetAsync(null!, reply.RedirectLocation.PathAndQuery.TrimStart('/'));
+        back.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        back.Headers.Location!.OriginalString.ShouldStartWith("/connect/endsession");
+
+        var finished = await browser.GetAsync(null!, back.Headers.Location.OriginalString.TrimStart('/'));
+        finished.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        finished.Headers.Location!.OriginalString.ShouldNotContain("idp.test", customMessage: "signed out here already, the second pass completes");
+    }
+
+    [Fact]
     public async Task The_provider_gets_this_server_s_metadata()
     {
         await StartAsync();

@@ -55,6 +55,19 @@ public interface IExternalProviderChallenge
 }
 
 /// <summary>
+/// Single logout towards the provider a sign-in came from: when the user signs out at the token server, the browser is sent
+/// to the provider to sign out there too, and comes back to finish signing out here.
+/// </summary>
+public interface IExternalSignOut
+{
+    /// <summary>
+    /// Where to send the browser so the provider of <paramref name="signIn"/> signs the user out, coming back to
+    /// <paramref name="returnUrl"/> (a local path); null when the sign-in didn't come from such a provider.
+    /// </summary>
+    Task<string?> SignOutUrlAsync(System.Security.Claims.ClaimsPrincipal signIn, Uri requestOrigin, string returnUrl, CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Lets a host react to external sign-ins, for example to create a tenant for a new directory the first time one of its users
 /// signs in. Optional; called after the account is created or linked and before the session starts.
 /// </summary>

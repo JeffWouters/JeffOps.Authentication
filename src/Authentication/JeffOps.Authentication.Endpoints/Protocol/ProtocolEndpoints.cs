@@ -271,6 +271,7 @@ internal static class ProtocolEndpoints
     private static async Task<IResult> EndSessionAsync(
         HttpContext context,
         ICommandHandler<EndSessionCommand> endSession,
+        IEnumerable<Application.Federation.IExternalSignOut> externalSignOuts,
         ClaimNames names,
         IOptions<TokenServerOptions> options)
     {
@@ -280,6 +281,25 @@ internal static class ProtocolEndpoints
             && SignInPrincipal.SessionId(signedIn.Principal, names) is { } sessionId)
         {
             await endSession.HandleAsync(new EndSessionCommand(accountId, sessionId), context.RequestAborted).ConfigureAwait(false);
+        }
+
+        // Signed in through a provider with single logout: sign out there too, then come back here to finish (signed out
+        // locally by then, so the second pass completes the end-session request).
+        if (signedIn.Succeeded)
+        {
+            var origin = new Uri($"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/");
+            var returnUrl = context.Request.PathBase + context.Request.Path + QueryString.Create(
+                (context.Request.HasFormContentType ? context.Request.Form.AsEnumerable() : context.Request.Query.AsEnumerable())
+                    .Where(pair => pair.Key != "__RequestVerificationToken")
+                    .SelectMany(pair => pair.Value.Select(value => KeyValuePair.Create(pair.Key, value))));
+            foreach (var externalSignOut in externalSignOuts)
+            {
+                if (await externalSignOut.SignOutUrlAsync(signedIn.Principal, origin, returnUrl, context.RequestAborted).ConfigureAwait(false) is { } url)
+                {
+                    await context.SignOutAsync(options.Value.SignInScheme).ConfigureAwait(false);
+                    return Results.Redirect(url);
+                }
+            }
         }
 
         await context.SignOutAsync(options.Value.SignInScheme).ConfigureAwait(false);
