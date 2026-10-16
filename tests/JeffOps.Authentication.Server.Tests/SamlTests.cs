@@ -127,6 +127,39 @@ public sealed class SamlTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Encrypted_assertions_are_decrypted_and_can_be_required()
+    {
+        using var decryption = SelfSigned("CN=Token Server Encryption");
+        await StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Federation:Saml:corp:DecryptionCertificatePfx"] = Convert.ToBase64String(decryption.Export(X509ContentType.Pfx)),
+            ["JeffOps:TokenServer:Federation:Saml:corp:RequireEncryptedAssertions"] = "true",
+        });
+        using var publicPart = X509CertificateLoader.LoadCertificate(decryption.RawData);
+
+        using (var browser = new Browser(_host))
+        {
+            var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+            var plain = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+            plain.Headers.Location!.OriginalString.ShouldContain("error=provider_error", customMessage: "an unencrypted assertion is refused");
+        }
+
+        using (var browser = new Browser(_host))
+        {
+            var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+            var encrypted = Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart);
+            Encoding.UTF8.GetString(Convert.FromBase64String(encrypted)).ShouldContain("EncryptedAssertion");
+
+            var signedIn = await PostResponseAsync(browser, encrypted);
+            signedIn.Headers.Location!.OriginalString.ShouldBe("/done");
+        }
+
+        var metadata = await _host.Client.GetStringAsync(new Uri("signin/saml/corp/metadata", UriKind.Relative), TestContext.Current.CancellationToken);
+        metadata.ShouldContain("use=\"encryption\"");
+        metadata.ShouldContain(Convert.ToBase64String(decryption.RawData));
+    }
+
+    [Fact]
     public async Task The_provider_gets_this_server_s_metadata()
     {
         await StartAsync();
@@ -290,9 +323,11 @@ public sealed class SamlTests : IAsyncDisposable
         return (request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer);
     }
 
-    private static string Response(string inResponseTo, Uri acs, string audience, string? authnContext, X509Certificate2? signer, string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent")
+    private static string Response(
+        string inResponseTo, Uri acs, string audience, string? authnContext, X509Certificate2? signer,
+        string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent", X509Certificate2? encryptFor = null)
     {
-        var configuration = new Saml2Configuration { Issuer = IdpEntityId, SigningCertificate = signer };
+        var configuration = new Saml2Configuration { Issuer = IdpEntityId, SigningCertificate = signer, EncryptionCertificate = encryptFor };
         var response = new Saml2AuthnResponse(configuration)
         {
             InResponseTo = new Saml2Id(inResponseTo),

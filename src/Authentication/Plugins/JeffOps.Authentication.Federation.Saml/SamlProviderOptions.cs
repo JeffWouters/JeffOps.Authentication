@@ -73,4 +73,21 @@ public sealed class SamlProviderOptions
 
     /// <summary>The password of <see cref="SigningCertificatePfx"/>, if any.</summary>
     public string? SigningCertificatePassword { get; set; }
+
+    /// <summary>
+    /// This server's decryption certificate with its private key, for encrypted assertions. Set in code, or through
+    /// <see cref="DecryptionCertificatePfx"/>. Its public part is published as the encryption key in the metadata.
+    /// </summary>
+    public System.Security.Cryptography.X509Certificates.X509Certificate2? DecryptionCertificate { get; set; }
+
+    /// <summary>The decryption certificate as a base64 PKCS#12 (PFX) blob, for configuration from a secret store.</summary>
+    public string? DecryptionCertificatePfx { get; set; }
+
+    /// <summary>The password of <see cref="DecryptionCertificatePfx"/>, if any.</summary>
+    public string? DecryptionCertificatePassword { get; set; }
+
+    /// <summary>
+    /// Whether assertions must arrive encrypted (needs a decryption certificate); an unencrypted one is refused. Default: false.
+    /// </summary>
+    public bool RequireEncryptedAssertions { get; set; }
 }

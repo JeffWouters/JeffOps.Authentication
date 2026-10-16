@@ -123,6 +123,12 @@ public static partial class SamlEndpoints
         }
 
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
+        if (saml.Options.Get(provider).RequireEncryptedAssertions && !IsEncrypted(form["SAMLResponse"].ToString()))
+        {
+            LogRejected(logger, provider, "assertion not encrypted");
+            return BackToLogin(returnUrl, "provider_error");
+        }
+
         var response = new Saml2AuthnResponse(saml.Providers.Configuration(provider, entityId, saml.ReplayCache));
         try
         {
@@ -352,12 +358,8 @@ public static partial class SamlEndpoints
         var acs = new Uri(Origin(context), $"{Prefix}/{provider}/acs").AbsoluteUri;
         var slo = new Uri(Origin(context), $"{Prefix}/{provider}/slo").AbsoluteUri;
         var signing = saml.Providers.SigningCertificate(provider);
-        var keyDescriptor = signing is null ? string.Empty : $"""
-
-                <md:KeyDescriptor use="signing">
-                  <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{Convert.ToBase64String(signing.RawData)}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
-                </md:KeyDescriptor>
-            """;
+        var decryption = saml.Providers.DecryptionCertificate(provider);
+        var keyDescriptor = KeyDescriptor("signing", signing) + KeyDescriptor("encryption", decryption);
         var xml = $"""
             <?xml version="1.0" encoding="UTF-8"?>
             <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{System.Security.SecurityElement.Escape(entityId)}">
@@ -370,6 +372,14 @@ public static partial class SamlEndpoints
             """;
         return Results.Content(xml, "application/samlmetadata+xml");
     }
+
+    private static string KeyDescriptor(string use, System.Security.Cryptography.X509Certificates.X509Certificate2? certificate) =>
+        certificate is null ? string.Empty : $"""
+
+                <md:KeyDescriptor use="{use}">
+                  <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{Convert.ToBase64String(certificate.RawData)}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+                </md:KeyDescriptor>
+            """;
 
     private static (string? RequestId, string ReturnUrl) ReadState(HttpContext context, string provider, SamlServices saml)
     {
@@ -432,6 +442,26 @@ public static partial class SamlEndpoints
             && data.NotOnOrAfter is { } notOnOrAfter
             && new DateTimeOffset(DateTime.SpecifyKind(notOnOrAfter, DateTimeKind.Utc)) > now);
         return confirmed ? null : "no bearer confirmation for this request and endpoint";
+    }
+
+    /// <summary>Whether the posted response carries its assertion encrypted, and no plain one beside it.</summary>
+    private static bool IsEncrypted(string samlResponse)
+    {
+        try
+        {
+            var document = new System.Xml.XmlDocument { XmlResolver = null };
+            using var reader = System.Xml.XmlReader.Create(
+                new MemoryStream(Convert.FromBase64String(samlResponse)),
+                new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null });
+            document.Load(reader);
+            const string Assertion = "urn:oasis:names:tc:SAML:2.0:assertion";
+            return document.GetElementsByTagName("EncryptedAssertion", Assertion).Count == 1
+                && document.GetElementsByTagName("Assertion", Assertion).Count == 0;
+        }
+        catch (Exception exception) when (exception is FormatException or System.Xml.XmlException)
+        {
+            return false;
+        }
     }
 
     private static string? AuthnContextOf(Saml2AuthnResponse response) =>

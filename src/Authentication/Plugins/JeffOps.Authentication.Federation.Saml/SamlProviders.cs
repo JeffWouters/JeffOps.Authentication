@@ -81,6 +81,11 @@ internal sealed class SamlProviders(
             configuration.SignAuthnRequest = true;
         }
 
+        if (DecryptionCertificate(provider) is { } decryption)
+        {
+            configuration.DecryptionCertificates.Add(decryption);
+        }
+
         foreach (var certificate in settings.IdpSigningCertificates)
         {
             configuration.SignatureValidationCertificates.Add(Load(certificate));
@@ -92,22 +97,20 @@ internal sealed class SamlProviders(
     /// <summary>This server's signing certificate for <paramref name="provider"/>, or null when requests go unsigned.</summary>
     public X509Certificate2? SigningCertificate(string provider)
     {
-        var settings = options.Get(provider);
-        if (settings.SigningCertificate is { } certificate)
-        {
-            return certificate;
-        }
-
-        if (string.IsNullOrWhiteSpace(settings.SigningCertificatePfx))
-        {
-            return null;
-        }
-
         // Loaded once per provider: the options instance is cached by the options monitor.
-        settings.SigningCertificate = X509CertificateLoader.LoadPkcs12(
-            Convert.FromBase64String(settings.SigningCertificatePfx), settings.SigningCertificatePassword, X509KeyStorageFlags.EphemeralKeySet);
-        return settings.SigningCertificate;
+        var settings = options.Get(provider);
+        return settings.SigningCertificate ??= LoadPfx(settings.SigningCertificatePfx, settings.SigningCertificatePassword);
     }
+
+    /// <summary>This server's decryption certificate for <paramref name="provider"/>, or null when assertions aren't encrypted.</summary>
+    public X509Certificate2? DecryptionCertificate(string provider)
+    {
+        var settings = options.Get(provider);
+        return settings.DecryptionCertificate ??= LoadPfx(settings.DecryptionCertificatePfx, settings.DecryptionCertificatePassword);
+    }
+
+    private static X509Certificate2? LoadPfx(string? pfx, string? password) =>
+        string.IsNullOrWhiteSpace(pfx) ? null : X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(pfx), password, X509KeyStorageFlags.EphemeralKeySet);
 
     public string ServiceProviderEntityId(string provider, IOptions<TokenServerOptions> tokenServer, Uri requestOrigin) =>
         options.Get(provider).ServiceProviderEntityId
