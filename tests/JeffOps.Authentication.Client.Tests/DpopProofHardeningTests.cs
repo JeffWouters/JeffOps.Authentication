@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Dpop;
+using JeffOps.Authentication.Abstractions.Replay;
 
 namespace JeffOps.Authentication.Client.Tests;
 
@@ -179,28 +180,42 @@ public sealed class DpopProofHardeningTests
     }
 
     [Fact]
-    public void The_replay_cache_lets_each_proof_through_once_and_stays_bounded()
+    public async Task The_replay_cache_lets_each_value_through_once_and_stays_bounded()
     {
-        var cache = new DpopReplayCache(capacity: 2);
-        var first = new DpopProof("key", "1", Now);
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(Now);
+        var cache = new MemoryReplayCache(time, capacity: 2);
+        var ct = TestContext.Current.CancellationToken;
 
-        cache.TryUse(first, Now.AddMinutes(10), Now).ShouldBeTrue();
-        cache.TryUse(first, Now.AddMinutes(10), Now).ShouldBeFalse();
-        cache.TryUse(new DpopProof("other-key", "1", Now), Now.AddMinutes(10), Now).ShouldBeTrue();
+        (await cache.TryAddAsync("a", Now.AddMinutes(10), ct)).ShouldBeTrue();
+        (await cache.TryAddAsync("a", Now.AddMinutes(10), ct)).ShouldBeFalse();
+        (await cache.TryAddAsync("b", Now.AddMinutes(10), ct)).ShouldBeTrue();
+        (await cache.TryAddAsync("c", Now.AddMinutes(10), ct)).ShouldBeFalse("full: refused rather than forgotten");
 
-        cache.TryUse(new DpopProof("key", "3", Now), Now.AddMinutes(10), Now).ShouldBeFalse("full: refused rather than forgotten");
-        cache.TryUse(new DpopProof("key", "3", Now), Now.AddMinutes(30), Now.AddMinutes(11)).ShouldBeTrue("expired entries make room");
+        time.Advance(TimeSpan.FromMinutes(11));
+        (await cache.TryAddAsync("c", Now.AddMinutes(30), ct)).ShouldBeTrue("expired entries make room");
+        (await cache.TryAddAsync("a", Now.AddMinutes(30), ct)).ShouldBeTrue("an expired key can be used again");
     }
 
     [Fact]
-    public async Task The_replay_cache_admits_a_proof_once_under_concurrency()
+    public async Task The_replay_cache_admits_a_value_once_under_concurrency()
     {
-        var cache = new DpopReplayCache();
-        var proof = new DpopProof("key", "same", Now);
+        var cache = new MemoryReplayCache();
 
-        var results = await Task.WhenAll(Enumerable.Range(0, 64).Select(_ => Task.Run(() => cache.TryUse(proof, Now.AddMinutes(10), Now), TestContext.Current.CancellationToken)));
+        var results = await Task.WhenAll(Enumerable.Range(0, 64).Select(_ =>
+            Task.Run(async () => await cache.TryAddAsync("same", DateTimeOffset.UtcNow.AddMinutes(10), TestContext.Current.CancellationToken), TestContext.Current.CancellationToken)));
 
         results.Count(admitted => admitted).ShouldBe(1);
+    }
+
+    [Fact]
+    public void Replay_keys_are_fixed_length_and_hide_the_value()
+    {
+        var key = ReplayKeys.For("dpop", new string('x', 10_000));
+
+        key.ShouldStartWith("dpop:");
+        key.Length.ShouldBe("dpop:".Length + 64);
+        key.ShouldBe(key.ToLowerInvariant());
+        ReplayKeys.For("saml", "same").ShouldNotBe(ReplayKeys.For("dpop", "same"));
     }
 
     // ---- Helpers --------------------------------------------------------------------------------------------------------

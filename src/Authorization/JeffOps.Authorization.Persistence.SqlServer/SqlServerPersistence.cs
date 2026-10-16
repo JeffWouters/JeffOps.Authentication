@@ -51,6 +51,8 @@ internal sealed class DesignTimeContextFactory : IDesignTimeDbContextFactory<Aut
 {
     public AuthorizationDbContext CreateDbContext(string[] args)
     {
+        // SqlClient's native networking isn't shipped here (docs/DESIGN.md §6.5, D24): the tools use managed networking.
+        AppContext.SetSwitch("Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows", true);
         var options = new DbContextOptionsBuilder<AuthorizationDbContext>()
             .UseSqlServer("Server=(localdb)\\design-time;Database=JeffOpsAuthorization", SqlServerPersistenceExtensions.Configure)
             .Options;

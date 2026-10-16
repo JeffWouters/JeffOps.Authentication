@@ -35,7 +35,7 @@ public static class SamlServiceCollectionExtensions
         {
             services.AddMemoryCache();
             services.AddDataProtection();
-            services.TryAddSingleton<ITokenReplayCache, MemoryTokenReplayCache>();
+            services.TryAddSingleton<ITokenReplayCache, SamlReplayCache>();
             services.TryAddSingleton<SamlProviders>();
             services.TryAddScoped<SamlServices>();
             services.AddSingleton<IExternalIdentityMapper>(provider => provider.GetRequiredService<SamlProviders>());

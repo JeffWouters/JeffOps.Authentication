@@ -27,6 +27,9 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
     /// <summary>Token signing and encryption keys, their private keys protected with Data Protection.</summary>
     public DbSet<StoredKey> StoredKeys => Set<StoredKey>();
 
+    /// <summary>One-time values seen (DPoP proofs, SAML assertions), shared by every instance of the token server.</summary>
+    public DbSet<Server.ReplayEntry> ReplayEntries => Set<Server.ReplayEntry>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -89,6 +92,14 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
             key.Property(entity => entity.Use).HasConversion<string>().HasMaxLength(20);
             key.Property(entity => entity.ProtectedPrivateKey).IsRequired();
             key.Ignore(entity => entity.KeyId);
+        });
+
+        modelBuilder.Entity<Server.ReplayEntry>(entry =>
+        {
+            entry.ToTable("ReplayEntries");
+            entry.HasKey(entity => entity.Key);
+            entry.Property(entity => entity.Key).HasMaxLength(100);
+            entry.HasIndex(entity => entity.ExpiresAtUnixMs);
         });
     }
 }

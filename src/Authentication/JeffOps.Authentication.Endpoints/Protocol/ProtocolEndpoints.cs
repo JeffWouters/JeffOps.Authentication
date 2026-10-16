@@ -109,7 +109,7 @@ internal static class ProtocolEndpoints
             ?? throw new InvalidOperationException("The OpenID Connect request cannot be retrieved.");
         var cancellationToken = context.RequestAborted;
 
-        var dpop = Dpop.Check(context, request, options.Value, time);
+        var dpop = await Dpop.CheckAsync(context, request, options.Value, time).ConfigureAwait(false);
         if (dpop.IsFailure)
         {
             return TokenIssuance.Refuse(dpop.Error, dpop.Error.Code);

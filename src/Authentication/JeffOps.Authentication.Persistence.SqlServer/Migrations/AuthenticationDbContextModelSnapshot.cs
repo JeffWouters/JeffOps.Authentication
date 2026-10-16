@@ -169,6 +169,22 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.ToTable("PersonalAccessTokens", "auth");
                 });
 
+            modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.ReplayEntry", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<long>("ExpiresAtUnixMs")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Key");
+
+                    b.HasIndex("ExpiresAtUnixMs");
+
+                    b.ToTable("ReplayEntries", "auth");
+                });
+
             modelBuilder.Entity("OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication", b =>
                 {
                     b.Property<string>("Id")

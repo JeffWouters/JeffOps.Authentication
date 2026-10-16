@@ -6,6 +6,7 @@ using ITfoxtec.Identity.Saml2;
 using ITfoxtec.Identity.Saml2.Claims;
 using ITfoxtec.Identity.Saml2.Schemas;
 using JeffOps.Authentication.Abstractions.Claims;
+using JeffOps.Authentication.Abstractions.Replay;
 using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Features.Federation.CompleteExternalSignIn;
 using JeffOps.Authentication.Application.Sessions;
@@ -227,6 +228,14 @@ public static partial class SamlEndpoints
             {
                 throw new InvalidOperationException(reason);
             }
+
+            // Each logout request counts once, across every instance.
+            if (!await saml.Replay.TryAddAsync(
+                    ReplayKeys.For("saml-logout", request.XmlDocument.DocumentElement!.GetAttribute("ID")), saml.Time.GetUtcNow() + TimeSpan.FromMinutes(10), context.RequestAborted)
+                .ConfigureAwait(false))
+            {
+                throw new InvalidOperationException("logout request replayed");
+            }
         }
 #pragma warning disable CA1031 // Any failure to read or validate the request refuses it (fail closed).
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -268,7 +277,7 @@ public static partial class SamlEndpoints
 
     /// <summary>
     /// Why a signed LogoutRequest is not for here and now, or null: it must name this endpoint (<c>Destination</c>), be recent
-    /// (<c>IssueInstant</c> within five minutes, <c>NotOnOrAfter</c> not passed), and not have been seen before.
+    /// (<c>IssueInstant</c> within five minutes, <c>NotOnOrAfter</c> not passed) and carry an ID (checked for replay after).
     /// </summary>
     private static string? LogoutRejection(Saml2LogoutRequest request, Uri slo, SamlServices saml)
     {
@@ -292,10 +301,7 @@ public static partial class SamlEndpoints
             return "logout request expired";
         }
 
-        var id = root.GetAttribute("ID");
-        return string.IsNullOrEmpty(id) || !saml.ReplayCache.TryAdd("slo:" + id, (issued + skew + skew).UtcDateTime)
-            ? "logout request replayed"
-            : null;
+        return string.IsNullOrEmpty(root.GetAttribute("ID")) ? "logout request without an ID" : null;
     }
 
     private static async Task<ITfoxtec.Identity.Saml2.Http.HttpRequest> GenericRequestAsync(HttpContext context)
@@ -454,6 +460,7 @@ internal sealed class SamlServices(
     IOptionsMonitor<SamlProviderOptions> options,
     IOptions<TokenServerOptions> tokenServer,
     ITokenReplayCache replayCache,
+    IReplayCache replay,
     IDataProtectionProvider dataProtection,
     TimeProvider time)
 {
@@ -464,6 +471,8 @@ internal sealed class SamlServices(
     public IOptions<TokenServerOptions> TokenServer { get; } = tokenServer;
 
     public ITokenReplayCache ReplayCache { get; } = replayCache;
+
+    public IReplayCache Replay { get; } = replay;
 
     public IDataProtector Protector { get; } = dataProtection.CreateProtector("JeffOps.Federation.Saml.Request");
 

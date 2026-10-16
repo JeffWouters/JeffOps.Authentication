@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using JeffOps.Authentication.Abstractions.Dpop;
+using JeffOps.Authentication.Abstractions.Replay;
 using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Sessions;
 using JeffOps.Authentication.SharedKernel.Results;
@@ -27,7 +28,7 @@ internal static class Dpop
     private static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
 
     /// <summary>The proof's key thumbprint, null without a proof (when allowed), or why the request is refused.</summary>
-    public static Result<string?> Check(HttpContext context, OpenIddictRequest request, TokenServerOptions options, TimeProvider time)
+    public static async Task<Result<string?>> CheckAsync(HttpContext context, OpenIddictRequest request, TokenServerOptions options, TimeProvider time)
     {
         var headers = context.Request.Headers[DpopProofValidator.HeaderName];
         var required = options.Clients.Any(client => client.RequireDpop && string.Equals(client.ClientId, request.ClientId, StringComparison.Ordinal));
@@ -63,7 +64,8 @@ internal static class Dpop
         }
 
         // Each proof works once.
-        if (!context.RequestServices.GetRequiredService<DpopReplayCache>().TryUse(proof, now + Window + Window, now))
+        if (!await context.RequestServices.GetRequiredService<IReplayCache>()
+                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, context.RequestAborted).ConfigureAwait(false))
         {
             return Error.Unauthorized(InvalidProof, "This DPoP proof was already used.");
         }

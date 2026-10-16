@@ -2,12 +2,12 @@ using System.Security.Claims;
 using System.Security.Cryptography.X509Certificates;
 using ITfoxtec.Identity.Saml2;
 using ITfoxtec.Identity.Saml2.Claims;
+using JeffOps.Authentication.Abstractions.Replay;
 using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Domain.Accounts;
 using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.SharedKernel.Results;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
@@ -123,22 +123,16 @@ internal sealed class SamlProviders(
 }
 
 /// <summary>
-/// Remembers seen assertion ids until they expire, so a captured SAML response can't be posted twice. In memory: with several
-/// token server replicas, the per-browser request binding (cookie + InResponseTo) still stops cross-browser replay.
+/// Remembers seen assertions until they expire, so a captured SAML response can't be posted twice — in the token server's
+/// shared <see cref="IReplayCache"/>, so across every instance.
 /// </summary>
-internal sealed class MemoryTokenReplayCache(IMemoryCache cache) : ITokenReplayCache
+/// <remarks>The token handler's replay hook is synchronous; the store's call completes on the calling thread.</remarks>
+internal sealed class SamlReplayCache(IReplayCache cache) : ITokenReplayCache
 {
-    public bool TryAdd(string securityToken, DateTime expiresOn)
-    {
-        var key = "jeffops:saml:replay:" + securityToken;
-        if (cache.TryGetValue(key, out _))
-        {
-            return false;
-        }
+    public bool TryAdd(string securityToken, DateTime expiresOn) =>
+        cache.TryAddAsync(ReplayKeys.For("saml", securityToken), new DateTimeOffset(DateTime.SpecifyKind(expiresOn, DateTimeKind.Utc)), CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
 
-        cache.Set(key, true, new DateTimeOffset(DateTime.SpecifyKind(expiresOn, DateTimeKind.Utc)));
-        return true;
-    }
-
-    public bool TryFind(string securityToken) => cache.TryGetValue("jeffops:saml:replay:" + securityToken, out _);
+    /// <summary>Always false: <see cref="TryAdd"/> is atomic and refuses a replay itself.</summary>
+    public bool TryFind(string securityToken) => false;
 }

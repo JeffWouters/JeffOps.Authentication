@@ -1,5 +1,6 @@
 using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Dpop;
+using JeffOps.Authentication.Abstractions.Replay;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -60,7 +61,7 @@ internal static class DpopValidation
 
         events.OnTokenValidated = async context =>
         {
-            if (Check(context, mode, time) is { } failure)
+            if (await CheckAsync(context, mode, time).ConfigureAwait(false) is { } failure)
             {
                 context.HttpContext.Items[FailedItem] = true;
                 context.Fail(failure);
@@ -85,7 +86,7 @@ internal static class DpopValidation
         jwt.Events = events;
     }
 
-    private static string? Check(TokenValidatedContext context, DpopMode mode, TimeProvider time)
+    private static async Task<string?> CheckAsync(TokenValidatedContext context, DpopMode mode, TimeProvider time)
     {
         var http = context.HttpContext;
         var usedDpopScheme = http.Items.ContainsKey(SchemeItem);
@@ -138,7 +139,8 @@ internal static class DpopValidation
             return "The DPoP proof is signed by another key than the token is bound to.";
         }
 
-        return http.RequestServices.GetRequiredService<DpopReplayCache>().TryUse(proof, now + Window + Window, now)
+        return await http.RequestServices.GetRequiredService<IReplayCache>()
+                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, http.RequestAborted).ConfigureAwait(false)
             ? null
             : "This DPoP proof was already used.";
     }

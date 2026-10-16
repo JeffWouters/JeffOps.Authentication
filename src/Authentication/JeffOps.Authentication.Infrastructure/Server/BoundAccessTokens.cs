@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using JeffOps.Authentication.Abstractions.Dpop;
+using JeffOps.Authentication.Abstractions.Replay;
 using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -42,15 +43,13 @@ internal static class BoundAccessTokens
             .SetType(OpenIddictValidationHandlerType.Custom));
 
         validation.AddEventHandler<OpenIddictValidationEvents.ProcessAuthenticationContext>(handler => handler
-            .UseInlineHandler(context =>
+            .UseInlineHandler(async context =>
             {
                 if (context.AccessTokenPrincipal is { } principal && context.AccessToken is { } token
-                    && context.Transaction.GetHttpRequest() is { } request && Check(request, principal, token) is { } failure)
+                    && context.Transaction.GetHttpRequest() is { } request && await CheckAsync(request, principal, token).ConfigureAwait(false) is { } failure)
                 {
                     context.Reject(Errors.InvalidToken, failure);
                 }
-
-                return default;
             })
             .SetOrder(OpenIddictValidationHandlers.ValidateAccessToken.Descriptor.Order + 1_000)
             .SetType(OpenIddictValidationHandlerType.Custom));
@@ -75,23 +74,21 @@ internal static class BoundAccessTokens
             .SetType(OpenIddictServerHandlerType.Custom));
 
         server.AddEventHandler<OpenIddictServerEvents.ProcessAuthenticationContext>(handler => handler
-            .UseInlineHandler(context =>
+            .UseInlineHandler(async context =>
             {
                 if (context.EndpointType == OpenIddictServerEndpointType.UserInfo
                     && context.AccessTokenPrincipal is { } principal && context.AccessToken is { } token
-                    && context.Transaction.GetHttpRequest() is { } request && Check(request, principal, token) is { } failure)
+                    && context.Transaction.GetHttpRequest() is { } request && await CheckAsync(request, principal, token).ConfigureAwait(false) is { } failure)
                 {
                     context.Reject(Errors.InvalidToken, failure);
                 }
-
-                return default;
             })
             .SetOrder(OpenIddictServerHandlers.ValidateAccessToken.Descriptor.Order + 1_000)
             .SetType(OpenIddictServerHandlerType.Custom));
     }
 
     /// <summary>Why the request may not use this access token, or null when it may.</summary>
-    public static string? Check(HttpRequest request, ClaimsPrincipal principal, string accessToken)
+    public static async Task<string?> CheckAsync(HttpRequest request, ClaimsPrincipal principal, string accessToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var usedDpopScheme = FromDpopScheme(request) is not null;
@@ -131,7 +128,8 @@ internal static class BoundAccessTokens
             return "The DPoP proof is signed by another key than the token is bound to.";
         }
 
-        return services.GetRequiredService<DpopReplayCache>().TryUse(proof, now + Window + Window, now)
+        return await services.GetRequiredService<IReplayCache>()
+                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, request.HttpContext.RequestAborted).ConfigureAwait(false)
             ? null
             : "This DPoP proof was already used.";
     }

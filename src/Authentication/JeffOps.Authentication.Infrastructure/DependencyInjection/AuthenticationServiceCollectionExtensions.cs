@@ -78,7 +78,8 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddDataProtection();
         services.AddMemoryCache();
         services.AddAuthorization(); // The endpoints require it; idempotent when the host adds its own policies.
-        services.TryAddSingleton<Abstractions.Dpop.DpopReplayCache>();
+        // One-time values (DPoP proofs, SAML assertions) are remembered in the database, so they count once across instances.
+        services.TryAddSingleton<Abstractions.Replay.IReplayCache, DatabaseReplayCache>();
         services.TryAddSingleton<DatabaseKeyStore>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());
         services.AddHostedService<KeyRotationService>();
