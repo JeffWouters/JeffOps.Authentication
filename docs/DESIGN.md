@@ -662,7 +662,8 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Hosted UI**: the login page shows a password form (with antiforgery) when the email has no federated provider; `account/login/code` takes the authenticator or a recovery code. Credential management is a JSON API under `account/local/manage/*` for the signed-in user's own session (never under impersonation, delegation or PAT tokens).
 - **Events**: every credential change is audited and the user is notified (`INotifier`).
 - **Session revocation** (release readiness): changing or resetting the password, removing the authenticator or a passkey ends every session of the account (`Account.RevokeSessions`): all its tokens are revoked at once, clients with a back-channel logout URI are notified, and refreshes of sessions that signed in earlier are refused (`session_revoked`) as a second line of defence. Users can also sign out everywhere (`POST account/sessions/revoke`) and operators can do it for an account (`POST admin/accounts/{id}/sessions/revoke`). Personal access tokens are separate credentials and stay valid.
-- **Not yet**: email OTP as a second factor; hosted UI pages for reset/verify (hosts render them or use the JSON API).
+- **Email codes** (`EmailCodes`): accounts without an authenticator app complete a password sign-in with a six-digit code sent by email (`IAccountEmailSender.SendSignInCodeAsync`), valid `EmailCodeLifetime` (10 min), accepted once, stored as a hash bound to the account; wrong codes count towards lockout, a new code can be asked for at most once a minute, and it counts as a second factor (`otp`, `mfa`).
+- **Hosted pages** for the emailed links: `account/verify-email` (verifies only when the button is pressed, not when a mail scanner opens the link), `account/forgot-password` (the same answer for every address) and `account/reset-password`, posting to antiforgery-checked form endpoints; the login page links to the reset.
 
 ---
 

@@ -37,6 +37,15 @@ public sealed class LocalAccountOptions
     /// <summary>How long a password sign-in waits for its second factor. Default: 5 minutes.</summary>
     public TimeSpan SecondFactorWindow { get; set; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Whether accounts without an authenticator app complete a password sign-in with a six-digit code sent by email. The
+    /// code counts as a second factor (<c>otp</c>, <c>mfa</c>); accounts with an authenticator use that instead. Default: false.
+    /// </summary>
+    public bool EmailCodes { get; set; }
+
+    /// <summary>How long an emailed sign-in code is valid. Default: 10 minutes.</summary>
+    public TimeSpan EmailCodeLifetime { get; set; } = TimeSpan.FromMinutes(10);
+
     public int RecoveryCodeCount { get; set; } = 10;
 
     /// <summary>The issuer name authenticator apps show. Default: <c>JeffOps</c>.</summary>

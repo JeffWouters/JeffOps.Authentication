@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Http;
 
 namespace JeffOps.Authentication.UI.Components.Pages;
 
-/// <summary>The second step of a local sign-in: an authenticator or recovery code.</summary>
+/// <summary>The second step of a local sign-in: an authenticator or recovery code, or a code sent by email.</summary>
 public sealed partial class LoginCode
 {
     /// <summary>
@@ -17,11 +17,23 @@ public sealed partial class LoginCode
     [SupplyParameterFromQuery(Name = "error")]
     public string? Error { get; set; }
 
+    /// <summary>The second factor asked for, from the <c>method</c> query value: <c>email</c> or the authenticator app.</summary>
+    [SupplyParameterFromQuery(Name = "method")]
+    public string? Method { get; set; }
+
+    /// <summary>Whether a new code was just sent, from the <c>sent</c> query value.</summary>
+    [SupplyParameterFromQuery(Name = "sent")]
+    public string? SentFlag { get; set; }
+
     /// <summary>The current request, cascaded during static server rendering; used to set the response's security headers.</summary>
     [CascadingParameter]
     public HttpContext? HttpContext { get; set; }
 
     private string SafeReturnUrl { get; set; } = "/";
+
+    private bool ByEmail => string.Equals(Method, "email", StringComparison.Ordinal);
+
+    private bool Sent => SentFlag == "1";
 
     private string? ErrorMessage { get; set; }
 

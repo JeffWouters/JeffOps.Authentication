@@ -72,6 +72,7 @@ public static class LocalAccountsServiceCollectionExtensions
         services.TryAddSingleton<ITotpSecretProtector, DataProtectionTotpProtector>();
         services.TryAddScoped<IAccountEmailSender, LoggingAccountEmailSender>();
         services.TryAddScoped<CredentialChangeSessions>();
+        services.TryAddScoped<Application.Features.SignIn.SignInCodes>();
         services.TryAddSingleton<INotifier, LoggingNotifier>();
         services.AddDataProtection();
 
@@ -81,6 +82,7 @@ public static class LocalAccountsServiceCollectionExtensions
             .AddHandler<ResendVerificationHandler>()
             .AddHandler<PasswordSignInHandler>()
             .AddHandler<SecondFactorHandler>()
+            .AddHandler<ResendSignInCodeHandler>()
             .AddHandler<ChangePasswordHandler>()
             .AddHandler<RequestPasswordResetHandler>()
             .AddHandler<ResetPasswordHandler>()
@@ -151,6 +153,21 @@ internal sealed partial class LoggingAccountEmailSender(ILogger<LoggingAccountEm
 
     public Task SendAlreadyRegisteredAsync(string email, CancellationToken cancellationToken) => Send("already registered", null);
 
+    public Task SendSignInCodeAsync(string email, string code, CancellationToken cancellationToken)
+    {
+        // A code is a bearer secret: logged only in Development, to make local testing possible.
+        if (environment.IsDevelopment())
+        {
+            LogDevelopmentCode(logger, code);
+        }
+        else
+        {
+            LogMissing(logger, "sign-in code");
+        }
+
+        return Task.CompletedTask;
+    }
+
     private Task Send(string kind, Uri? link)
     {
         // Links are bearer secrets: logged only in Development, to make local testing possible.
@@ -165,6 +182,9 @@ internal sealed partial class LoggingAccountEmailSender(ILogger<LoggingAccountEm
 
         return Task.CompletedTask;
     }
+
+    [LoggerMessage(EventId = 8613, Level = LogLevel.Warning, Message = "Development only: the sign-in code is {Code}. Register an IAccountEmailSender to send it.")]
+    private static partial void LogDevelopmentCode(ILogger logger, string code);
 
     [LoggerMessage(EventId = 6401, Level = LogLevel.Information, Message = "Development: {Kind} email link {Link}")]
     private static partial void LogDevelopment(ILogger logger, string kind, Uri link);

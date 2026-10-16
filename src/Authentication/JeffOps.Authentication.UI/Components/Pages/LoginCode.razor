@@ -10,14 +10,30 @@
         <p class="jo-error" role="alert">@ErrorMessage</p>
     }
 
+    @if (Sent)
+    {
+        <p class="jo-notice" role="status">We sent a new code.</p>
+    }
+
     <form method="post" action="/account/local/login/code" class="jo-code">
         <AntiforgeryToken />
         <input type="hidden" name="returnUrl" value="@SafeReturnUrl" />
-        <label for="code">Code from your authenticator app</label>
+        <input type="hidden" name="method" value="@(ByEmail ? "email" : "authenticator")" />
+        <label for="code">@(ByEmail ? "The code we emailed you" : "Code from your authenticator app")</label>
         <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" autofocus />
         <button type="submit">Verify</button>
     </form>
 
+    @if (ByEmail)
+    {
+        <form method="post" action="/account/local/login/code/resend" class="jo-resend">
+            <AntiforgeryToken />
+            <input type="hidden" name="returnUrl" value="@SafeReturnUrl" />
+            <button type="submit" class="jo-link">Send a new code</button>
+        </form>
+    }
+    else
+    {
     <details class="jo-recovery">
         <summary>Use a recovery code</summary>
         <form method="post" action="/account/local/login/code">
@@ -28,4 +44,5 @@
             <button type="submit">Verify</button>
         </form>
     </details>
+    }
 </main>

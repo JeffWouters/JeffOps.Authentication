@@ -71,6 +71,12 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         var open = root.MapGroup(string.Empty).AllowAnonymous();
         open.MapPost("login", LoginAsync).DisableAntiforgery().ExcludeFromDescription();
         open.MapPost("login/code", CodeAsync).DisableAntiforgery().ExcludeFromDescription();
+        open.MapPost("login/code/resend", ResendCodeAsync).DisableAntiforgery().ExcludeFromDescription();
+
+        // The hosted pages' forms (account/verify-email, account/forgot-password, account/reset-password).
+        open.MapPost("verify-email/form", VerifyEmailFormAsync).DisableAntiforgery().ExcludeFromDescription();
+        open.MapPost("password/forgot/form", ForgotPasswordFormAsync).DisableAntiforgery().ExcludeFromDescription();
+        open.MapPost("password/reset/form", ResetPasswordFormAsync).DisableAntiforgery().ExcludeFromDescription();
         open.MapPost("register", async (RegisterRequest request, ICommandHandler<RegisterLocalAccountCommand> handler, HttpContext context) =>
             Accepted(await handler.HandleAsync(new RegisterLocalAccountCommand(request.Email, request.Password, request.DisplayName), context.RequestAborted).ConfigureAwait(false)));
         open.MapPost("verify-email", async (TokenRequest request, ICommandHandler<VerifyEmailCommand> handler, HttpContext context) =>
@@ -138,7 +144,7 @@ public static class LocalAccountEndpointRouteBuilderExtensions
                 var expires = time.GetUtcNow() + settings.SecondFactorWindow;
                 var payload = string.Create(CultureInfo.InvariantCulture, $"{result.Value.AccountId}|{expires.ToUnixTimeSeconds()}");
                 context.Response.Cookies.Append(SecondFactorCookie, Protector(context, SecondFactorCookie).Protect(payload), CookieOptions(context, expires));
-                return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}");
+                return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}&method={result.Value.SecondFactor ?? "authenticator"}");
             case LocalSignInStatus.LockedOut:
                 return BackToLogin(returnUrl, email, "locked_out");
             case LocalSignInStatus.EmailNotVerified:
@@ -179,7 +185,79 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         }
 
         var error = result.IsSuccess && result.Value.Status == LocalSignInStatus.LockedOut ? "locked_out" : "invalid_code";
-        return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={error}");
+        var method = string.Equals(form["method"].ToString(), "email", StringComparison.Ordinal) ? "email" : "authenticator";
+        return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}&method={method}&error={error}");
+    }
+
+    private static async Task<IResult> ResendCodeAsync(HttpContext context, ICommandHandler<ResendSignInCodeCommand> handler, IAntiforgery antiforgery, TimeProvider time)
+    {
+        if (!await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
+        {
+            return TypedResults.BadRequest();
+        }
+
+        var form = await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        var returnUrl = LocalOrRoot(form["returnUrl"].ToString());
+        if (PendingAccount(context, time) is not { } accountId)
+        {
+            return BackToLogin(returnUrl, null, "signin_expired");
+        }
+
+        await handler.HandleAsync(new ResendSignInCodeCommand(accountId), context.RequestAborted).ConfigureAwait(false);
+        return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}&method=email&sent=1");
+    }
+
+    // ---- Hosted pages: verification and password reset -------------------------------------------------------------------
+
+    private const string VerifyEmailPage = "/account/verify-email";
+    private const string ForgotPasswordPage = "/account/forgot-password";
+    private const string ResetPasswordPage = "/account/reset-password";
+
+    private static async Task<IResult> VerifyEmailFormAsync(HttpContext context, ICommandHandler<VerifyEmailCommand> handler, IAntiforgery antiforgery)
+    {
+        if (!await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
+        {
+            return TypedResults.BadRequest();
+        }
+
+        var form = await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        var token = form["token"].ToString();
+        var result = await handler.HandleAsync(new VerifyEmailCommand(token), context.RequestAborted).ConfigureAwait(false);
+        return Results.Redirect(result.IsSuccess
+            ? $"{VerifyEmailPage}?done=1"
+            : $"{VerifyEmailPage}?token={Uri.EscapeDataString(token)}&error=invalid_token");
+    }
+
+    private static async Task<IResult> ForgotPasswordFormAsync(HttpContext context, ICommandHandler<RequestPasswordResetCommand> handler, IAntiforgery antiforgery)
+    {
+        if (!await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
+        {
+            return TypedResults.BadRequest();
+        }
+
+        // The same answer whether or not the address has an account.
+        var form = await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        await handler.HandleAsync(new RequestPasswordResetCommand(form["email"].ToString()), context.RequestAborted).ConfigureAwait(false);
+        return Results.Redirect($"{ForgotPasswordPage}?sent=1");
+    }
+
+    private static async Task<IResult> ResetPasswordFormAsync(HttpContext context, ICommandHandler<ResetPasswordCommand> handler, IAntiforgery antiforgery)
+    {
+        if (!await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
+        {
+            return TypedResults.BadRequest();
+        }
+
+        var form = await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        var token = form["token"].ToString();
+        var result = await handler.HandleAsync(new ResetPasswordCommand(token, form["password"].ToString()), context.RequestAborted).ConfigureAwait(false);
+        if (result.IsSuccess)
+        {
+            return Results.Redirect($"{ResetPasswordPage}?done=1");
+        }
+
+        var error = result.Error.Type == ErrorType.Validation ? "weak_password" : "invalid_token";
+        return Results.Redirect($"{ResetPasswordPage}?token={Uri.EscapeDataString(token)}&error={error}");
     }
 
     // ---- Passkeys ------------------------------------------------------------------------------------------------------

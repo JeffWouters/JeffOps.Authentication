@@ -236,6 +236,69 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task With_email_codes_a_password_sign_in_completes_with_the_code_sent_by_email()
+    {
+        var host = await StartAsync(new() { ["JeffOps:LocalAccounts:EmailCodes"] = "true" });
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        using var browser = new Browser(host);
+
+        (await LoginAsync(browser, "ada@example.com", Password)).ShouldContain("method=email");
+        var (to, code) = _email.Codes.ShouldHaveSingleItem();
+        to.ShouldBe("ada@example.com");
+        code.Length.ShouldBe(6);
+
+        var wrong = code == "000000" ? "111111" : "000000";
+        (await CodeAsync(browser, wrong, method: "email")).ShouldContain("error=invalid_code");
+        (await CodeAsync(browser, code, method: "email")).ShouldBe("/done");
+
+        var tokens = await AuthorizeAsync(host, browser);
+        tokens.Claims("amr").ShouldContain("mfa");
+
+        // A code works once.
+        using var again = new Browser(host);
+        await LoginAsync(again, "ada@example.com", Password);
+        (await CodeAsync(again, code, method: "email")).ShouldContain("error=invalid_code");
+    }
+
+    [Fact]
+    public async Task A_forgotten_password_is_reset_through_the_hosted_pages()
+    {
+        var host = await StartAsync();
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        using var browser = new Browser(host);
+
+        var requested = await SubmitAsync(browser, "account/forgot-password", "account/local/password/forgot/form", new() { ["email"] = "ada@example.com" });
+        requested.Headers.Location!.OriginalString.ShouldBe("/account/forgot-password?sent=1");
+        var unknown = await SubmitAsync(browser, "account/forgot-password", "account/local/password/forgot/form", new() { ["email"] = "nobody@example.com" });
+        unknown.Headers.Location!.OriginalString.ShouldBe("/account/forgot-password?sent=1", "the same answer for unknown addresses");
+
+        var token = _email.TokenFor("ada@example.com", "reset");
+        var weak = await SubmitAsync(browser, $"account/reset-password?token={token}", "account/local/password/reset/form", new() { ["token"] = token, ["password"] = "short" });
+        weak.Headers.Location!.OriginalString.ShouldContain("error=weak_password");
+
+        var reset = await SubmitAsync(browser, $"account/reset-password?token={token}", "account/local/password/reset/form", new() { ["token"] = token, ["password"] = "a completely new passphrase" });
+        reset.Headers.Location!.OriginalString.ShouldBe("/account/reset-password?done=1");
+        (await LoginAsync(browser, "ada@example.com", "a completely new passphrase")).ShouldBe("/done");
+    }
+
+    [Fact]
+    public async Task An_email_is_verified_through_the_hosted_page_only_when_the_button_is_pressed()
+    {
+        var host = await StartAsync();
+        (await PostJsonAsync(host, "account/local/register", new { email = "ada@example.com", password = Password })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        var token = _email.TokenFor("ada@example.com", "verification");
+        using var browser = new Browser(host);
+
+        // Opening the link (as a mail scanner would) verifies nothing; the form does.
+        await browser.GetAsync(null!, $"account/verify-email?token={token}");
+        (await LoginAsync(browser, "ada@example.com", Password)).ShouldContain("error=email_not_verified");
+
+        var verified = await SubmitAsync(browser, $"account/verify-email?token={token}", "account/local/verify-email/form", new() { ["token"] = token });
+        verified.Headers.Location!.OriginalString.ShouldBe("/account/verify-email?done=1");
+        (await LoginAsync(browser, "ada@example.com", Password)).ShouldBe("/done");
+    }
+
+    [Fact]
     public async Task Local_accounts_are_off_unless_enabled_outside_development()
     {
         var host = await StartAsync(enabled: false);
@@ -317,15 +380,25 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         return response.Headers.Location!.OriginalString;
     }
 
-    private static async Task<string> CodeAsync(Browser browser, string code, bool recovery = false)
+    /// <summary>Opens a hosted page and submits its form (with the page's antiforgery token) to <paramref name="action"/>.</summary>
+    private static async Task<HttpResponseMessage> SubmitAsync(Browser browser, string page, string action, Dictionary<string, string> fields)
     {
-        var page = await browser.GetAsync(null!, "account/login/code?returnUrl=%2Fdone");
+        var html = await (await browser.GetAsync(null!, page)).Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        html.ShouldContain($"action=\"/{action}\"");
+        fields["__RequestVerificationToken"] = AntiforgeryToken().Match(html).Groups[1].Value;
+        return await browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, action) { Content = new FormUrlEncodedContent(fields) });
+    }
+
+    private static async Task<string> CodeAsync(Browser browser, string code, bool recovery = false, string method = "authenticator")
+    {
+        var page = await browser.GetAsync(null!, $"account/login/code?returnUrl=%2Fdone&method={method}");
         var html = await page.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         var form = new Dictionary<string, string>
         {
             ["__RequestVerificationToken"] = AntiforgeryToken().Match(html).Groups[1].Value,
             ["returnUrl"] = "/done",
             [recovery ? "recoveryCode" : "code"] = code,
+            ["method"] = method,
         };
 
         var response = await browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, "account/local/login/code") { Content = new FormUrlEncodedContent(form) });
@@ -399,6 +472,8 @@ internal sealed class CapturingEmailSender
 {
     public ConcurrentQueue<(string Email, string Kind, Uri? Link)> Sent { get; } = new();
 
+    public ConcurrentQueue<(string Email, string Code)> Codes { get; } = new();
+
     public string TokenFor(string email, string kind) =>
         TokenServerHost.QueryValue(Sent.Last(mail => mail.Email == email && mail.Kind == kind).Link!, "token")!;
 
@@ -409,6 +484,12 @@ internal sealed class CapturingEmailSender
         public Task SendPasswordResetAsync(string email, Uri link, CancellationToken cancellationToken) => Add(email, "reset", link);
 
         public Task SendAlreadyRegisteredAsync(string email, CancellationToken cancellationToken) => Add(email, "already-registered", null);
+
+        public Task SendSignInCodeAsync(string email, string code, CancellationToken cancellationToken)
+        {
+            sender.Codes.Enqueue((email, code));
+            return Task.CompletedTask;
+        }
 
         private Task Add(string email, string kind, Uri? link)
         {

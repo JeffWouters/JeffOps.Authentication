@@ -45,6 +45,9 @@ public interface IAccountEmailSender
 
     /// <summary>Someone tried to register an email that already has an account: tell its owner instead of the requester.</summary>
     Task SendAlreadyRegisteredAsync(string email, CancellationToken cancellationToken);
+
+    /// <summary>The six-digit code that completes a password sign-in (with <see cref="LocalAccountOptions.EmailCodes"/>).</summary>
+    Task SendSignInCodeAsync(string email, string code, CancellationToken cancellationToken);
 }
 
 /// <summary>Stable error codes of local-account refusals.</summary>

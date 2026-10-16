@@ -22,5 +22,8 @@ public enum LocalSignInStatus
 /// </summary>
 public sealed record LocalSignInResult(LocalSignInStatus Status, Guid? AccountId = null, IReadOnlyList<string>? Methods = null)
 {
+    /// <summary>The second factor that must follow: <c>authenticator</c> or <c>email</c>.</summary>
+    public string? SecondFactor { get; init; }
+
     public static LocalSignInResult Failed { get; } = new(LocalSignInStatus.Failed);
 }

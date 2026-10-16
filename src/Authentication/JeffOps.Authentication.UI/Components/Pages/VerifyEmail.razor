@@ -1,0 +1,32 @@
+@page "/account/verify-email"
+@inject IEnumerable<InteractiveSignInMethod> SignInMethods
+
+<PageTitle>Verify your email</PageTitle>
+
+<main class="jo-login">
+    <h1>Verify your email</h1>
+
+    @if (Done)
+    {
+        <p class="jo-notice" role="status">Your email address is verified.</p>
+        <p><a href="/account/login">Sign in</a></p>
+    }
+    else if (!PasswordsEnabled || string.IsNullOrEmpty(Token))
+    {
+        <p class="jo-error" role="alert">This link is incomplete. Sign in to get a new one.</p>
+    }
+    else
+    {
+        @if (Error is not null)
+        {
+            <p class="jo-error" role="alert">This link is invalid or has expired. Sign in to get a new one.</p>
+        }
+
+        @* A button rather than verifying on open: mail scanners follow links, people press buttons. *@
+        <form method="post" action="/account/local/verify-email/form" class="jo-password">
+            <AntiforgeryToken />
+            <input type="hidden" name="token" value="@Token" />
+            <button type="submit">Verify my email</button>
+        </form>
+    }
+</main>

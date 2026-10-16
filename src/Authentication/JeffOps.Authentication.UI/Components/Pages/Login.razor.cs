@@ -56,14 +56,20 @@ public sealed partial class Login
     /// <summary>Where the password form posts, when local accounts are on.</summary>
     private string? PasswordAction { get; set; }
 
-    /// <inheritdoc />
-    protected override void OnInitialized()
+    /// <summary>The headers every sign-in page sends: its own CSP, and no caching (forms carry antiforgery tokens).</summary>
+    internal static void ApplySecurityHeaders(HttpContext? context)
     {
-        if (HttpContext is { Response.HasStarted: false } http)
+        if (context is { Response.HasStarted: false } http)
         {
             http.Response.Headers.ContentSecurityPolicy = ContentSecurityPolicy;
             http.Response.Headers.CacheControl = "no-store";
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnInitialized()
+    {
+        ApplySecurityHeaders(HttpContext);
 
         SafeReturnUrl = IsLocal(ReturnUrl) ? ReturnUrl! : "/";
         Providers = [.. Mappers.SelectMany(mapper => mapper.Providers).DistinctBy(provider => provider.Name)];

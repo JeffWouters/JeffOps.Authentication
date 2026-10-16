@@ -120,7 +120,7 @@ migrations in your deployment pipeline, for example with `dotnet ef database upd
 |---|---|
 | Any OpenID Connect provider | `.AddOidcProvider("google")`, configured under `JeffOps:TokenServer:Federation:Providers:google` |
 | SAML 2.0 | `.AddSamlProvider("corp")` under `JeffOps:TokenServer:Federation:Saml:corp`, and `app.MapJeffOpsSaml()` |
-| Local accounts (passwords, TOTP, passkeys) | `.AddLocalAccounts().AddSqlServerPersistence()` and `app.MapJeffOpsLocalAccounts()`; options under `JeffOps:LocalAccounts` |
+| Local accounts (passwords, TOTP, emailed codes, passkeys) | `.AddLocalAccounts().AddSqlServerPersistence()` and `app.MapJeffOpsLocalAccounts()`; options under `JeffOps:LocalAccounts` |
 | Verified domains, per-tenant SSO, SCIM | `.AddEnterprise().AddSqlServerPersistence()`, `app.MapJeffOpsEnterprise()`, `app.MapJeffOpsScim()` |
 | Impersonation, lockbox, tenant switch | `.AddDelegation().AddSqlServerPersistence()` and `app.MapJeffOpsDelegation()` |
 

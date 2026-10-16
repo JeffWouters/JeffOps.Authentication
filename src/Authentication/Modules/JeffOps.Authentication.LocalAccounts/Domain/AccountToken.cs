@@ -7,6 +7,9 @@ public enum AccountTokenPurpose
 {
     EmailVerification = 0,
     PasswordReset = 1,
+
+    /// <summary>A six-digit code that completes a password sign-in (the email second factor).</summary>
+    SignInCode = 2,
 }
 
 /// <summary>
@@ -50,6 +53,19 @@ public sealed class AccountToken
         var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         return (new AccountToken(accountId, purpose, HashOf(secret), now, lifetime), secret);
     }
+
+    /// <summary>A new six-digit sign-in code (to send; never stored) and its token.</summary>
+    public static (AccountToken Token, string Code) IssueCode(Guid accountId, DateTimeOffset now, TimeSpan lifetime)
+    {
+        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
+        return (new AccountToken(accountId, AccountTokenPurpose.SignInCode, CodeHash(accountId, code), now, lifetime), code);
+    }
+
+    /// <summary>
+    /// The stored hash of a sign-in code: bound to its account, so the same six digits of another account never match, and a
+    /// code is useless without knowing whose it is.
+    /// </summary>
+    public static string CodeHash(Guid accountId, string code) => HashOf($"{accountId:N}:{code?.Replace(" ", string.Empty, StringComparison.Ordinal)}");
 
     public static string HashOf(string secret) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(secret ?? string.Empty)));
 
