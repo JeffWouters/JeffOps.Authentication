@@ -44,6 +44,7 @@ public static partial class SamlEndpoints
         group.MapGet("{provider}", Start);
         group.MapPost("{provider}/acs", AssertionConsumerAsync).DisableAntiforgery();
         group.MapGet("{provider}/metadata", Metadata);
+        group.MapMethods("{provider}/slo", [HttpMethods.Get, HttpMethods.Post], SingleLogoutAsync).DisableAntiforgery();
         return endpoints;
     }
 
@@ -170,6 +171,120 @@ public static partial class SamlEndpoints
         return Results.Redirect(returnUrl);
     }
 
+    /// <summary>
+    /// Single logout started by the identity provider: a signed LogoutRequest names the user (NameID); every session of the
+    /// linked account ends here (tokens revoked, clients told through back-channel logout), and the provider gets a
+    /// LogoutResponse. Unsigned or otherwise invalid requests are refused.
+    /// </summary>
+    private static async Task<IResult> SingleLogoutAsync(
+        string provider,
+        HttpContext context,
+        SamlServices saml,
+        Application.Abstractions.IAccountRepository accounts,
+        Application.Abstractions.IUnitOfWork unitOfWork,
+        Abstractions.Auditing.IAuditSink audit,
+        ILoggerFactory loggers)
+    {
+        var logger = loggers.CreateLogger("JeffOps.Authentication.Federation.Saml");
+        if (!saml.Providers.Handles(provider))
+        {
+            return TypedResults.NotFound();
+        }
+
+        var settings = saml.Options.Get(provider);
+        var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
+        var configuration = saml.Providers.Configuration(provider, entityId, saml.ReplayCache);
+        var generic = await GenericRequestAsync(context).ConfigureAwait(false);
+        Saml2Binding binding = HttpMethods.IsGet(context.Request.Method) ? new Saml2RedirectBinding() : new Saml2PostBinding();
+
+        // Only signed requests: anyone could otherwise sign a user out. The redirect binding signs the query string.
+        var signed = HttpMethods.IsGet(context.Request.Method)
+            ? !string.IsNullOrEmpty(generic.Query["Signature"])
+            : (generic.Form["SAMLRequest"] is { } posted && DecodedContainsSignature(posted));
+        var request = new Saml2LogoutRequest(configuration);
+        try
+        {
+            if (!signed || !binding.IsRequest(generic))
+            {
+                throw new InvalidOperationException("Not a signed logout request.");
+            }
+
+            binding.Unbind(generic, request);
+        }
+#pragma warning disable CA1031 // Any failure to read or validate the request refuses it (fail closed).
+        catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            LogInvalid(logger, provider, exception);
+            return TypedResults.BadRequest();
+        }
+
+        if (request.NameId?.Value is { Length: > 0 } nameId
+            && await accounts.FindByExternalLoginAsync(new Domain.Accounts.ExternalLoginKey(settings.IdpEntityId!, nameId), context.RequestAborted).ConfigureAwait(false) is { } account)
+        {
+            var now = saml.Time.GetUtcNow();
+            account.RevokeSessions(now, "saml_single_logout");
+            await unitOfWork.SaveChangesAsync(context.RequestAborted).ConfigureAwait(false);
+            await audit.WriteAsync(new Abstractions.Auditing.AuditRecord("saml.single_logout", "account", account.Id.ToString())
+            {
+                OccurredAt = now,
+                Details = new Dictionary<string, string?> { ["provider"] = provider },
+            }, context.RequestAborted).ConfigureAwait(false);
+        }
+
+        if (settings.IdpSingleLogoutUrl is null)
+        {
+            return Results.Content("You are signed out.", "text/plain");
+        }
+
+        var response = new Saml2LogoutResponse(configuration)
+        {
+            InResponseTo = request.Id,
+            Status = Saml2StatusCodes.Success,
+            Destination = settings.IdpSingleLogoutUrl,
+        };
+        var reply = new Saml2RedirectBinding { RelayState = binding.RelayState };
+        reply.Bind(response);
+        return Results.Redirect(reply.RedirectLocation.OriginalString);
+    }
+
+    private static async Task<ITfoxtec.Identity.Saml2.Http.HttpRequest> GenericRequestAsync(HttpContext context)
+    {
+        var generic = new ITfoxtec.Identity.Saml2.Http.HttpRequest
+        {
+            Method = context.Request.Method,
+            QueryString = context.Request.QueryString.Value ?? string.Empty,
+            Query = new NameValueCollection(),
+            Form = new NameValueCollection(),
+        };
+        foreach (var (key, value) in context.Request.Query)
+        {
+            generic.Query[key] = value.ToString();
+        }
+
+        if (context.Request.HasFormContentType)
+        {
+            foreach (var (key, value) in await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false))
+            {
+                generic.Form[key] = value.ToString();
+            }
+        }
+
+        return generic;
+    }
+
+    private static bool DecodedContainsSignature(string posted)
+    {
+        try
+        {
+            return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(posted)).Contains("Signature", StringComparison.Ordinal);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
     private static IResult Metadata(string provider, HttpContext context, SamlServices saml)
     {
         if (!saml.Providers.Handles(provider))
@@ -179,10 +294,19 @@ public static partial class SamlEndpoints
 
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
         var acs = new Uri(Origin(context), $"{Prefix}/{provider}/acs").AbsoluteUri;
+        var slo = new Uri(Origin(context), $"{Prefix}/{provider}/slo").AbsoluteUri;
+        var signing = saml.Providers.SigningCertificate(provider);
+        var keyDescriptor = signing is null ? string.Empty : $"""
+
+                <md:KeyDescriptor use="signing">
+                  <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{Convert.ToBase64String(signing.RawData)}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+                </md:KeyDescriptor>
+            """;
         var xml = $"""
             <?xml version="1.0" encoding="UTF-8"?>
             <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{System.Security.SecurityElement.Escape(entityId)}">
-              <md:SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+              <md:SPSSODescriptor AuthnRequestsSigned="{(signing is null ? "false" : "true")}" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">{keyDescriptor}
+                <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{System.Security.SecurityElement.Escape(slo)}"/>
                 <md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</md:NameIDFormat>
                 <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="{System.Security.SecurityElement.Escape(acs)}" index="0" isDefault="true"/>
               </md:SPSSODescriptor>

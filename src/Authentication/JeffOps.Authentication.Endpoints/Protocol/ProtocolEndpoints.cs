@@ -90,7 +90,9 @@ internal static class ProtocolEndpoints
                 : Forbid(Errors.AccessDenied, result.Error.Message, result.Error.Code);
         }
 
-        return await TokenIssuance.SignInAsync(result.Value, names, scopeManager, time, context.RequestAborted).ConfigureAwait(false);
+        // dpop_jkt (RFC 9449 section 10): the code is bound to the client's key and redeemable only with a proof of it.
+        var issued = Dpop.RequestedBinding(request) is { } requestedKey ? Dpop.Bind(result.Value, requestedKey) : result.Value;
+        return await TokenIssuance.SignInAsync(issued, names, scopeManager, time, context.RequestAborted).ConfigureAwait(false);
     }
 
     private static async Task<IResult> TokenAsync(
@@ -110,7 +112,7 @@ internal static class ProtocolEndpoints
         var dpop = Dpop.Check(context, request, options.Value, time);
         if (dpop.IsFailure)
         {
-            return TokenIssuance.Refuse(dpop.Error, Dpop.InvalidProof);
+            return TokenIssuance.Refuse(dpop.Error, dpop.Error.Code);
         }
 
         Result<IssuedIdentity> result;

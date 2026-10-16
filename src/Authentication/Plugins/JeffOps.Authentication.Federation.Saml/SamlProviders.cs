@@ -74,12 +74,39 @@ internal sealed class SamlProviders(
             TokenReplayCache = replayCache,
         };
         configuration.AllowedAudienceUris.Add(serviceProviderEntityId);
+        configuration.SingleLogoutDestination = settings.IdpSingleLogoutUrl;
+        if (SigningCertificate(provider) is { } signing)
+        {
+            configuration.SigningCertificate = signing;
+            configuration.SignAuthnRequest = true;
+        }
+
         foreach (var certificate in settings.IdpSigningCertificates)
         {
             configuration.SignatureValidationCertificates.Add(Load(certificate));
         }
 
         return configuration;
+    }
+
+    /// <summary>This server's signing certificate for <paramref name="provider"/>, or null when requests go unsigned.</summary>
+    public X509Certificate2? SigningCertificate(string provider)
+    {
+        var settings = options.Get(provider);
+        if (settings.SigningCertificate is { } certificate)
+        {
+            return certificate;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.SigningCertificatePfx))
+        {
+            return null;
+        }
+
+        // Loaded once per provider: the options instance is cached by the options monitor.
+        settings.SigningCertificate = X509CertificateLoader.LoadPkcs12(
+            Convert.FromBase64String(settings.SigningCertificatePfx), settings.SigningCertificatePassword, X509KeyStorageFlags.EphemeralKeySet);
+        return settings.SigningCertificate;
     }
 
     public string ServiceProviderEntityId(string provider, IOptions<TokenServerOptions> tokenServer, Uri requestOrigin) =>

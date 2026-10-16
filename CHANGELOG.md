@@ -11,8 +11,8 @@ First public preview (`0.1.0-alpha`).
 
 - **Token server** on OpenIddict: authorization code + PKCE, refresh with live revalidation, client credentials, personal
   access tokens, userinfo, end-session, back-channel logout, pushed authorization requests, device authorization grant,
-  `private_key_jwt`, DPoP, workload identity federation; signing keys in the database or Azure Key Vault.
-- **Sign-in**: OpenID Connect providers, Microsoft Entra, SAML 2.0, local accounts (passwords, TOTP, recovery codes,
+  `private_key_jwt`, DPoP (with server nonces and `dpop_jkt`), workload identity federation; signing keys in the database or Azure Key Vault.
+- **Sign-in**: OpenID Connect providers, Microsoft Entra, SAML 2.0 (signed requests, IdP-initiated logout), local accounts (passwords, TOTP, recovery codes,
   passkeys, lockout, verification, reset) and a hosted login UI.
 - **Enterprise**: DNS-verified tenant domains, per-tenant SSO and SSO-only, SCIM 2.0 provisioning of users and groups.
 - **Delegation**: impersonation with target approval and break-glass, lockbox tenant access, tenant switch.

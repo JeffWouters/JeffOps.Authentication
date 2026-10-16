@@ -8,7 +8,11 @@ namespace JeffOps.Authentication.Abstractions.Dpop;
 /// <param name="Jkt">The RFC 7638 SHA-256 thumbprint of the proof's public key (what <c>cnf.jkt</c> holds).</param>
 /// <param name="Jti">The proof's unique id, for the replay cache.</param>
 /// <param name="IssuedAt">When the proof was made.</param>
-public sealed record DpopProof(string Jkt, string Jti, DateTimeOffset IssuedAt);
+public sealed record DpopProof(string Jkt, string Jti, DateTimeOffset IssuedAt)
+{
+    /// <summary>The server-provided nonce the proof carries (RFC 9449 §8), if any.</summary>
+    public string? Nonce { get; init; }
+}
 
 /// <summary>
 /// Validates DPoP proofs (RFC 9449 §4.3) without any token library: a compact JWS whose header carries <c>typ=dpop+jwt</c>, an
@@ -22,6 +26,9 @@ public static class DpopProofValidator
     public const string HeaderName = "DPoP";
     /// <summary>The <c>Authorization</c> scheme for a DPoP-bound access token, used in place of <c>Bearer</c>.</summary>
     public const string Scheme = "DPoP";
+
+    /// <summary>The response header carrying a server-provided nonce (RFC 9449 §8).</summary>
+    public const string NonceHeaderName = "DPoP-Nonce";
 
     /// <summary>The signature algorithms accepted (and advertised as <c>dpop_signing_alg_values_supported</c>).</summary>
     public static IReadOnlyList<string> Algorithms { get; } = ["ES256", "ES384", "ES512", "PS256", "RS256"];
@@ -106,7 +113,9 @@ public static class DpopProofValidator
             }
 
             var jkt = Thumbprint(jwk);
-            return jkt is null ? (null, "The DPoP proof's key is not supported.") : (new DpopProof(jkt, jti, issuedAt), null);
+            return jkt is null
+                ? (null, "The DPoP proof's key is not supported.")
+                : (new DpopProof(jkt, jti, issuedAt) { Nonce = Text(p, "nonce") }, null);
         }
     }
 

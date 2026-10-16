@@ -21,7 +21,7 @@ internal sealed class DpopKey : IDisposable
 
     public string Thumbprint => DpopProofValidator.Thumbprint(JsonSerializer.SerializeToElement(PublicJwk))!;
 
-    public string Proof(string method, string url, string? accessToken = null, DateTimeOffset? issuedAt = null, string typ = "dpop+jwt", object? jwkOverride = null)
+    public string Proof(string method, string url, string? accessToken = null, DateTimeOffset? issuedAt = null, string typ = "dpop+jwt", object? jwkOverride = null, string? nonce = null)
     {
         var header = new Dictionary<string, object> { ["typ"] = typ, ["alg"] = "ES256", ["jwk"] = jwkOverride ?? PublicJwk };
         var payload = new Dictionary<string, object>
@@ -31,6 +31,11 @@ internal sealed class DpopKey : IDisposable
             ["htu"] = url,
             ["iat"] = (issuedAt ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds(),
         };
+        if (nonce is not null)
+        {
+            payload["nonce"] = nonce;
+        }
+
         if (accessToken is not null)
         {
             payload["ath"] = DpopProofValidator.Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(accessToken)));

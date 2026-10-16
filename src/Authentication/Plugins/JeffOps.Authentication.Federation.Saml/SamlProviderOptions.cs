@@ -51,4 +51,23 @@ public sealed class SamlProviderOptions
 
     /// <summary>How long a sign-in may take at the provider. Default: 10 minutes.</summary>
     public TimeSpan SignInTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The identity provider's single logout URL (HTTP-Redirect binding), where logout responses go. Without it, logout
+    /// requests from the provider are still honoured but answered with a plain page.
+    /// </summary>
+    public Uri? IdpSingleLogoutUrl { get; set; }
+
+    /// <summary>
+    /// This server's signing certificate with its private key, for signed AuthnRequests and logout responses (many identity
+    /// providers require them). Set in code, or through <see cref="SigningCertificatePfx"/>. Publish its public part to the
+    /// provider through the metadata endpoint.
+    /// </summary>
+    public System.Security.Cryptography.X509Certificates.X509Certificate2? SigningCertificate { get; set; }
+
+    /// <summary>The signing certificate as a base64 PKCS#12 (PFX) blob, for configuration from a secret store.</summary>
+    public string? SigningCertificatePfx { get; set; }
+
+    /// <summary>The password of <see cref="SigningCertificatePfx"/>, if any.</summary>
+    public string? SigningCertificatePassword { get; set; }
 }

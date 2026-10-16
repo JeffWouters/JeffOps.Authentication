@@ -78,6 +78,90 @@ public sealed class SamlTests : IAsyncDisposable
         metadata.ShouldContain("Location=\"https://localhost/signin/saml/corp/acs\"");
     }
 
+    [Fact]
+    public async Task With_a_signing_certificate_authn_requests_are_signed_and_published()
+    {
+        using var serviceProvider = SelfSigned("CN=Token Server");
+        await StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Federation:Saml:corp:SigningCertificatePfx"] = Convert.ToBase64String(serviceProvider.Export(X509ContentType.Pfx)),
+        });
+        using var browser = new Browser(_host);
+
+        var challenge = await browser.GetAsync(null!, "signin/corp?returnUrl=%2Fdone");
+        var start = await browser.GetAsync(null!, challenge.Headers.Location!.OriginalString);
+        var location = start.Headers.Location!;
+        System.Web.HttpUtility.ParseQueryString(location.Query)["Signature"].ShouldNotBeNullOrEmpty();
+
+        // The provider checks the signature with the published certificate.
+        using var published = X509CertificateLoader.LoadCertificate(serviceProvider.RawData);
+        var verifying = new Saml2Configuration { Issuer = IdpEntityId };
+        verifying.SignatureValidationCertificates.Add(published);
+        var request = new Saml2AuthnRequest(verifying);
+        new Saml2RedirectBinding().Unbind(
+            new ITfoxtec.Identity.Saml2.Http.HttpRequest
+            {
+                Method = "GET",
+                Query = System.Web.HttpUtility.ParseQueryString(location.Query),
+                QueryString = location.Query,
+                Form = new NameValueCollection(),
+            },
+            request);
+
+        var metadata = await _host.Client.GetStringAsync(new Uri("signin/saml/corp/metadata", UriKind.Relative), TestContext.Current.CancellationToken);
+        metadata.ShouldContain("AuthnRequestsSigned=\"true\"");
+        metadata.ShouldContain(Convert.ToBase64String(serviceProvider.RawData));
+        metadata.ShouldContain("Location=\"https://localhost/signin/saml/corp/slo\"");
+    }
+
+    [Fact]
+    public async Task Single_logout_from_the_provider_ends_every_session_of_the_user()
+    {
+        await StartAsync(new() { ["JeffOps:TokenServer:Federation:Saml:corp:IdpSingleLogoutUrl"] = "https://idp.test/slo" });
+        using var browser = new Browser(_host);
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+        await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+        var tokens = await AuthorizeAsync(browser, "openid offline_access api");
+        tokens.RefreshToken.ShouldNotBeNull();
+
+        var logout = await _host.Client.GetAsync(LogoutRequest("employee-4711", _idpCertificate), TestContext.Current.CancellationToken);
+
+        logout.StatusCode.ShouldBe(HttpStatusCode.Redirect, await logout.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        logout.Headers.Location!.GetLeftPart(UriPartial.Path).ShouldBe("https://idp.test/slo");
+        System.Web.HttpUtility.ParseQueryString(logout.Headers.Location.Query)["SAMLResponse"].ShouldNotBeNullOrEmpty();
+        (await _host.RefreshAsync(tokens.RefreshToken)).Error.ShouldBe("invalid_grant");
+    }
+
+    [Fact]
+    public async Task An_unsigned_or_forged_logout_request_changes_nothing()
+    {
+        await StartAsync();
+        using var browser = new Browser(_host);
+        using var impostor = SelfSigned("CN=Impostor");
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+        await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+        var tokens = await AuthorizeAsync(browser, "openid offline_access api");
+
+        (await _host.Client.GetAsync(LogoutRequest("employee-4711", null), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await _host.Client.GetAsync(LogoutRequest("employee-4711", impostor), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        // The POST binding too, even when the word "Signature" appears in the request.
+        var unsigned = new Saml2LogoutRequest(new Saml2Configuration { Issuer = IdpEntityId, SingleLogoutDestination = new Uri("https://localhost/signin/saml/corp/slo") })
+        {
+            NameId = new Saml2NameIdentifier("employee-4711", new Uri("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent")),
+            SessionIndex = "Signature",
+        };
+        var post = new Saml2PostBinding();
+        post.Bind(unsigned);
+        var posted = await _host.Client.PostAsync(new Uri("signin/saml/corp/slo", UriKind.Relative), new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["SAMLRequest"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(post.XmlDocument.OuterXml)),
+        }), TestContext.Current.CancellationToken);
+        posted.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        (await _host.RefreshAsync(tokens.RefreshToken!)).AccessToken.ShouldNotBeNull();
+    }
+
     public async ValueTask DisposeAsync()
     {
         _idpCertificate.Dispose();
@@ -89,18 +173,24 @@ public sealed class SamlTests : IAsyncDisposable
 
     // ---- The test identity provider -------------------------------------------------------------------------------------
 
-    private async Task StartAsync()
+    private async Task StartAsync(Dictionary<string, string?>? extra = null)
     {
-        _host = await TokenServerHost.StartAsync(
-            new()
-            {
+        var settings = new Dictionary<string, string?>
+        {
                 ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true",
                 ["JeffOps:TokenServer:Federation:Saml:corp:DisplayName"] = "Corp",
                 ["JeffOps:TokenServer:Federation:Saml:corp:IdpEntityId"] = IdpEntityId,
                 ["JeffOps:TokenServer:Federation:Saml:corp:IdpSingleSignOnUrl"] = "https://idp.test/sso",
                 ["JeffOps:TokenServer:Federation:Saml:corp:IdpSigningCertificates:0"] = Convert.ToBase64String(_idpCertificate.RawData),
                 ["JeffOps:TokenServer:Federation:Saml:corp:MultiFactorAuthnContexts:0"] = MultiFactor,
-            },
+        };
+        foreach (var (key, value) in extra ?? [])
+        {
+            settings[key] = value;
+        }
+
+        _host = await TokenServerHost.StartAsync(
+            settings,
             configure: builder => new AuthenticationBuilder(builder.Services, builder.Configuration).AddSamlProvider("corp"),
             cookieSignIn: true,
             map: app => app.MapJeffOpsSaml());
@@ -147,19 +237,37 @@ public sealed class SamlTests : IAsyncDisposable
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(binding.XmlDocument.OuterXml));
     }
 
+    /// <summary>A LogoutRequest from the provider (HTTP-Redirect binding), signed by <paramref name="signer"/> if given.</summary>
+    private static Uri LogoutRequest(string nameId, X509Certificate2? signer)
+    {
+        var configuration = new Saml2Configuration
+        {
+            Issuer = IdpEntityId,
+            SigningCertificate = signer,
+            SingleLogoutDestination = new Uri("https://localhost/signin/saml/corp/slo"),
+        };
+        var request = new Saml2LogoutRequest(configuration)
+        {
+            NameId = new Saml2NameIdentifier(nameId, new Uri("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent")),
+        };
+        var binding = new Saml2RedirectBinding();
+        binding.Bind(request);
+        return new Uri(binding.RedirectLocation.PathAndQuery.TrimStart('/'), UriKind.Relative);
+    }
+
     private static Task<HttpResponseMessage> PostResponseAsync(Browser browser, string samlResponse) =>
         browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, "signin/saml/corp/acs")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["SAMLResponse"] = samlResponse }),
         });
 
-    private async Task<TokenResponse> AuthorizeAsync(Browser browser)
+    private async Task<TokenResponse> AuthorizeAsync(Browser browser, string scope = "openid api")
     {
         var verifier = SoftwareAuthenticator.Base64Url(RandomNumberGenerator.GetBytes(32));
         var challenge = SoftwareAuthenticator.Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         var authorize = await browser.GetAsync(null!,
             $"connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
-            $"&scope={Uri.EscapeDataString("openid api")}&code_challenge={challenge}&code_challenge_method=S256&state=xyz");
+            $"&scope={Uri.EscapeDataString(scope)}&code_challenge={challenge}&code_challenge_method=S256&state=xyz");
         var code = TokenServerHost.QueryValue(authorize.Headers.Location!, "code").ShouldNotBeNull(authorize.Headers.Location!.ToString());
         return await _host.TokenAsync(new()
         {

@@ -46,6 +46,13 @@ public sealed class TokenServerOptions
     public string PatGrantType => $"{ExtensionGrantNamespace}:pat";
 
     /// <summary>
+    /// Whether DPoP proofs at the token endpoint must carry a nonce this server issued (RFC 9449 §8), so a proof can't be made
+    /// in advance. A request without a valid one is answered <c>use_dpop_nonce</c> with a fresh nonce in the
+    /// <c>DPoP-Nonce</c> header; clients retry with it. Default: false.
+    /// </summary>
+    public bool RequireDpopNonce { get; set; }
+
+    /// <summary>
     /// The grant type of the extension grant <paramref name="name"/>: <c>{ExtensionGrantNamespace}:{name}</c>, or the name itself
     /// when it is already a URN (standard grants such as RFC 7523's JWT bearer grant).
     /// </summary>
