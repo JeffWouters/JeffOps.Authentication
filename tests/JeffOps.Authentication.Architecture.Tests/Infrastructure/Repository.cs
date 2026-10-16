@@ -29,6 +29,10 @@ internal static class Repository
 
     public static IReadOnlyList<ProjectInfo> AllProjects { get; } = [.. SourceProjects, .. TestProjects];
 
+    /// <summary>Every project that restores packages, including the reference hosts and samples: what licence rules cover.</summary>
+    public static IReadOnlyList<ProjectInfo> RestoredProjects { get; } =
+        [.. AllProjects, .. LoadProjects(Path.Combine(Root, "hosts")), .. LoadProjects(Path.Combine(Root, "samples"))];
+
     public static IReadOnlyList<Assembly> SourceAssemblies { get; } =
         [.. SourceProjects.Select(project => Assembly.Load(new AssemblyName(project.Name)))];
 

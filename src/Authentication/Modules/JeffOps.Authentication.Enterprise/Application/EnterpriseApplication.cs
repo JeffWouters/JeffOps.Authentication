@@ -25,11 +25,11 @@ public sealed class EnterpriseOptions
 
     /// <summary>
     /// The policy needed, on top of <see cref="ManagePolicy"/>, to create SCIM tokens. A SCIM token controls group membership,
-    /// and groups can hold roles: set a stricter policy (for example one that requires the right to assign those roles) when
-    /// tenant administrators should not be able to grant themselves group roles that way. Default: none beyond
-    /// <see cref="ManagePolicy"/>.
+    /// and groups can hold roles, so whoever holds one can put people (themselves included) into role-bearing groups: require
+    /// at least the right to assign the roles groups hold. A host that doesn't define this policy can't create SCIM tokens
+    /// (fail closed). Set it to null to allow every tenant administrator. Default: <c>auth.enterprise.scim_tokens</c>.
     /// </summary>
-    public string? ScimTokenPolicy { get; set; }
+    public string? ScimTokenPolicy { get; set; } = "auth.enterprise.scim_tokens";
 }
 
 public interface ITenantDomainRepository

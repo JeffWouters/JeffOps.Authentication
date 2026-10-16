@@ -42,4 +42,13 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- SqlClient's native networking (Microsoft.Data.SqlClient.SNI.runtime) is under proprietary Microsoft licence terms. Every
+       project here that resolves SqlClient excludes its assets; SqlClient then uses its managed networking (the TokenServer host
+       turns it on). The licence test fails for any other project that ships it (docs/DESIGN.md §6.5, D24). -->
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.SqlServer'))
+      Or '$(MSBuildProjectName)' == 'TokenServer'
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Architecture.Tests'">
+    <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
 </Project>

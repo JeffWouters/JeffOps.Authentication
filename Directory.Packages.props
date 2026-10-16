@@ -31,6 +31,11 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.13" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.13" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.13" />
+    <!-- SqlClient 7 moved Entra authentication to an optional package, so the MSAL broker and its proprietary native interop
+         are no longer pulled in. Its native networking (SNI.runtime, also proprietary) is excluded where referenced; SqlClient
+         then uses its managed networking (docs/DESIGN.md §6.5, D24). -->
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <PackageVersion Include="Microsoft.Data.SqlClient.SNI.runtime" Version="7.1.0" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13" />
     <PackageVersion Include="Yarp.ReverseProxy" Version="2.3.0" />
     <!-- SAML 2.0 service provider (BSD-3-Clause). -->

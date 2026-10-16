@@ -27,5 +27,12 @@ First public preview (`0.1.0-alpha`).
 Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
 details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the
 signed assertion (rewrapped assertions were accepted); SCIM can only provision addresses in the tenant's verified domains;
-partner impersonation honours lockbox approval and the relationship's ceiling. `AccessLevel.Delegated` now ranks below
+partner impersonation honours lockbox approval and the relationship's ceiling; creating SCIM tokens needs the
+`auth.enterprise.scim_tokens` policy. `AccessLevel.Delegated` now ranks below
 `Organization`. Fuzz tests cover the DPoP proof validator and the SCIM parsers.
+
+### Dependencies
+
+- Only permissively licensed packages, without exceptions: `Microsoft.Data.SqlClient` 7.x (Entra authentication to SQL
+  Server is now its optional `Microsoft.Data.SqlClient.Extensions.Azure` package), and SqlClient's proprietary native
+  networking is excluded in favour of its managed networking. Consumers who want the same: see docs/DESIGN.md §6.5.

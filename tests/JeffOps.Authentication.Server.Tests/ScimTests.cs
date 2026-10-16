@@ -265,6 +265,17 @@ public sealed class ScimTests : IAsyncDisposable
     };
 
     [Fact]
+    public async Task Without_the_scim_token_policy_tenant_administrators_can_t_create_tokens()
+    {
+        await StartAsync(scimTokenPolicy: false);
+
+        var refused = await _host.SendAsync(HttpMethod.Post, EnterpriseEndpointRouteBuilderExtensions.ScimTokenRoutes, await AdminAsync(), JsonContent.Create(new { name = "Entra" }));
+
+        refused.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await refused.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).ShouldContain("auth.enterprise.scim_tokens");
+    }
+
+    [Fact]
     public async Task Requests_need_a_live_scim_token()
     {
         await StartAsync();
@@ -299,7 +310,7 @@ public sealed class ScimTests : IAsyncDisposable
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
-    private async Task StartAsync()
+    private async Task StartAsync(bool scimTokenPolicy = true)
     {
         var connectionString = new SqliteConnectionStringBuilder { DataSource = _database, Pooling = false }.ToString();
         _host = await TokenServerHost.StartAsync(
@@ -311,7 +322,11 @@ public sealed class ScimTests : IAsyncDisposable
                 builder.Services.AddSingleton<IIntegrationEventHandler<GroupDeletedEvent>>(new Recorder<GroupDeletedEvent>(_events));
                 builder.Services.AddScoped<IEnterpriseDatabaseInitializer, CreateDatabase>();
                 new AuthenticationBuilder(builder.Services, builder.Configuration).AddEnterprise().UseDatabase((_, options) => options.UseSqlite(connectionString));
-                builder.Services.AddAuthorizationBuilder().AddPolicy("auth.enterprise.manage", policy => policy.RequireAuthenticatedUser());
+                var policies = builder.Services.AddAuthorizationBuilder().AddPolicy("auth.enterprise.manage", policy => policy.RequireAuthenticatedUser());
+                if (scimTokenPolicy)
+                {
+                    policies.AddPolicy("auth.enterprise.scim_tokens", policy => policy.RequireAuthenticatedUser());
+                }
             },
             map: app =>
             {
@@ -319,6 +334,11 @@ public sealed class ScimTests : IAsyncDisposable
                 app.MapJeffOpsScim();
             });
         _host.Tenants.Tenants[Contoso] = new TenantInfo(Contoso, null, true);
+
+        if (!scimTokenPolicy)
+        {
+            return;
+        }
 
         var created = await _host.SendAsync(HttpMethod.Post, EnterpriseEndpointRouteBuilderExtensions.ScimTokenRoutes, await AdminAsync(), JsonContent.Create(new { name = "Entra" }));
         created.StatusCode.ShouldBe(HttpStatusCode.OK, await created.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));

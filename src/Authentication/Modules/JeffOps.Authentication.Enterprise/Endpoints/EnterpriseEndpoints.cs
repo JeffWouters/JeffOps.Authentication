@@ -71,13 +71,20 @@ public static class EnterpriseEndpointRouteBuilderExtensions
             .AddEndpointFilter<StepUpFilter>()
             .AddEndpointFilter(async (context, next) =>
             {
-                // A SCIM token controls group membership (and so group roles): hosts can require more than tenant administration.
+                // A SCIM token controls group membership (and so group roles): it needs more than tenant administration. A policy
+                // the host never defined refuses, rather than failing the request.
                 var services = context.HttpContext.RequestServices;
-                if (services.GetRequiredService<IOptions<EnterpriseOptions>>().Value.ScimTokenPolicy is { } policy
-                    && !(await services.GetRequiredService<IAuthorizationService>().AuthorizeAsync(context.HttpContext.User, policy).ConfigureAwait(false)).Succeeded)
+                if (services.GetRequiredService<IOptions<EnterpriseOptions>>().Value.ScimTokenPolicy is { } policy)
                 {
-                    return TypedResults.Problem(detail: "You are not allowed to create SCIM tokens.", statusCode: StatusCodes.Status403Forbidden,
-                        extensions: new Dictionary<string, object?> { ["code"] = "not_allowed" });
+                    var defined = await services.GetRequiredService<IAuthorizationPolicyProvider>().GetPolicyAsync(policy).ConfigureAwait(false);
+                    if (defined is null
+                        || !(await services.GetRequiredService<IAuthorizationService>().AuthorizeAsync(context.HttpContext.User, defined).ConfigureAwait(false)).Succeeded)
+                    {
+                        return TypedResults.Problem(
+                            detail: defined is null ? $"SCIM tokens need the '{policy}' policy, which this server doesn't define." : "You are not allowed to create SCIM tokens.",
+                            statusCode: StatusCodes.Status403Forbidden,
+                            extensions: new Dictionary<string, object?> { ["code"] = "not_allowed" });
+                    }
                 }
 
                 return await next(context).ConfigureAwait(false);

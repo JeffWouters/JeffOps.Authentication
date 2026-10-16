@@ -7,6 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- SqlClient's native networking is excluded (proprietary licence terms, D24): use its managed networking on Windows too. -->
+    <RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Infrastructure\JeffOps.Authentication.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Persistence.SqlServer\JeffOps.Authentication.Persistence.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />

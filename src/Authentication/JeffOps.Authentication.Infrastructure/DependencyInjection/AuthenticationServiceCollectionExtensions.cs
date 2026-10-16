@@ -77,6 +77,7 @@ public static class AuthenticationServiceCollectionExtensions
 
         services.AddDataProtection();
         services.AddMemoryCache();
+        services.AddAuthorization(); // The endpoints require it; idempotent when the host adds its own policies.
         services.TryAddSingleton<Abstractions.Dpop.DpopReplayCache>();
         services.TryAddSingleton<DatabaseKeyStore>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());

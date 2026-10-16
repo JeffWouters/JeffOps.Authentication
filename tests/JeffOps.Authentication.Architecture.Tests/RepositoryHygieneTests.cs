@@ -34,7 +34,7 @@ public sealed class RepositoryHygieneTests
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var violations = new List<string>();
-        foreach (var project in Repository.AllProjects)
+        foreach (var project in Repository.RestoredProjects)
         {
             var assetsFile = Path.Combine(Path.GetDirectoryName(project.FullPath)!, "obj", "project.assets.json");
             File.Exists(assetsFile).ShouldBeTrue($"{project.Name} has not been restored.");
@@ -68,21 +68,11 @@ public sealed class RepositoryHygieneTests
         ["https://dotnet.microsoft.com/en-us/dotnet_library_license.htm"] = "MIT (.NET library licence, relicensed MIT with .NET Core)",
     };
 
-    /// <summary>
-    /// Free Microsoft runtime components under the Microsoft Software License Terms (redistributable, no fee, not open source)
-    /// that SQL Server support cannot do without. Each is an explicit, reviewed exception (docs/DESIGN.md §6.5, D24).
-    /// </summary>
-    private static readonly Dictionary<string, string> AcceptedProprietaryRuntimes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["Microsoft.Data.SqlClient.SNI.runtime"] = "SQL Server native networking, required by Microsoft.Data.SqlClient",
-        ["Microsoft.Identity.Client.NativeInterop"] = "MSAL broker interop, required by Microsoft.Data.SqlClient's Entra authentication",
-    };
-
     [Fact]
     public void Every_resolved_package_has_a_permissive_licence()
     {
         var violations = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var project in Repository.AllProjects)
+        foreach (var project in Repository.RestoredProjects)
         {
             var assetsFile = Path.Combine(Path.GetDirectoryName(project.FullPath)!, "obj", "project.assets.json");
             File.Exists(assetsFile).ShouldBeTrue($"{project.Name} has not been restored.");
@@ -94,8 +84,9 @@ public sealed class RepositoryHygieneTests
             {
                 var path = library.Value.GetProperty("path").GetString()!;
                 var id = library.Name.Split('/')[0];
-                if (AcceptedProprietaryRuntimes.ContainsKey(id))
+                if (!Ships(assets.RootElement.GetProperty("targets"), library.Name))
                 {
+                    // Restored, but every asset excluded (ExcludeAssets="all"): nothing of it is built in or shipped.
                     continue;
                 }
 
@@ -124,6 +115,20 @@ public sealed class RepositoryHygieneTests
 
         violations.ShouldBeEmpty("Every dependency, direct or transitive, must be permissively licensed (docs/DESIGN.md §6.5).");
     }
+
+    private static readonly HashSet<string> AssetGroups = new(StringComparer.Ordinal)
+    {
+        "compile", "runtime", "native", "runtimeTargets", "resource", "build", "buildMultiTargeting", "contentFiles", "analyzers",
+    };
+
+    /// <summary>Whether any target takes an asset from the package; excluded assets show as <c>_._</c> placeholders.</summary>
+    private static bool Ships(JsonElement targets, string library) =>
+        targets.EnumerateObject().Any(target =>
+            target.Value.TryGetProperty(library, out var entry)
+            && entry.EnumerateObject()
+                .Where(group => AssetGroups.Contains(group.Name) && group.Value.ValueKind == JsonValueKind.Object)
+                .SelectMany(group => group.Value.EnumerateObject())
+                .Any(asset => !asset.Name.EndsWith("_._", StringComparison.Ordinal)));
 
     [Fact]
     public void Banned_package_list_is_not_empty()
