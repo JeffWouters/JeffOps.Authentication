@@ -113,6 +113,9 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
                     b.Property<bool>("CreatedAccount")
                         .HasColumnType("bit");
 
+                    b.Property<bool>("DisabledAccount")
+                        .HasColumnType("bit");
+
                     b.Property<string>("DisplayName")
                         .HasMaxLength(300)
                         .HasColumnType("nvarchar(300)");

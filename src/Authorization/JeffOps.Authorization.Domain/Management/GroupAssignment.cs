@@ -53,6 +53,49 @@ public sealed class GroupAssignment : AggregateRoot<Guid>
     public RoleAssignment ToRoleAssignment() => new(RoleId, ScopeKey, ScopeInstanceId, ExpiresAt);
 }
 
+/// <summary>
+/// The newest membership announcement applied for a group. Announcements can arrive out of order; an older one arriving
+/// late must not bring back a member who has left, nor revive a deleted group.
+/// </summary>
+public sealed class GroupSyncState
+{
+    /// <summary>The version of a deleted group: no announcement applies after it.</summary>
+    public const long Deleted = long.MaxValue;
+
+    public GroupSyncState(Guid tenantId, Guid groupId)
+    {
+        TenantId = tenantId;
+        GroupId = groupId;
+    }
+
+    private GroupSyncState()
+    {
+    }
+
+    public Guid TenantId { get; private set; }
+
+    public Guid GroupId { get; private set; }
+
+    public long Version { get; private set; }
+
+    /// <summary>
+    /// Whether an announcement of <paramref name="version"/> applies (it is not older than the newest applied one), recording
+    /// it if so. Unversioned announcements (0) apply unless the group was deleted.
+    /// </summary>
+    public bool TryAdvance(long version)
+    {
+        if (Version == Deleted || (version != 0 && version < Version))
+        {
+            return false;
+        }
+
+        Version = Math.Max(Version, version);
+        return true;
+    }
+
+    public void MarkDeleted() => Version = Deleted;
+}
+
 /// <summary>A user's membership of a group, as the group's source last reported it.</summary>
 public sealed class GroupMember
 {

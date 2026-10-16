@@ -5,6 +5,20 @@ namespace JeffOps.Authentication.Enterprise.Application.Features.Scim;
 
 public sealed record ScimPage<T>(IReadOnlyList<T> Resources, int TotalResults, int StartIndex);
 
+/// <summary>Sizes the store can hold, checked up front so an oversized value is a SCIM 400 rather than a database error.</summary>
+internal static class ScimLimits
+{
+    public const int MaxLength = 256;
+
+    /// <summary>The most members one request may add or set.</summary>
+    public const int MaxMembersPerRequest = 1_000;
+
+    public static Error? Check(ScimUserData data) =>
+        new[] { data.UserName, data.ExternalId, data.GivenName, data.FamilyName, data.DisplayName, data.Email }.Any(value => value?.Length > MaxLength)
+            ? Error.Validation([new ValidationFailure("userName", $"Values are limited to {MaxLength} characters.")])
+            : null;
+}
+
 public sealed record CreateScimUserCommand(Guid TenantId, ScimUserData Data);
 
 public sealed class CreateScimUserHandler(ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork) : ICommandHandler<CreateScimUserCommand, ScimUserView>
@@ -12,6 +26,11 @@ public sealed class CreateScimUserHandler(ScimProvisioning provisioning, IEnterp
     public async Task<Result<ScimUserView>> HandleAsync(CreateScimUserCommand command, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (ScimLimits.Check(command.Data) is { } tooLong)
+        {
+            return tooLong;
+        }
+
         var created = await provisioning.CreateAsync(command.TenantId, command.Data, cancellationToken).ConfigureAwait(false);
         if (created.IsFailure)
         {
@@ -48,6 +67,11 @@ public sealed class UpdateScimUserHandler(IScimUserRepository users, ScimProvisi
             return next.Error;
         }
 
+        if (ScimLimits.Check(next.Value) is { } tooLong)
+        {
+            return tooLong;
+        }
+
         var applied = await provisioning.ApplyAsync(user, next.Value, cancellationToken).ConfigureAwait(false);
         if (applied.IsFailure)
         {
@@ -72,9 +96,13 @@ public sealed class DeleteScimUserHandler(IScimUserRepository users, ScimProvisi
             return Error.NotFound(ScimErrors.NotFound, "No such user.");
         }
 
-        var failure = await provisioning.DeleteAsync(user, cancellationToken).ConfigureAwait(false);
+        if (await provisioning.DeleteAsync(user, cancellationToken).ConfigureAwait(false) is { } failure)
+        {
+            return failure;
+        }
+
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return failure is null ? Result.Success() : failure;
+        return Result.Success();
     }
 }
 
@@ -99,12 +127,13 @@ public sealed class ListScimUsersHandler(IScimUserRepository users, ScimProvisio
     public async Task<Result<ScimPage<ScimUserView>>> HandleAsync(ListScimUsersQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
-        if (query.Filter is { Attribute: var attribute } && attribute is not ("userName" or "externalId"))
+        var filter = query.Filter is { } given ? given with { Attribute = ScimFilter.Canonical(given.Attribute) } : null;
+        if (filter is { Attribute: var attribute } && attribute is not ("userName" or "externalId"))
         {
             return Error.Failure(ScimErrors.InvalidFilter, "Users can be filtered by userName or externalId (eq).");
         }
 
-        var (page, total) = await users.ListAsync(query.TenantId, query.Filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200), cancellationToken).ConfigureAwait(false);
+        var (page, total) = await users.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200), cancellationToken).ConfigureAwait(false);
         var views = new List<ScimUserView>(page.Count);
         foreach (var user in page)
         {

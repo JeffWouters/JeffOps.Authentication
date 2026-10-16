@@ -54,6 +54,9 @@ public interface IGroupMemberRepository
 
     /// <summary>Makes <paramref name="members"/> the group's members.</summary>
     Task ReplaceAsync(Guid tenantId, Guid groupId, IReadOnlyCollection<Guid> members, CancellationToken cancellationToken);
+
+    /// <summary>The group's sync state, created (and tracked) when there is none yet.</summary>
+    Task<Domain.Management.GroupSyncState> SyncStateAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken);
 }
 
 public interface IRoleChangeRepository

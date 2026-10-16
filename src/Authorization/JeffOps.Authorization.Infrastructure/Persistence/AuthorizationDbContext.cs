@@ -36,6 +36,9 @@ public sealed class AuthorizationDbContext(DbContextOptions<AuthorizationDbConte
     /// <summary>Group memberships, mirrored from the group's source (SCIM provisioning or the host).</summary>
     public DbSet<GroupMember> GroupMembers => Set<GroupMember>();
 
+    /// <summary>The newest membership announcement applied per group, so late, older ones are ignored.</summary>
+    public DbSet<GroupSyncState> GroupSyncStates => Set<GroupSyncState>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -131,6 +134,12 @@ public sealed class AuthorizationDbContext(DbContextOptions<AuthorizationDbConte
             member.ToTable("GroupMembers");
             member.HasKey(entity => new { entity.TenantId, entity.GroupId, entity.UserId });
             member.HasIndex(entity => new { entity.TenantId, entity.UserId });
+        });
+
+        modelBuilder.Entity<GroupSyncState>(state =>
+        {
+            state.ToTable("GroupSyncStates");
+            state.HasKey(entity => new { entity.TenantId, entity.GroupId });
         });
 
         modelBuilder.Entity<Scope>(scope =>

@@ -22,6 +22,14 @@ public sealed class EnterpriseOptions
     public string ManagePolicy { get; set; } = "auth.enterprise.manage";
 
     public int MaxDomainsPerTenant { get; set; } = 20;
+
+    /// <summary>
+    /// The policy needed, on top of <see cref="ManagePolicy"/>, to create SCIM tokens. A SCIM token controls group membership,
+    /// and groups can hold roles: set a stricter policy (for example one that requires the right to assign those roles) when
+    /// tenant administrators should not be able to grant themselves group roles that way. Default: none beyond
+    /// <see cref="ManagePolicy"/>.
+    /// </summary>
+    public string? ScimTokenPolicy { get; set; }
 }
 
 public interface ITenantDomainRepository

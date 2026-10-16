@@ -146,6 +146,22 @@ namespace JeffOps.Authorization.Persistence.SqlServer.Migrations
                     b.ToTable("GroupMembers", "authz");
                 });
 
+            modelBuilder.Entity("JeffOps.Authorization.Domain.Management.GroupSyncState", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "GroupId");
+
+                    b.ToTable("GroupSyncStates", "authz");
+                });
+
             modelBuilder.Entity("JeffOps.Authorization.Domain.Management.RegisteredPermission", b =>
                 {
                     b.Property<string>("Code")

@@ -20,6 +20,14 @@ public sealed class GroupSync(
     public async Task HandleAsync(GroupMembershipChangedEvent integrationEvent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(integrationEvent);
+
+        // An announcement older than one already applied (they can arrive out of order) is stale: ignore it.
+        var state = await members.SyncStateAsync(integrationEvent.TenantId, integrationEvent.GroupId, cancellationToken).ConfigureAwait(false);
+        if (!state.TryAdvance(integrationEvent.Version))
+        {
+            return;
+        }
+
         await members.ReplaceAsync(integrationEvent.TenantId, integrationEvent.GroupId, [.. integrationEvent.Members], cancellationToken).ConfigureAwait(false);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await AnnounceAsync(integrationEvent.TenantId, integrationEvent.GroupId, integrationEvent.Added.Concat(integrationEvent.Removed), cancellationToken).ConfigureAwait(false);
@@ -34,6 +42,7 @@ public sealed class GroupSync(
             assignments.Remove(assignment);
         }
 
+        (await members.SyncStateAsync(integrationEvent.TenantId, integrationEvent.GroupId, cancellationToken).ConfigureAwait(false)).MarkDeleted();
         await members.ReplaceAsync(integrationEvent.TenantId, integrationEvent.GroupId, [], cancellationToken).ConfigureAwait(false);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         foreach (var user in integrationEvent.FormerMembers)

@@ -99,6 +99,14 @@ public sealed class ScimUser
     /// <summary>A version for ETags; changes on every update.</summary>
     public int Version { get; private set; }
 
+    /// <summary>
+    /// Whether provisioning disabled the account (<c>active: false</c>). Only then may provisioning enable it again: an account
+    /// an operator disabled or locked stays that way.
+    /// </summary>
+    public bool DisabledAccount { get; private set; }
+
+    public void RecordAccountDisabled(bool disabled) => DisabledAccount = disabled;
+
     public static ScimUser Provision(Guid tenantId, Guid accountId, bool createdAccount, DateTimeOffset now) => new(tenantId, accountId, createdAccount, now);
 
     public void Update(string userName, string? externalId, string? givenName, string? familyName, string? displayName, bool active, DateTimeOffset now)
@@ -183,6 +191,9 @@ public sealed class ScimGroup
         _members.RemoveAll(member => removing.Contains(member.AccountId));
         Touch(now);
     }
+
+    /// <summary>Records a change in who of its members counts (a member was deactivated or reactivated).</summary>
+    public void MembersChanged(DateTimeOffset now) => Touch(now);
 
     public void ReplaceMembers(IEnumerable<Guid> accountIds, DateTimeOffset now)
     {

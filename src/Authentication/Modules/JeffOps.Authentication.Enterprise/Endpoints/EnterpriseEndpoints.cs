@@ -68,7 +68,20 @@ public static class EnterpriseEndpointRouteBuilderExtensions
             ToResult(await handler.HandleAsync(new ListScimTokensQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
         root.MapPost(ScimTokenRoutes, async (CreateScimTokenRequest request, HttpContext context, ICommandHandler<CreateScimTokenCommand, CreatedScimToken> handler) =>
             ToResult(await handler.HandleAsync(new CreateScimTokenCommand(Caller(context), request.Name), context.RequestAborted).ConfigureAwait(false)))
-            .AddEndpointFilter<StepUpFilter>();
+            .AddEndpointFilter<StepUpFilter>()
+            .AddEndpointFilter(async (context, next) =>
+            {
+                // A SCIM token controls group membership (and so group roles): hosts can require more than tenant administration.
+                var services = context.HttpContext.RequestServices;
+                if (services.GetRequiredService<IOptions<EnterpriseOptions>>().Value.ScimTokenPolicy is { } policy
+                    && !(await services.GetRequiredService<IAuthorizationService>().AuthorizeAsync(context.HttpContext.User, policy).ConfigureAwait(false)).Succeeded)
+                {
+                    return TypedResults.Problem(detail: "You are not allowed to create SCIM tokens.", statusCode: StatusCodes.Status403Forbidden,
+                        extensions: new Dictionary<string, object?> { ["code"] = "not_allowed" });
+                }
+
+                return await next(context).ConfigureAwait(false);
+            });
         root.MapDelete(ScimTokenRoutes + "/{tokenId:guid}", async (Guid tokenId, HttpContext context, ICommandHandler<RevokeScimTokenCommand> handler) =>
         {
             var result = await handler.HandleAsync(new RevokeScimTokenCommand(Caller(context), tokenId), context.RequestAborted).ConfigureAwait(false);

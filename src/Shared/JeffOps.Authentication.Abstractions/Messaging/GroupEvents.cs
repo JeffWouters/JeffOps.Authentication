@@ -21,6 +21,12 @@ public sealed record GroupMembershipChangedEvent(
     /// <summary>The versioned event type name of <see cref="GroupMembershipChangedEvent"/>.</summary>
     public const string EventType = "auth.group.membership_changed.v1";
 
+    /// <summary>
+    /// The group's version after this change; it only grows. Events can arrive out of order: a consumer keeps the highest
+    /// version it applied and ignores lower ones.
+    /// </summary>
+    public long Version { get; init; }
+
     /// <inheritdoc />
     public override string Type => EventType;
 }

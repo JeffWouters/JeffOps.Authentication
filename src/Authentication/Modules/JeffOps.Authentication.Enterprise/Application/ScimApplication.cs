@@ -19,13 +19,24 @@ public interface IScimTokenRepository
 }
 
 /// <summary>A SCIM list filter: one attribute compared for equality (<c>userName eq "x"</c>), the form identity providers send.</summary>
-public sealed record ScimFilter(string Attribute, string Value);
+public sealed record ScimFilter(string Attribute, string Value)
+{
+    /// <summary>The attribute's canonical spelling: SCIM attribute names are case-insensitive (RFC 7643 §2.1).</summary>
+    public static string Canonical(string attribute) =>
+        new[] { "userName", "externalId", "displayName" }.FirstOrDefault(known => string.Equals(known, attribute, StringComparison.OrdinalIgnoreCase)) ?? attribute;
+}
 
 public interface IScimUserRepository
 {
     Task<ScimUser?> FindAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken);
 
     Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, CancellationToken cancellationToken);
+
+    /// <summary>The tenant's provisioned users among <paramref name="accountIds"/>, in one query.</summary>
+    Task<IReadOnlyList<ScimUser>> FindManyAsync(Guid tenantId, IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken);
+
+    /// <summary>Whether another tenant has provisioned the account too.</summary>
+    Task<bool> ProvisionedElsewhereAsync(Guid accountId, Guid tenantId, CancellationToken cancellationToken);
 
     void Add(ScimUser user);
 
@@ -78,15 +89,26 @@ public sealed record ScimGroupView(Guid Id, string DisplayName, string? External
 
 /// <summary>
 /// Applies provisioned user state to accounts and memberships. Shared by create, replace and patch so all run the same rules:
-/// an existing account is linked only when its email is verified (an unverified self-registration can't capture a
-/// provisioned identity); profile and status changes reach the account only when provisioning created it, since a linked
-/// account may belong to other tenants too.
+/// <list type="bullet">
+/// <item>Emails must be in one of the tenant's verified domains, so a tenant can provision (and link) only people whose
+/// addresses it controls — never another tenant's users or an operator, and never squat on someone else's address.</item>
+/// <item>An existing account is linked only when its email is verified (an unverified self-registration can't capture a
+/// provisioned identity).</item>
+/// <item>Profile and status changes reach the account only when provisioning created it, since a linked account may belong
+/// to other tenants too; it is disabled only while no other tenant provisions it, and enabled again only if provisioning
+/// disabled it.</item>
+/// <item>The tenant membership changes first: when the tenant system fails, nothing is recorded and the identity provider's
+/// retry starts over.</item>
+/// <item>Deactivated users keep their group records but drop out of the members announced to authorization, so their
+/// group-derived roles stop at once.</item>
+/// </list>
 /// </summary>
 public sealed class ScimProvisioning(
     IAccountRepository accounts,
     IUnitOfWork accountUnitOfWork,
     IScimUserRepository users,
     IScimGroupRepository groups,
+    ITenantDomainRepository domains,
     ITenantMembershipProvisioner memberships,
     IEventPublisher events,
     TimeProvider time)
@@ -107,6 +129,11 @@ public sealed class ScimProvisioning(
             return Error.Validation([new ValidationFailure("emails", "A user needs an email address (or an email userName).")]);
         }
 
+        if (await OwnedEmailAsync(tenantId, email, cancellationToken).ConfigureAwait(false) is { } notOwned)
+        {
+            return notOwned;
+        }
+
         var account = await accounts.FindByEmailAsync(email, cancellationToken).ConfigureAwait(false);
         var created = account is not { EmailVerified: true };
         if (created)
@@ -124,17 +151,17 @@ public sealed class ScimProvisioning(
         user.Update(data.UserName, data.ExternalId, data.GivenName, data.FamilyName, data.DisplayName, data.Active, now);
         if (!data.Active && created)
         {
-            account.Disable(now);
+            user.RecordAccountDisabled(account.Disable(now));
         }
 
-        await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        users.Add(user);
-
+        // The membership first: if the tenant system is down, nothing is saved and the retry starts over.
         if (data.Active && await MembershipAsync(tenantId, account.Id, add: true, cancellationToken).ConfigureAwait(false) is { } failure)
         {
             return failure;
         }
 
+        await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        users.Add(user);
         return user;
     }
 
@@ -150,32 +177,68 @@ public sealed class ScimProvisioning(
             return Error.Conflict(ScimErrors.Uniqueness, $"A user with userName '{data.UserName}' already exists.");
         }
 
-        var wasActive = user.Active;
-        user.Update(data.UserName, data.ExternalId, data.GivenName, data.FamilyName, data.DisplayName, data.Active, now);
-
-        if (user.CreatedAccount && await accounts.FindAsync(user.AccountId, cancellationToken).ConfigureAwait(false) is { } account)
+        var account = user.CreatedAccount ? await accounts.FindAsync(user.AccountId, cancellationToken).ConfigureAwait(false) : null;
+        var email = EmailOf(data);
+        if (account is not null && email is not null && !string.Equals(email, account.Email, StringComparison.OrdinalIgnoreCase)
+            && await OwnedEmailAsync(user.TenantId, email, cancellationToken).ConfigureAwait(false) is { } notOwned)
         {
-            account.UpdateProfile(EmailOf(data), Name(data), now);
-            _ = data.Active ? account.Enable(now) : account.Disable(now);
-            await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return notOwned;
         }
 
+        var wasActive = user.Active;
         if (wasActive != data.Active
             && await MembershipAsync(user.TenantId, user.AccountId, add: data.Active, cancellationToken).ConfigureAwait(false) is { } failure)
         {
             return failure;
         }
 
+        user.Update(data.UserName, data.ExternalId, data.GivenName, data.FamilyName, data.DisplayName, data.Active, now);
+        if (account is not null)
+        {
+            account.UpdateProfile(email, Name(data), now);
+            if (!data.Active && !user.DisabledAccount
+                && !await users.ProvisionedElsewhereAsync(account.Id, user.TenantId, cancellationToken).ConfigureAwait(false))
+            {
+                user.RecordAccountDisabled(account.Disable(now));
+            }
+            else if (data.Active && user.DisabledAccount)
+            {
+                account.Enable(now);
+                user.RecordAccountDisabled(false);
+            }
+
+            await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (wasActive != data.Active)
+        {
+            // Group roles follow: the user's groups are announced with or without them.
+            foreach (var group in await groups.ListForMemberAsync(user.TenantId, user.AccountId, cancellationToken).ConfigureAwait(false))
+            {
+                group.MembersChanged(now);
+                await PublishMembershipAsync(group, data.Active ? [user.AccountId] : [], data.Active ? [] : [user.AccountId], cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         return user;
     }
 
-    /// <summary>Deprovisions: leaves the tenant and its groups; an account provisioning created is disabled.</summary>
+    /// <summary>
+    /// Deprovisions: leaves the tenant (first — if the tenant system fails, nothing changes and the identity provider retries)
+    /// and its groups; an account provisioning created is disabled unless another tenant provisions it too.
+    /// </summary>
     public async Task<Error?> DeleteAsync(ScimUser user, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(user);
         var now = time.GetUtcNow();
 
-        if (user.CreatedAccount && await accounts.FindAsync(user.AccountId, cancellationToken).ConfigureAwait(false) is { } account)
+        if (user.Active && await MembershipAsync(user.TenantId, user.AccountId, add: false, cancellationToken).ConfigureAwait(false) is { } failure)
+        {
+            return failure;
+        }
+
+        if (user.CreatedAccount && await accounts.FindAsync(user.AccountId, cancellationToken).ConfigureAwait(false) is { } account
+            && !await users.ProvisionedElsewhereAsync(account.Id, user.TenantId, cancellationToken).ConfigureAwait(false))
         {
             account.Disable(now);
             await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -188,7 +251,7 @@ public sealed class ScimProvisioning(
         }
 
         users.Remove(user);
-        return user.Active ? await MembershipAsync(user.TenantId, user.AccountId, add: false, cancellationToken).ConfigureAwait(false) : null;
+        return null;
     }
 
     public async Task<ScimUserView> ViewAsync(ScimUser user, CancellationToken cancellationToken)
@@ -200,12 +263,34 @@ public sealed class ScimProvisioning(
             user.Created, user.LastModified, user.Version, [.. memberOf.Select(group => (group.Id, group.DisplayName))]);
     }
 
-    public Task PublishMembershipAsync(ScimGroup group, IReadOnlyList<Guid> added, IReadOnlyList<Guid> removed, CancellationToken cancellationToken)
+    /// <summary>
+    /// Announces a group's members — the active ones: a deactivated user's group roles stop until they are active again — with
+    /// the group's version, so a consumer can drop an announcement that arrives after a newer one.
+    /// </summary>
+    public async Task PublishMembershipAsync(ScimGroup group, IReadOnlyList<Guid> added, IReadOnlyList<Guid> removed, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(group);
-        return events.PublishAsync(
-            new GroupMembershipChangedEvent(group.TenantId, group.Id, group.DisplayName, group.MemberIds, added, removed) { OccurredAt = time.GetUtcNow() },
-            cancellationToken);
+        var inactive = (await users.FindManyAsync(group.TenantId, group.MemberIds, cancellationToken).ConfigureAwait(false))
+            .Where(user => !user.Active).Select(user => user.AccountId).ToHashSet();
+        await events.PublishAsync(
+            new GroupMembershipChangedEvent(group.TenantId, group.Id, group.DisplayName, [.. group.MemberIds.Where(id => !inactive.Contains(id))], [.. added.Where(id => !inactive.Contains(id))], removed)
+            {
+                OccurredAt = time.GetUtcNow(),
+                Version = group.Version,
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Refuses an email outside the tenant's verified domains.</summary>
+    private async Task<Error?> OwnedEmailAsync(Guid tenantId, string email, CancellationToken cancellationToken)
+    {
+        var at = email.LastIndexOf('@');
+        return at > 0
+            && TenantDomain.Normalize(email[(at + 1)..]) is { } domain
+            && await domains.FindVerifiedAsync(domain, cancellationToken).ConfigureAwait(false) is { } verified
+            && verified.TenantId == tenantId
+            ? null
+            : Error.Validation([new ValidationFailure("emails", "The email address must be in one of the tenant's verified domains.")]);
     }
 
     private async Task<Error?> MembershipAsync(Guid tenantId, Guid accountId, bool add, CancellationToken cancellationToken)

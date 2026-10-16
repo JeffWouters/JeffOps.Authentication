@@ -112,7 +112,7 @@ public static partial class ScimEndpoints
             return NotFound();
         }
 
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !body.TryGetProperty("Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
+        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !Has(body, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A PATCH needs Operations.");
         }
@@ -128,7 +128,7 @@ public static partial class ScimEndpoints
             return null;
         }
 
-        var name = body.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.Object ? nameElement : default;
+        var name = Has(body, "name", out var nameElement) && nameElement.ValueKind == JsonValueKind.Object ? nameElement : default;
         return new ScimUserData(
             userName,
             Text(body, "externalId"),
@@ -136,7 +136,7 @@ public static partial class ScimEndpoints
             name.ValueKind == JsonValueKind.Object ? Text(name, "familyName") : null,
             Text(body, "displayName"),
             PrimaryEmail(body),
-            !body.TryGetProperty("active", out var active) || Bool(active) != false);
+            !Has(body, "active", out var active) || Bool(active) != false);
     }
 
     /// <summary>
@@ -151,7 +151,7 @@ public static partial class ScimEndpoints
         {
             var op = Text(operation, "op")?.ToLowerInvariant();
             var path = Text(operation, "path");
-            var hasValue = operation.TryGetProperty("value", out var value);
+            var hasValue = Has(operation, "value", out var value);
 
             if (op is not ("add" or "replace" or "remove"))
             {
@@ -242,7 +242,7 @@ public static partial class ScimEndpoints
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A group needs a displayName.");
         }
 
-        if (!TryMembers(body.TryGetProperty("members", out var members) ? members : default, out var memberIds))
+        if (!TryMembers(Has(body, "members", out var members) ? members : default, out var memberIds))
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "Member values must be user ids.");
         }
@@ -259,7 +259,7 @@ public static partial class ScimEndpoints
         }
 
         if (await BodyAsync(context).ConfigureAwait(false) is not { } body || Text(body, "displayName") is not { } displayName
-            || !TryMembers(body.TryGetProperty("members", out var members) ? members : default, out var memberIds))
+            || !TryMembers(Has(body, "members", out var members) ? members : default, out var memberIds))
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A group needs a displayName and user ids as members.");
         }
@@ -275,7 +275,7 @@ public static partial class ScimEndpoints
             return NotFound();
         }
 
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !body.TryGetProperty("Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
+        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !Has(body, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A PATCH needs Operations.");
         }
@@ -290,20 +290,20 @@ public static partial class ScimEndpoints
         {
             var op = Text(operation, "op")?.ToLowerInvariant();
             var path = Text(operation, "path");
-            var value = operation.TryGetProperty("value", out var v) ? v : default;
+            var value = Has(operation, "value", out var v) ? v : default;
 
             if (path is null && value.ValueKind == JsonValueKind.Object)
             {
                 displayName = Text(value, "displayName") ?? displayName;
                 externalId = Text(value, "externalId") ?? externalId;
-                if (value.TryGetProperty("members", out var objectMembers))
+                if (Has(value, "members", out var objectMembers))
                 {
                     if (!TryMembers(objectMembers, out var ids))
                     {
                         return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "Member values must be user ids.");
                     }
 
-                    (op == "add" ? add : null)?.AddRange(ids);
+                    (op switch { "add" => add, "remove" => remove, _ => null })?.AddRange(ids);
                     replace = op == "replace" ? [.. ids] : replace;
                 }
 
@@ -465,8 +465,15 @@ public static partial class ScimEndpoints
     private static string Location(HttpContext context, string resource, Guid id) =>
         $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/{Root}/{resource}/{id}";
 
+    /// <summary>TryGetProperty that answers false, rather than throwing, when the element isn't an object.</summary>
+    private static bool Has(JsonElement element, string property, out JsonElement value)
+    {
+        value = default;
+        return element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out value);
+    }
+
     private static string? Text(JsonElement element, string property) =>
-        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
+        element.ValueKind == JsonValueKind.Object && Has(element, property, out var value) && value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString())
             ? value.GetString()!.Trim()
             : null;
 
@@ -480,13 +487,13 @@ public static partial class ScimEndpoints
 
     private static string? PrimaryEmail(JsonElement body)
     {
-        if (!body.TryGetProperty("emails", out var emails) || emails.ValueKind != JsonValueKind.Array)
+        if (!Has(body, "emails", out var emails) || emails.ValueKind != JsonValueKind.Array)
         {
             return null;
         }
 
         var all = emails.EnumerateArray().Where(email => Text(email, "value") is not null).ToList();
-        var primary = all.FirstOrDefault(email => email.TryGetProperty("primary", out var flag) && Bool(flag) == true);
+        var primary = all.FirstOrDefault(email => Has(email, "primary", out var flag) && Bool(flag) == true);
         return Text(primary.ValueKind == JsonValueKind.Object ? primary : all.FirstOrDefault(), "value");
     }
 

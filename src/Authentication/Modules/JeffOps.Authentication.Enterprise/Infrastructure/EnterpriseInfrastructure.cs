@@ -188,6 +188,14 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
         return (page, total);
     }
 
+    public async Task<IReadOnlyList<ScimUser>> FindManyAsync(Guid tenantId, IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken) =>
+        accountIds.Count == 0
+            ? []
+            : await db.ScimUsers.Where(user => user.TenantId == tenantId && accountIds.Contains(user.AccountId)).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public Task<bool> ProvisionedElsewhereAsync(Guid accountId, Guid tenantId, CancellationToken cancellationToken) =>
+        db.ScimUsers.AnyAsync(user => user.AccountId == accountId && user.TenantId != tenantId, cancellationToken);
+
     public void Add(ScimUser user) => db.ScimUsers.Add(user);
 
     public void Remove(ScimUser user) => db.ScimUsers.Remove(user);

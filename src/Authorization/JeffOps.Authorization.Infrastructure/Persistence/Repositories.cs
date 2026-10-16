@@ -135,6 +135,18 @@ internal sealed class GroupMemberRepository(AuthorizationDbContext db) : IGroupM
         db.GroupMembers.RemoveRange(current.Where(member => !wanted.Contains(member.UserId)));
         db.GroupMembers.AddRange(wanted.Where(user => current.All(member => member.UserId != user)).Select(user => new GroupMember(tenantId, groupId, user)));
     }
+
+    public async Task<GroupSyncState> SyncStateAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken)
+    {
+        if (await db.GroupSyncStates.FirstOrDefaultAsync(state => state.TenantId == tenantId && state.GroupId == groupId, cancellationToken).ConfigureAwait(false) is { } existing)
+        {
+            return existing;
+        }
+
+        var created = new GroupSyncState(tenantId, groupId);
+        db.GroupSyncStates.Add(created);
+        return created;
+    }
 }
 
 /// <summary>Saves, then dispatches the domain events of the saved aggregates (including deleted ones).</summary>

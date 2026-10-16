@@ -10,19 +10,30 @@ internal static class GroupMapping
     public static ScimGroupView ToView(this ScimGroup group) =>
         new(group.Id, group.DisplayName, group.ExternalId, group.MemberIds, group.Created, group.LastModified, group.Version);
 
-    /// <summary>Members must be users provisioned in the same tenant.</summary>
+    /// <summary>Members must be users provisioned in the same tenant; one request adds at most <see cref="ScimLimits.MaxMembersPerRequest"/>.</summary>
     public static async Task<Error?> CheckMembersAsync(IScimUserRepository users, Guid tenantId, IEnumerable<Guid> members, CancellationToken cancellationToken)
     {
-        foreach (var member in members.Distinct())
+        var wanted = members.Distinct().ToList();
+        if (wanted.Count > ScimLimits.MaxMembersPerRequest)
         {
-            if (await users.FindAsync(tenantId, member, cancellationToken).ConfigureAwait(false) is null)
-            {
-                return Error.Failure(ScimErrors.InvalidValue, $"Member {member} is not a user of this tenant.");
-            }
+            return Error.Failure(ScimErrors.InvalidValue, $"At most {ScimLimits.MaxMembersPerRequest} members per request.");
         }
 
-        return null;
+        if (wanted.Count == 0)
+        {
+            return null;
+        }
+
+        var known = (await users.FindManyAsync(tenantId, wanted, cancellationToken).ConfigureAwait(false)).Select(user => user.AccountId).ToHashSet();
+        return wanted.FirstOrDefault(member => !known.Contains(member)) is var unknown && unknown != Guid.Empty
+            ? Error.Failure(ScimErrors.InvalidValue, $"Member {unknown} is not a user of this tenant.")
+            : null;
     }
+
+    public static Error? CheckName(string displayName) =>
+        displayName.Trim().Length > ScimLimits.MaxLength
+            ? Error.Validation([new ValidationFailure("displayName", $"A displayName is limited to {ScimLimits.MaxLength} characters.")])
+            : null;
 }
 
 public sealed record CreateScimGroupCommand(Guid TenantId, string DisplayName, string? ExternalId, IReadOnlyList<Guid> Members);
@@ -36,6 +47,11 @@ public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUse
         if (string.IsNullOrWhiteSpace(command.DisplayName))
         {
             return Error.Validation([new ValidationFailure("displayName", "A group needs a displayName.")]);
+        }
+
+        if (GroupMapping.CheckName(command.DisplayName) is { } tooLong)
+        {
+            return tooLong;
         }
 
         if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", command.DisplayName.Trim()), 0, 1, cancellationToken).ConfigureAwait(false)).Total > 0)
@@ -82,6 +98,19 @@ public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUse
         if (await GroupMapping.CheckMembersAsync(users, command.TenantId, incoming, cancellationToken).ConfigureAwait(false) is { } invalid)
         {
             return invalid;
+        }
+
+        if (change.DisplayName is { } newName && !string.Equals(newName.Trim(), group.DisplayName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (GroupMapping.CheckName(newName) is { } tooLong)
+            {
+                return tooLong;
+            }
+
+            if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", newName.Trim()), 0, 1, cancellationToken).ConfigureAwait(false)).Total > 0)
+            {
+                return Error.Conflict(ScimErrors.Uniqueness, $"A group named '{newName}' already exists.");
+            }
         }
 
         var before = group.MemberIds.ToHashSet();
@@ -153,12 +182,13 @@ public sealed class ListScimGroupsHandler(IScimGroupRepository groups) : IQueryH
     public async Task<Result<ScimPage<ScimGroupView>>> HandleAsync(ListScimGroupsQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
-        if (query.Filter is { Attribute: var attribute } && attribute is not ("displayName" or "externalId"))
+        var filter = query.Filter is { } given ? given with { Attribute = ScimFilter.Canonical(given.Attribute) } : null;
+        if (filter is { Attribute: var attribute } && attribute is not ("displayName" or "externalId"))
         {
             return Error.Failure(ScimErrors.InvalidFilter, "Groups can be filtered by displayName or externalId (eq).");
         }
 
-        var (page, total) = await groups.ListAsync(query.TenantId, query.Filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200), cancellationToken).ConfigureAwait(false);
+        var (page, total) = await groups.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200), cancellationToken).ConfigureAwait(false);
         return new ScimPage<ScimGroupView>([.. page.Select(group => group.ToView())], total, Math.Max(query.StartIndex, 1));
     }
 }
