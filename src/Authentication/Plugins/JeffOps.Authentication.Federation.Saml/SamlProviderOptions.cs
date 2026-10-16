@@ -56,6 +56,17 @@ public sealed class SamlProviderOptions
     public TimeSpan SignInTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
+    /// The identity provider's metadata URL (HTTPS). Its signing certificates, sign-in URL and logout URL are downloaded at
+    /// startup and every <see cref="MetadataRefreshInterval"/>, so the provider can roll its certificate without a change
+    /// here; settings given explicitly take precedence over the metadata's URLs, and certificates from both are trusted.
+    /// The metadata must name <see cref="IdpEntityId"/>.
+    /// </summary>
+    public Uri? IdpMetadataUrl { get; set; }
+
+    /// <summary>How often the metadata is downloaded again. Default: 12 hours.</summary>
+    public TimeSpan MetadataRefreshInterval { get; set; } = TimeSpan.FromHours(12);
+
+    /// <summary>
     /// The identity provider's single logout URL (HTTP-Redirect binding), where logout responses go. Without it, logout
     /// requests from the provider are still honoured but answered with a plain page.
     /// </summary>

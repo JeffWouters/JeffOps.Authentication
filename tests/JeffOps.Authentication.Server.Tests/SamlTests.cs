@@ -8,6 +8,7 @@ using ITfoxtec.Identity.Saml2;
 using ITfoxtec.Identity.Saml2.Schemas;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Federation.Saml;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens.Saml2;
 
 namespace JeffOps.Authentication.Server.Tests;
@@ -211,6 +212,53 @@ public sealed class SamlTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_provider_can_be_configured_by_its_metadata_alone()
+    {
+        await StartAsync(metadataXml: IdpMetadata(IdpEntityId, _idpCertificate));
+        using var browser = new Browser(_host);
+
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);   // the sign-in URL came from the metadata
+        var response = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+
+        response.Headers.Location!.OriginalString.ShouldBe("/done", "the signing certificate came from the metadata");
+    }
+
+    [Fact]
+    public async Task Metadata_naming_another_entity_is_not_trusted()
+    {
+        await StartAsync(
+            new() { ["JeffOps:TokenServer:Federation:Saml:corp:IdpSingleSignOnUrl"] = "https://idp.test/sso" },
+            metadataXml: IdpMetadata("https://impostor.test/", _idpCertificate));
+        using var browser = new Browser(_host);
+
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+        var response = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+
+        response.Headers.Location!.OriginalString.ShouldContain("error=provider_error", customMessage: "no certificate is trusted for the provider");
+    }
+
+    private static string IdpMetadata(string entityId, X509Certificate2 signing) => $"""
+        <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="{entityId}">
+          <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+            <md:KeyDescriptor use="signing">
+              <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>{Convert.ToBase64String(signing.RawData)}</ds:X509Certificate></ds:X509Data></ds:KeyInfo>
+            </md:KeyDescriptor>
+            <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/slo"/>
+            <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>
+          </md:IDPSSODescriptor>
+        </md:EntityDescriptor>
+        """;
+
+    /// <summary>The identity provider's metadata endpoint.</summary>
+    private sealed class MetadataServer(string xml) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(request.RequestUri!.AbsoluteUri == "https://idp.test/metadata"
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(xml, Encoding.UTF8, "application/samlmetadata+xml") }
+                : new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
+
+    [Fact]
     public async Task The_provider_gets_this_server_s_metadata()
     {
         await StartAsync();
@@ -333,17 +381,26 @@ public sealed class SamlTests : IAsyncDisposable
 
     // ---- The test identity provider -------------------------------------------------------------------------------------
 
-    private async Task StartAsync(Dictionary<string, string?>? extra = null)
+    private async Task StartAsync(Dictionary<string, string?>? extra = null, string? metadataXml = null)
     {
         var settings = new Dictionary<string, string?>
         {
                 ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true",
                 ["JeffOps:TokenServer:Federation:Saml:corp:DisplayName"] = "Corp",
                 ["JeffOps:TokenServer:Federation:Saml:corp:IdpEntityId"] = IdpEntityId,
-                ["JeffOps:TokenServer:Federation:Saml:corp:IdpSingleSignOnUrl"] = "https://idp.test/sso",
-                ["JeffOps:TokenServer:Federation:Saml:corp:IdpSigningCertificates:0"] = Convert.ToBase64String(_idpCertificate.RawData),
                 ["JeffOps:TokenServer:Federation:Saml:corp:MultiFactorAuthnContexts:0"] = MultiFactor,
         };
+        if (metadataXml is null)
+        {
+            settings["JeffOps:TokenServer:Federation:Saml:corp:IdpSingleSignOnUrl"] = "https://idp.test/sso";
+            settings["JeffOps:TokenServer:Federation:Saml:corp:IdpSigningCertificates:0"] = Convert.ToBase64String(_idpCertificate.RawData);
+        }
+        else
+        {
+            // Everything about the provider comes from its metadata.
+            settings["JeffOps:TokenServer:Federation:Saml:corp:IdpMetadataUrl"] = "https://idp.test/metadata";
+        }
+
         foreach (var (key, value) in extra ?? [])
         {
             settings[key] = value;
@@ -351,7 +408,14 @@ public sealed class SamlTests : IAsyncDisposable
 
         _host = await TokenServerHost.StartAsync(
             settings,
-            configure: builder => new AuthenticationBuilder(builder.Services, builder.Configuration).AddSamlProvider("corp"),
+            configure: builder =>
+            {
+                new AuthenticationBuilder(builder.Services, builder.Configuration).AddSamlProvider("corp");
+                if (metadataXml is not null)
+                {
+                    builder.Services.AddHttpClient("JeffOps.Saml.Metadata").ConfigurePrimaryHttpMessageHandler(() => new MetadataServer(metadataXml));
+                }
+            },
             cookieSignIn: true,
             map: app => app.MapJeffOpsSaml());
     }

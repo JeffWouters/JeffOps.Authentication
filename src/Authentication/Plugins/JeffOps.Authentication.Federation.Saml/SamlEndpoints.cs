@@ -284,7 +284,7 @@ public static partial class SamlEndpoints
             }, context.RequestAborted).ConfigureAwait(false);
         }
 
-        if (settings.IdpSingleLogoutUrl is null)
+        if (saml.Providers.SingleLogoutUrl(provider) is not { } logoutUrl)
         {
             return Results.Content("You are signed out.", "text/plain");
         }
@@ -293,7 +293,7 @@ public static partial class SamlEndpoints
         {
             InResponseTo = request.Id,
             Status = Saml2StatusCodes.Success,
-            Destination = settings.IdpSingleLogoutUrl,
+            Destination = logoutUrl,
         };
         // RelayState is covered by the signature only in the redirect binding; a posted one isn't passed on.
         var reply = new Saml2RedirectBinding { RelayState = binding is Saml2RedirectBinding ? binding.RelayState : null };

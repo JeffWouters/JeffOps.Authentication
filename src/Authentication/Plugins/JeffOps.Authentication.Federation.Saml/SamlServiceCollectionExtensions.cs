@@ -27,8 +27,9 @@ public static class SamlServiceCollectionExtensions
         }
 
         options.Validate(
-            settings => settings.IdpEntityId is not null && settings.IdpSingleSignOnUrl is not null && settings.IdpSigningCertificates.Count > 0,
-            $"SAML provider '{name}' needs IdpEntityId, IdpSingleSignOnUrl and at least one IdpSigningCertificates entry.").ValidateOnStart();
+            settings => settings.IdpEntityId is not null
+                && (settings.IdpMetadataUrl is not null || (settings.IdpSingleSignOnUrl is not null && settings.IdpSigningCertificates.Count > 0)),
+            $"SAML provider '{name}' needs IdpEntityId, and IdpMetadataUrl or IdpSingleSignOnUrl with at least one IdpSigningCertificates entry.").ValidateOnStart();
 
         // The shared services, once for all SAML providers.
         if (!services.Any(descriptor => descriptor.ServiceType == typeof(SamlProviderRegistration)))
@@ -36,6 +37,9 @@ public static class SamlServiceCollectionExtensions
             services.AddMemoryCache();
             services.AddDataProtection();
             services.TryAddSingleton<ITokenReplayCache, SamlReplayCache>();
+            services.TryAddSingleton<SamlMetadata>();
+            services.AddHttpClient(SamlMetadataRefresher.HttpClientName);
+            services.AddHostedService<SamlMetadataRefresher>();
             services.TryAddSingleton<SamlProviders>();
             services.TryAddScoped<SamlServices>();
             services.AddSingleton<IExternalSignOut, SamlSignOut>();

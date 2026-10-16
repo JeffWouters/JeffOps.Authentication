@@ -22,7 +22,8 @@ public sealed record SamlProviderRegistration(string Name);
 /// </summary>
 internal sealed class SamlProviders(
     IEnumerable<SamlProviderRegistration> registrations,
-    IOptionsMonitor<SamlProviderOptions> options) : IExternalIdentityMapper, IExternalProviderChallenge
+    IOptionsMonitor<SamlProviderOptions> options,
+    SamlMetadata metadata) : IExternalIdentityMapper, IExternalProviderChallenge
 {
     /// <summary>The claim the ACS endpoint adds with the authentication context class reference.</summary>
     public const string AuthnContextClaim = "jeffops:saml:authn_context";
@@ -65,7 +66,7 @@ internal sealed class SamlProviders(
         var configuration = new Saml2Configuration
         {
             Issuer = serviceProviderEntityId,
-            SingleSignOnDestination = settings.IdpSingleSignOnUrl,
+            SingleSignOnDestination = settings.IdpSingleSignOnUrl ?? metadata.For(provider)?.SingleSignOnUrl,
             AllowedIssuer = settings.IdpEntityId,
             CertificateValidationMode = System.ServiceModel.Security.X509CertificateValidationMode.None,
             RevocationMode = X509RevocationMode.NoCheck,
@@ -74,7 +75,7 @@ internal sealed class SamlProviders(
             TokenReplayCache = replayCache,
         };
         configuration.AllowedAudienceUris.Add(serviceProviderEntityId);
-        configuration.SingleLogoutDestination = settings.IdpSingleLogoutUrl;
+        configuration.SingleLogoutDestination = SingleLogoutUrl(provider);
         if (SigningCertificate(provider) is { } signing)
         {
             configuration.SigningCertificate = signing;
@@ -91,8 +92,17 @@ internal sealed class SamlProviders(
             configuration.SignatureValidationCertificates.Add(Load(certificate));
         }
 
+        // Certificates from the provider's metadata, so a rollover there needs no change here.
+        foreach (var certificate in metadata.For(provider)?.SigningCertificates ?? [])
+        {
+            configuration.SignatureValidationCertificates.Add(certificate);
+        }
+
         return configuration;
     }
+
+    /// <summary>The provider's single logout URL: configured, or from its metadata; null when it has none.</summary>
+    public Uri? SingleLogoutUrl(string provider) => options.Get(provider).IdpSingleLogoutUrl ?? metadata.For(provider)?.SingleLogoutUrl;
 
     /// <summary>This server's signing certificate for <paramref name="provider"/>, or null when requests go unsigned.</summary>
     public X509Certificate2? SigningCertificate(string provider)
