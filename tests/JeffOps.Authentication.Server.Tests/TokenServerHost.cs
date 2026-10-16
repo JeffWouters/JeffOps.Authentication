@@ -109,7 +109,12 @@ internal sealed class TokenServerHost : IAsyncDisposable
         var app = builder.Build();
         using (var scope = app.Services.CreateScope())
         {
-            await scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>().Database.EnsureCreatedAsync(TestContext.Current.CancellationToken);
+            var database = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>().Database;
+            await database.EnsureCreatedAsync(TestContext.Current.CancellationToken);
+
+            // WAL: no journal file created and deleted per transaction (which virus scanners on Windows lock, failing a run
+            // with "database is locked"), and readers never block the writer.
+            await database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;", TestContext.Current.CancellationToken);
         }
 
         app.UseAuthentication();
@@ -131,6 +136,8 @@ internal sealed class TokenServerHost : IAsyncDisposable
         try
         {
             File.Delete(_databaseFile);
+            File.Delete(_databaseFile + "-wal");
+            File.Delete(_databaseFile + "-shm");
         }
         catch (IOException)
         {

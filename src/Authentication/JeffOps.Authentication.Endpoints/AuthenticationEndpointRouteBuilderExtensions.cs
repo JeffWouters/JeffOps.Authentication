@@ -15,8 +15,9 @@ public static class AuthenticationEndpointRouteBuilderExtensions
     /// <summary>
     /// Maps the token server's endpoints: OpenID Connect (<c>connect/authorize</c>, <c>connect/token</c>,
     /// <c>connect/userinfo</c>, <c>connect/endsession</c>; discovery, JWKS, revocation and introspection are served by
-    /// OpenIddict), the caller's personal access tokens (<c>account/pats</c>), account administration
-    /// (<c>admin/accounts</c>), the service account directory (<c>directory/accounts</c>), and external sign-in
+    /// OpenIddict), the caller's personal access tokens (<c>account/pats</c>), signing out everywhere
+    /// (<c>account/sessions/revoke</c>), account administration (<c>admin/accounts</c>, including
+    /// <c>admin/accounts/{id}/sessions/revoke</c>), the service account directory (<c>directory/accounts</c>), and external sign-in
     /// (<c>account/login/discover</c>, <c>signin/{provider}</c>, <c>signin/callback/{provider}</c>).
     /// </summary>
     public static IEndpointRouteBuilder MapJeffOpsAuthentication(this IEndpointRouteBuilder endpoints)
