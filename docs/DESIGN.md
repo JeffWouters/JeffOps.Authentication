@@ -388,7 +388,6 @@ app.Run();
 | Containers | Testcontainers | MIT |
 | Fake time | Microsoft.Extensions.TimeProvider.Testing | MIT |
 | Snapshot tests | Verify (Verify.XunitV3) | MIT |
-| Public API approval | PublicApiGenerator | MIT |
 | Architecture tests | ArchUnitNET or NetArchTest.Rules (D18) | Apache-2.0 / MIT |
 | SAML (roadmap) | ITfoxtec.Identity.Saml2 or Sustainsys.Saml2 (D5) | Verify at selection |
 
@@ -1029,7 +1028,7 @@ These requirements differ from the origin implementation. They are listed here s
 - **Stack** (D21):
   - xUnit v3 on Microsoft.Testing.Platform; test projects are executables.
   - Shouldly for assertions, NSubstitute for test doubles, `FakeTimeProvider` for lifetimes and expiry.
-  - Verify for snapshots, PublicApiGenerator for public API approval.
+  - Verify for snapshots. No API-surface generators: endpoints and public types are written and reviewed by hand.
   - No FluentAssertions, Moq or any paid library (§6.5).
 - **xUnit v3 conventions**:
   - Integration tests skip with `Assert.SkipUnless(dockerAvailable, …)`; the `SkippableFact` package is not ported.
@@ -1053,7 +1052,7 @@ These requirements differ from the origin implementation. They are listed here s
   - No literal secrets in host configuration.
 - **Security tests**: audience acceptance/rejection, fallback policy, enumeration safety, CSRF, header smuggling, refresh reuse detection.
 - **Snapshot tests** (Verify): the OIDC discovery document, the JWKS shape (key ids and algorithms, never key material), ProblemDetails bodies per error code, the OpenAPI document per module, and token claim sets per grant type. Unintended protocol changes then show up as reviewable diffs.
-- **Public API approval**: every shipped package has a test that generates its public API with PublicApiGenerator and verifies it against an approved `*.verified.txt`. Changes to the public surface fail the build until they are explicitly accepted. This makes breaking changes visible before release and supports semantic versioning.
+- **Breaking changes**: no public-API generator (decision of the maintainer). After 1.0, the SDK's own package validation (`EnablePackageValidation` with a baseline version) flags breaking changes at pack time; before that, public surface changes are reviewed in pull requests.
 - **Conformance**: run the OpenID Foundation conformance suite against the reference token server before 1.0.
 
 ---
