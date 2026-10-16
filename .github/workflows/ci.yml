@@ -108,7 +108,7 @@ jobs:
       contents: read
       id-token: write # Trusted Publishing: GitHub's OIDC token is exchanged for a one-hour NuGet key; no stored secret.
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: artifacts
