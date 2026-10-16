@@ -34,9 +34,7 @@ public sealed partial class LoginCode
             http.Response.Headers.CacheControl = "no-store";
         }
 
-        SafeReturnUrl = !string.IsNullOrEmpty(ReturnUrl) && ReturnUrl.StartsWith('/') && !ReturnUrl.StartsWith("//", StringComparison.Ordinal) && !ReturnUrl.StartsWith("/\\", StringComparison.Ordinal)
-            ? ReturnUrl
-            : "/";
+        SafeReturnUrl = Abstractions.Http.LocalRedirect.OrRoot(ReturnUrl);
         ErrorMessage = Error switch
         {
             null => null,

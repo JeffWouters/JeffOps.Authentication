@@ -75,5 +75,5 @@ public sealed partial class Login
         $"/signin/{Uri.EscapeDataString(provider.Name)}?returnUrl={Uri.EscapeDataString(SafeReturnUrl)}";
 
     private static bool IsLocal(string? url) =>
-        !string.IsNullOrEmpty(url) && url.StartsWith('/') && !url.StartsWith("//", StringComparison.Ordinal) && !url.StartsWith("/\\", StringComparison.Ordinal);
+        Abstractions.Http.LocalRedirect.IsLocal(url);
 }

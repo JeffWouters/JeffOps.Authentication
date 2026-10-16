@@ -43,8 +43,11 @@ public sealed class SamlProviderOptions
         "urn:oid:2.16.840.1.113730.3.1.241",
     ];
 
-    /// <summary>Whether the provider's email addresses are verified (true for a corporate directory). Default: true.</summary>
-    public bool EmailVerified { get; set; } = true;
+    /// <summary>
+    /// Whether the provider's email addresses count as verified. Set it only for a directory whose users can't choose their own
+    /// address (a verified email is trusted for linking and provisioning). Default: false.
+    /// </summary>
+    public bool EmailVerified { get; set; }
 
     /// <summary>Authentication context class references that count as multi-factor, for example <c>http://schemas.microsoft.com/claims/multipleauthn</c>.</summary>
     public IList<string> MultiFactorAuthnContexts { get; } = [];

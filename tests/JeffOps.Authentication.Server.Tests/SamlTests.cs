@@ -68,6 +68,65 @@ public sealed class SamlTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_signed_assertion_can_t_be_rewrapped_to_answer_another_browser_s_request()
+    {
+        await StartAsync();
+        using var victim = new Browser(_host);
+        using var attacker = new Browser(_host);
+        var (victimRequest, acs, spEntityId) = await StartSignInAsync(victim);
+        var (attackerRequest, _, _) = await StartSignInAsync(attacker);
+
+        // Only the assertion is signed, as ADFS and Entra send it by default; the Response around it is not. The attacker
+        // points the unsigned InResponseTo at their own request.
+        var document = AssertionSignedResponse(victimRequest, acs, spEntityId);
+        document.DocumentElement!.SetAttribute("InResponseTo", attackerRequest);
+        var rewrapped = await PostResponseAsync(attacker, Convert.ToBase64String(Encoding.UTF8.GetBytes(document.OuterXml)));
+
+        rewrapped.Headers.Location!.OriginalString.ShouldContain("error=provider_error");
+    }
+
+    [Fact]
+    public async Task A_response_with_only_its_assertion_signed_is_accepted()
+    {
+        await StartAsync();
+        using var browser = new Browser(_host);
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+
+        var response = await PostResponseAsync(browser, Convert.ToBase64String(Encoding.UTF8.GetBytes(AssertionSignedResponse(requestId, acs, spEntityId).OuterXml)));
+
+        response.Headers.Location!.OriginalString.ShouldBe("/done");
+    }
+
+    [Fact]
+    public async Task Transient_name_ids_are_refused()
+    {
+        await StartAsync();
+        using var browser = new Browser(_host);
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+
+        var response = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate, "urn:oasis:names:tc:SAML:2.0:nameid-format:transient"));
+
+        response.Headers.Location!.OriginalString.ShouldContain("error=provider_error");
+    }
+
+    [Fact]
+    public async Task A_return_url_with_control_characters_falls_back_to_the_root()
+    {
+        await StartAsync();
+        using var browser = new Browser(_host);
+        // Straight to the SAML endpoint: a slash, a tab and /evil.test would reach a browser as //evil.test.
+        var start = await browser.GetAsync(null!, "signin/saml/corp?returnUrl=%2F%09%2Fevil.test");
+        var query = System.Web.HttpUtility.ParseQueryString(start.Headers.Location!.Query);
+        var request = new Saml2AuthnRequest(new Saml2Configuration { Issuer = IdpEntityId });
+        new Saml2RedirectBinding().ReadSamlRequest(
+            new ITfoxtec.Identity.Saml2.Http.HttpRequest { Method = "GET", Query = query, QueryString = start.Headers.Location.Query, Form = new NameValueCollection() },
+            request);
+        var signedIn = await PostResponseAsync(browser, Response(request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer, null, _idpCertificate));
+
+        signedIn.Headers.Location!.OriginalString.ShouldBe("/");
+    }
+
+    [Fact]
     public async Task The_provider_gets_this_server_s_metadata()
     {
         await StartAsync();
@@ -130,6 +189,23 @@ public sealed class SamlTests : IAsyncDisposable
         logout.Headers.Location!.GetLeftPart(UriPartial.Path).ShouldBe("https://idp.test/slo");
         System.Web.HttpUtility.ParseQueryString(logout.Headers.Location.Query)["SAMLResponse"].ShouldNotBeNullOrEmpty();
         (await _host.RefreshAsync(tokens.RefreshToken)).Error.ShouldBe("invalid_grant");
+    }
+
+    [Fact]
+    public async Task A_logout_request_works_once_and_only_at_its_destination()
+    {
+        await StartAsync();
+        using var browser = new Browser(_host);
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+        await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+
+        var elsewhere = LogoutRequest("employee-4711", _idpCertificate, destination: new Uri("https://other-sp.test/slo"));
+        var misdirected = new Uri("signin/saml/corp/slo" + elsewhere.OriginalString[elsewhere.OriginalString.IndexOf('?', StringComparison.Ordinal)..], UriKind.Relative);
+        (await _host.Client.GetAsync(misdirected, TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        var logout = LogoutRequest("employee-4711", _idpCertificate);
+        (await _host.Client.GetAsync(logout, TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await _host.Client.GetAsync(logout, TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.BadRequest, "replayed");
     }
 
     [Fact]
@@ -214,7 +290,7 @@ public sealed class SamlTests : IAsyncDisposable
         return (request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer);
     }
 
-    private static string Response(string inResponseTo, Uri acs, string audience, string? authnContext, X509Certificate2 signer)
+    private static string Response(string inResponseTo, Uri acs, string audience, string? authnContext, X509Certificate2? signer, string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent")
     {
         var configuration = new Saml2Configuration { Issuer = IdpEntityId, SigningCertificate = signer };
         var response = new Saml2AuthnResponse(configuration)
@@ -222,7 +298,7 @@ public sealed class SamlTests : IAsyncDisposable
             InResponseTo = new Saml2Id(inResponseTo),
             Status = Saml2StatusCodes.Success,
             Destination = acs,
-            NameId = new Saml2NameIdentifier("employee-4711", new Uri("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent")),
+            NameId = new Saml2NameIdentifier("employee-4711", new Uri(nameIdFormat)),
             ClaimsIdentity = new ClaimsIdentity(
             [
                 new Claim(ClaimTypes.NameIdentifier, "employee-4711"),
@@ -238,13 +314,13 @@ public sealed class SamlTests : IAsyncDisposable
     }
 
     /// <summary>A LogoutRequest from the provider (HTTP-Redirect binding), signed by <paramref name="signer"/> if given.</summary>
-    private static Uri LogoutRequest(string nameId, X509Certificate2? signer)
+    private static Uri LogoutRequest(string nameId, X509Certificate2? signer, Uri? destination = null)
     {
         var configuration = new Saml2Configuration
         {
             Issuer = IdpEntityId,
             SigningCertificate = signer,
-            SingleLogoutDestination = new Uri("https://localhost/signin/saml/corp/slo"),
+            SingleLogoutDestination = destination ?? new Uri("https://localhost/signin/saml/corp/slo"),
         };
         var request = new Saml2LogoutRequest(configuration)
         {
@@ -253,6 +329,29 @@ public sealed class SamlTests : IAsyncDisposable
         var binding = new Saml2RedirectBinding();
         binding.Bind(request);
         return new Uri(binding.RedirectLocation.PathAndQuery.TrimStart('/'), UriKind.Relative);
+    }
+
+    /// <summary>A response whose assertion alone carries the provider's signature.</summary>
+    private System.Xml.XmlDocument AssertionSignedResponse(string inResponseTo, Uri acs, string audience)
+    {
+        var document = new System.Xml.XmlDocument { PreserveWhitespace = true };
+        document.LoadXml(Encoding.UTF8.GetString(Convert.FromBase64String(Response(inResponseTo, acs, audience, null, signer: null))));
+        var assertion = (System.Xml.XmlElement)document.GetElementsByTagName("Assertion", "urn:oasis:names:tc:SAML:2.0:assertion")[0]!;
+
+        var signed = new System.Security.Cryptography.Xml.SignedXml(document) { SigningKey = _idpCertificate.GetRSAPrivateKey() };
+        signed.SignedInfo!.CanonicalizationMethod = System.Security.Cryptography.Xml.SignedXml.XmlDsigExcC14NTransformUrl;
+        signed.SignedInfo.SignatureMethod = System.Security.Cryptography.Xml.SignedXml.XmlDsigRSASHA256Url;
+        var reference = new System.Security.Cryptography.Xml.Reference("#" + assertion.GetAttribute("ID")) { DigestMethod = System.Security.Cryptography.Xml.SignedXml.XmlDsigSHA256Url };
+        reference.AddTransform(new System.Security.Cryptography.Xml.XmlDsigEnvelopedSignatureTransform());
+        reference.AddTransform(new System.Security.Cryptography.Xml.XmlDsigExcC14NTransform());
+        signed.AddReference(reference);
+        signed.KeyInfo = new System.Security.Cryptography.Xml.KeyInfo();
+        signed.KeyInfo.AddClause(new System.Security.Cryptography.Xml.KeyInfoX509Data(_idpCertificate));
+        signed.ComputeSignature();
+
+        var issuer = assertion.GetElementsByTagName("Issuer", "urn:oasis:names:tc:SAML:2.0:assertion")[0]!;
+        assertion.InsertAfter(document.ImportNode(signed.GetXml(), deep: true), issuer);
+        return document;
     }
 
     private static Task<HttpResponseMessage> PostResponseAsync(Browser browser, string samlResponse) =>

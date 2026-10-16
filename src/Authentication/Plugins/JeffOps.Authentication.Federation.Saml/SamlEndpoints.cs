@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using ITfoxtec.Identity.Saml2;
+using ITfoxtec.Identity.Saml2.Claims;
 using ITfoxtec.Identity.Saml2.Schemas;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application;
@@ -69,7 +70,7 @@ public static partial class SamlEndpoints
 
         // The request id binds the response to this browser: the cookie must come back with an answer to this request.
         var expires = saml.Time.GetUtcNow() + settings.SignInTimeout;
-        var state = string.Create(CultureInfo.InvariantCulture, $"{request.IdAsString}|{LocalOrRoot(returnUrl)}|{expires.ToUnixTimeSeconds()}");
+        var state = string.Create(CultureInfo.InvariantCulture, $"{request.IdAsString}|{expires.ToUnixTimeSeconds()}|{LocalOrRoot(returnUrl)}");
         context.Response.Cookies.Append(CookieName(provider), saml.Protector.Protect(state), new CookieOptions
         {
             HttpOnly = true,
@@ -142,13 +143,25 @@ public static partial class SamlEndpoints
             return BackToLogin(returnUrl, "provider_error");
         }
 
-        if (!string.Equals(response.InResponseToAsString, requestId, StringComparison.Ordinal))
+        var acs = new Uri(Origin(context), $"{Prefix}/{provider}/acs");
+        var rejection = string.Equals(response.InResponseTo?.Value, requestId, StringComparison.Ordinal)
+            ? Rejection(response.Saml2SecurityToken?.Assertion, requestId, acs, saml.Options.Get(provider).IdpEntityId, saml.Time.GetUtcNow())
+            : "response does not answer this browser's request";
+        if (rejection is not null)
         {
-            LogRejected(logger, provider, "response does not answer this browser's request");
+            LogRejected(logger, provider, rejection);
             return BackToLogin(returnUrl, "provider_error");
         }
 
-        var claims = new ClaimsIdentity(response.ClaimsIdentity.Claims, "saml");
+        // The subject and authentication context come from the signed assertion; attributes may not pose as them.
+        var assertion = response.Saml2SecurityToken!.Assertion;
+        var claims = new ClaimsIdentity(response.ClaimsIdentity.Claims.Where(claim => !ReservedClaimTypes.Contains(claim.Type)), "saml");
+        claims.AddClaim(new Claim(Saml2ClaimTypes.NameId, assertion.Subject.NameId.Value));
+        if (assertion.Subject.NameId.Format is { } format)
+        {
+            claims.AddClaim(new Claim(Saml2ClaimTypes.NameIdFormat, format.OriginalString));
+        }
+
         if (AuthnContextOf(response) is { } authnContext)
         {
             claims.AddClaim(new Claim(SamlProviders.AuthnContextClaim, authnContext));
@@ -210,6 +223,10 @@ public static partial class SamlEndpoints
             }
 
             binding.Unbind(generic, request);
+            if (LogoutRejection(request, new Uri(Origin(context), $"{Prefix}/{provider}/slo"), saml) is { } reason)
+            {
+                throw new InvalidOperationException(reason);
+            }
         }
 #pragma warning disable CA1031 // Any failure to read or validate the request refuses it (fail closed).
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -243,9 +260,42 @@ public static partial class SamlEndpoints
             Status = Saml2StatusCodes.Success,
             Destination = settings.IdpSingleLogoutUrl,
         };
-        var reply = new Saml2RedirectBinding { RelayState = binding.RelayState };
+        // RelayState is covered by the signature only in the redirect binding; a posted one isn't passed on.
+        var reply = new Saml2RedirectBinding { RelayState = binding is Saml2RedirectBinding ? binding.RelayState : null };
         reply.Bind(response);
         return Results.Redirect(reply.RedirectLocation.OriginalString);
+    }
+
+    /// <summary>
+    /// Why a signed LogoutRequest is not for here and now, or null: it must name this endpoint (<c>Destination</c>), be recent
+    /// (<c>IssueInstant</c> within five minutes, <c>NotOnOrAfter</c> not passed), and not have been seen before.
+    /// </summary>
+    private static string? LogoutRejection(Saml2LogoutRequest request, Uri slo, SamlServices saml)
+    {
+        var root = request.XmlDocument?.DocumentElement;
+        var now = saml.Time.GetUtcNow();
+        var skew = TimeSpan.FromMinutes(5);
+        if (root is null || !string.Equals(root.GetAttribute("Destination"), slo.AbsoluteUri, StringComparison.Ordinal))
+        {
+            return "logout request for another endpoint";
+        }
+
+        if (!DateTimeOffset.TryParse(root.GetAttribute("IssueInstant"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var issued)
+            || issued > now + skew || issued < now - skew)
+        {
+            return "logout request too old or from the future";
+        }
+
+        if (root.GetAttribute("NotOnOrAfter") is { Length: > 0 } notOnOrAfter
+            && (!DateTimeOffset.TryParse(notOnOrAfter, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expires) || expires <= now))
+        {
+            return "logout request expired";
+        }
+
+        var id = root.GetAttribute("ID");
+        return string.IsNullOrEmpty(id) || !saml.ReplayCache.TryAdd("slo:" + id, (issued + skew + skew).UtcDateTime)
+            ? "logout request replayed"
+            : null;
     }
 
     private static async Task<ITfoxtec.Identity.Saml2.Http.HttpRequest> GenericRequestAsync(HttpContext context)
@@ -324,11 +374,11 @@ public static partial class SamlEndpoints
 
         try
         {
-            var parts = saml.Protector.Unprotect(value).Split('|');
-            if (parts.Length == 3 && long.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var expires)
+            var parts = saml.Protector.Unprotect(value).Split('|', 3);
+            if (parts.Length == 3 && long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var expires)
                 && DateTimeOffset.FromUnixTimeSeconds(expires) > saml.Time.GetUtcNow())
             {
-                return (parts[0], LocalOrRoot(parts[1]));
+                return (parts[0], LocalOrRoot(parts[2]));
             }
         }
         catch (CryptographicException)
@@ -337,6 +387,45 @@ public static partial class SamlEndpoints
         }
 
         return (null, "/");
+    }
+
+    private static readonly HashSet<string> ReservedClaimTypes =
+        [Saml2ClaimTypes.NameId, Saml2ClaimTypes.NameIdFormat, Saml2ClaimTypes.SessionIndex, ClaimTypes.NameIdentifier, SamlProviders.AuthnContextClaim];
+
+    private const string Bearer = "urn:oasis:names:tc:SAML:2.0:cm:bearer";
+    private const string Transient = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient";
+
+    /// <summary>
+    /// Why the signed assertion does not answer this browser's request, or null when it does. The Response element around it
+    /// may be unsigned (only the assertion is, by default, at ADFS and Entra), so the binding to the request is checked on
+    /// the assertion: its issuer, and a bearer confirmation naming this request (<c>InResponseTo</c>) and this endpoint
+    /// (<c>Recipient</c>) that has not expired. Transient NameIDs are refused: they can't identify anyone twice.
+    /// </summary>
+    private static string? Rejection(Saml2Assertion? assertion, string requestId, Uri acs, string? idpEntityId, DateTimeOffset now)
+    {
+        if (assertion?.Subject?.NameId is not { } nameId || string.IsNullOrEmpty(nameId.Value))
+        {
+            return "no subject";
+        }
+
+        if (!string.Equals(assertion.Issuer?.Value, idpEntityId, StringComparison.Ordinal))
+        {
+            return "assertion from another issuer";
+        }
+
+        if (string.Equals(nameId.Format?.OriginalString, Transient, StringComparison.Ordinal))
+        {
+            return "transient NameID";
+        }
+
+        var confirmed = assertion.Subject.SubjectConfirmations.Any(confirmation =>
+            string.Equals(confirmation.Method?.OriginalString, Bearer, StringComparison.Ordinal)
+            && confirmation.SubjectConfirmationData is { } data
+            && string.Equals(data.InResponseTo?.Value, requestId, StringComparison.Ordinal)
+            && string.Equals(data.Recipient?.AbsoluteUri, acs.AbsoluteUri, StringComparison.Ordinal)
+            && data.NotOnOrAfter is { } notOnOrAfter
+            && new DateTimeOffset(DateTime.SpecifyKind(notOnOrAfter, DateTimeKind.Utc)) > now);
+        return confirmed ? null : "no bearer confirmation for this request and endpoint";
     }
 
     private static string? AuthnContextOf(Saml2AuthnResponse response) =>
@@ -350,9 +439,7 @@ public static partial class SamlEndpoints
         Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={Uri.EscapeDataString(error)}");
 
     private static string LocalOrRoot(string? returnUrl) =>
-        !string.IsNullOrEmpty(returnUrl) && returnUrl.StartsWith('/') && !returnUrl.StartsWith("//", StringComparison.Ordinal) && !returnUrl.StartsWith("/\\", StringComparison.Ordinal)
-            ? returnUrl
-            : "/";
+        Abstractions.Http.LocalRedirect.OrRoot(returnUrl);
 
     [LoggerMessage(EventId = 8501, Level = LogLevel.Warning, Message = "Rejected a SAML response from {Provider}: {Reason}")]
     private static partial void LogRejected(ILogger logger, string provider, string reason);

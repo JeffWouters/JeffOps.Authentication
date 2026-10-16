@@ -227,9 +227,7 @@ internal static partial class BffEndpoints
     }
 
     internal static string LocalOrRoot(string? returnUrl) =>
-        !string.IsNullOrEmpty(returnUrl) && returnUrl.StartsWith('/') && !returnUrl.StartsWith("//", StringComparison.Ordinal) && !returnUrl.StartsWith("/\\", StringComparison.Ordinal)
-            ? returnUrl
-            : "/";
+        Abstractions.Http.LocalRedirect.OrRoot(returnUrl);
 
     private static string Append(string url, string name, string value) =>
         url + (url.Contains('?', StringComparison.Ordinal) ? '&' : '?') + name + "=" + Uri.EscapeDataString(value);

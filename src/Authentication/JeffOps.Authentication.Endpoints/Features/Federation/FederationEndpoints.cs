@@ -127,12 +127,7 @@ internal static class FederationEndpoints
 
     /// <summary>Only local paths: a return URL pointing elsewhere would make sign-in an open redirect.</summary>
     internal static string LocalOrRoot(string? returnUrl) =>
-        !string.IsNullOrEmpty(returnUrl)
-        && returnUrl.StartsWith('/')
-        && !returnUrl.StartsWith("//", StringComparison.Ordinal)
-        && !returnUrl.StartsWith("/\\", StringComparison.Ordinal)
-            ? returnUrl
-            : "/";
+        Abstractions.Http.LocalRedirect.OrRoot(returnUrl);
 
     private static IResult BackToLogin(string returnUrl, string error) =>
         Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={Uri.EscapeDataString(error)}");

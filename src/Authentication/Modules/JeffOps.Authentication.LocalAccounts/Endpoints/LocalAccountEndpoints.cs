@@ -344,9 +344,7 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         Results.Redirect($"{LoginPage}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={error}" + (string.IsNullOrEmpty(email) ? string.Empty : $"&email={Uri.EscapeDataString(email)}"));
 
     internal static string LocalOrRoot(string? returnUrl) =>
-        !string.IsNullOrEmpty(returnUrl) && returnUrl.StartsWith('/') && !returnUrl.StartsWith("//", StringComparison.Ordinal) && !returnUrl.StartsWith("/\\", StringComparison.Ordinal)
-            ? returnUrl
-            : "/";
+        Abstractions.Http.LocalRedirect.OrRoot(returnUrl);
 
     private static IResult Accepted(Result result) => result.IsSuccess ? TypedResults.Accepted((string?)null) : Problem(result.Error);
 

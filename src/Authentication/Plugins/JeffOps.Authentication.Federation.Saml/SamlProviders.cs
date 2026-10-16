@@ -41,14 +41,14 @@ internal sealed class SamlProviders(
         ArgumentNullException.ThrowIfNull(providerClaims);
         var settings = options.Get(provider);
 
-        var nameId = providerClaims.FindFirst(Saml2ClaimTypes.NameId)?.Value ?? providerClaims.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var nameId = providerClaims.FindFirst(Saml2ClaimTypes.NameId)?.Value;
         if (string.IsNullOrWhiteSpace(nameId) || string.IsNullOrWhiteSpace(settings.IdpEntityId))
         {
             return Error.Failure("provider_error", "The SAML assertion has no subject.");
         }
 
         var email = settings.EmailAttributes.Select(attribute => providerClaims.FindFirst(attribute)?.Value).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
-            ?? (nameId.Contains('@', StringComparison.Ordinal) ? nameId : null);
+            ?? (string.Equals(providerClaims.FindFirst(Saml2ClaimTypes.NameIdFormat)?.Value, "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress", StringComparison.Ordinal) ? nameId : null);
         var name = settings.NameAttributes.Select(attribute => providerClaims.FindFirst(attribute)?.Value).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         var context = providerClaims.FindFirst(AuthnContextClaim)?.Value;
         var strength = context is not null && settings.MultiFactorAuthnContexts.Contains(context, StringComparer.Ordinal)
