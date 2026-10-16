@@ -1,0 +1,296 @@
+# Getting started
+
+This guide takes you from nothing to a working setup: a token server that signs users in, an API that checks
+permissions, a single-page app behind a backend-for-frontend (BFF), and service-to-service calls. Each step is the
+smallest version that works; [DESIGN.md](DESIGN.md) has the full reference.
+
+> The packages are not on nuget.org yet. Until they are, build them yourself (`dotnet pack JeffOps.Authentication.slnx
+> -c Release -o ./local-feed`) or download the `packages` artifact of a CI run, and add the folder as a package source:
+> `dotnet nuget add source ./local-feed -n jeffops-local`.
+
+## What you are building
+
+```
+ Browser ──► BFF (cookie session) ──► your API ──► other services
+                 │                       │              ▲
+                 └──── sign-in ────► token server ◄─────┘ client credentials
+```
+
+| Part | Packages |
+|---|---|
+| Token server | `JeffOps.Authentication.Infrastructure`, `.Endpoints`, `.UI`, `.Persistence.SqlServer`; sign-in plugins (`.Federation.Entra`, `.Federation.Oidc`, `.Federation.Saml`) and modules (`.LocalAccounts`, `.Enterprise`, `.Delegation`, each with a `.SqlServer` package) as needed |
+| Your APIs | `JeffOps.Authentication.Client` (token validation), `JeffOps.Authorization.AspNetCore` (permissions) |
+| SPA backend | `JeffOps.Authentication.Bff`, `JeffOps.Authentication.Bff.Yarp` |
+| Every web app | `JeffOps.Security.AspNetCore` (security headers, forwarded headers, CORS) |
+| Your tests | `JeffOps.Authentication.Testing` |
+
+All of it targets .NET 10.
+
+## 1. The token server
+
+A host project (`Microsoft.NET.Sdk.Web`) with `JeffOps.Authentication.Infrastructure`, `.Endpoints`, `.UI`,
+`.Persistence.SqlServer` and, for Microsoft Entra ID sign-in, `.Federation.Entra`:
+
+```csharp
+using JeffOps.Authentication.Endpoints;
+using JeffOps.Authentication.Federation.Entra;
+using JeffOps.Authentication.Infrastructure.DependencyInjection;
+using JeffOps.Authentication.Persistence.SqlServer;
+using JeffOps.Authentication.UI;
+using JeffOps.Security.AspNetCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddJeffOpsSecurity(builder.Configuration);        // security headers, forwarded headers
+builder.Services.AddJeffOpsDataProtection(builder.Configuration);  // the key ring that protects signing keys at rest
+
+builder.Services.AddJeffOpsAuthentication(builder.Configuration)
+    .AddSqlServerPersistence(migrateOnStartup: builder.Environment.IsDevelopment())
+    .AddEntra();
+
+builder.Services.AddJeffOpsAuthenticationUI();                     // the login page
+
+// The sign-in session the authorize endpoint reads; the login UI and external providers sign users into it.
+builder.Services.AddAuthentication()
+    .AddCookie("JeffOps.SignIn", options =>
+    {
+        options.Cookie.Name = "__Host-jeffops-signin";
+        options.LoginPath = "/account/login";
+        options.ExpireTimeSpan = TimeSpan.FromHours(8);
+        options.SlidingExpiration = false;
+    });
+
+var app = builder.Build();
+
+app.UseJeffOpsSecurity();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseAntiforgery();
+app.MapStaticAssets();
+app.MapJeffOpsAuthentication();     // connect/authorize, connect/token, discovery, account APIs …
+app.MapJeffOpsAuthenticationUI();
+
+app.Run();
+```
+
+Configuration (`appsettings.json`; keep secrets in user secrets or a vault):
+
+```json
+{
+  "ConnectionStrings": {
+    "authentication": "Server=...;Database=JeffOpsAuthentication;..."
+  },
+  "JeffOps": {
+    "TokenServer": {
+      "Issuer": "https://login.example.com/",
+      "ApiScopes": { "api": [ "api" ] },
+      "Federation": {
+        "AllowedEmailDomains": [ "example.com" ],
+        "Providers": {
+          "entra": { "ClientId": "<app registration>", "ClientSecret": "<secret>", "Tenant": "organizations" }
+        }
+      },
+      "Clients": [
+        {
+          "ClientId": "bff",
+          "ClientSecret": "<at least 32 characters>",
+          "Kind": "Confidential",
+          "GrantTypes": [ "authorization_code", "refresh_token" ],
+          "RedirectUris": [ "https://app.example.com/bff/callback" ],
+          "PostLogoutRedirectUris": [ "https://app.example.com/" ],
+          "BackchannelLogoutUri": "https://app.example.com/bff/backchannel-logout",
+          "Scopes": [ "openid", "profile", "email", "offline_access", "api" ]
+        }
+      ]
+    }
+  }
+}
+```
+
+The reference host in [`hosts/TokenServer`](../hosts/TokenServer) is exactly this, ready to run against SQL Server
+LocalDB: `dotnet run --project hosts/TokenServer` starts it in Development on https://localhost:5001 and creates the database.
+
+**The database.** In Development, `migrateOnStartup: true` creates and updates the schema. In production, apply the
+migrations in your deployment pipeline, for example with `dotnet ef database update --project
+<the .SqlServer package's project>` or a script generated by `dotnet ef migrations script`.
+
+**Other ways to sign in**, each a line on the builder:
+
+| | |
+|---|---|
+| Any OpenID Connect provider | `.AddOidcProvider("google")`, configured under `JeffOps:TokenServer:Federation:Providers:google` |
+| SAML 2.0 | `.AddSamlProvider("corp")` under `JeffOps:TokenServer:Federation:Saml:corp`, and `app.MapJeffOpsSaml()` |
+| Local accounts (passwords, TOTP, passkeys) | `.AddLocalAccounts().AddSqlServerPersistence()` and `app.MapJeffOpsLocalAccounts()`; options under `JeffOps:LocalAccounts` |
+| Verified domains, per-tenant SSO, SCIM | `.AddEnterprise().AddSqlServerPersistence()`, `app.MapJeffOpsEnterprise()`, `app.MapJeffOpsScim()` |
+| Impersonation, lockbox, tenant switch | `.AddDelegation().AddSqlServerPersistence()` and `app.MapJeffOpsDelegation()` |
+
+**Signing keys** live in the database by default, protected by the Data Protection key ring and rotated automatically.
+Use `.AddKeyVaultSigning()` (package `JeffOps.Authentication.KeyVault`) to sign with Azure Key Vault instead, or
+`.UseCertificateSigning()` for certificates you manage.
+
+**Tenants.** The token server asks your application which tenants a user belongs to through `ITenantDirectory`
+(`JeffOps.Authentication.Abstractions.Tenancy`). Register your implementation before `AddJeffOpsAuthentication`.
+
+## 2. An API that checks permissions
+
+Packages `JeffOps.Authentication.Client` and `JeffOps.Authorization.AspNetCore`:
+
+```csharp
+using JeffOps.Authentication.Client.DependencyInjection;
+using JeffOps.Authorization.AspNetCore.DependencyInjection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddJeffOpsAuthenticationClient(builder.Configuration);    // validates the token server's access tokens
+builder.Services.AddJeffOpsPermissionAuthorization(builder.Configuration)  // decides permissions locally, cached
+    .AddPermissionRegistration("billing",
+    [
+        new("billing.invoices.read", "Read invoices", "billing"),
+        new("billing.invoices.write", "Write invoices", "billing"),
+    ]);
+
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapGet("/invoices", () => /* … */ Results.Ok())
+    .RequireAuthorization("billing.invoices.read");   // a permission is a policy name
+
+app.Run();
+```
+
+```json
+{
+  "JeffOps": {
+    "Authentication": {
+      "Authority": "https://login.example.com/",
+      "Audiences": [ "api" ]
+    },
+    "Authorization": {
+      "ManagementBaseAddress": "https://authorization.example.com/",
+      "SealingKey": "<shared secret for the decision cache>"
+    }
+  }
+}
+```
+
+Every endpoint requires an authenticated caller by default; opt out with `.AllowAnonymous()`. Inject
+`IAccessContextAccessor` (or `ICurrentUser`) to see who is calling and in which tenant. Roles, scopes and assignments
+are managed by the authorization management API (`JeffOps.Authorization.Infrastructure` and `.Endpoints`,
+`AddJeffOpsAuthorization(...)` and `MapJeffOpsAuthorization()`), usually in its own service.
+
+**DPoP.** Tokens bound to a client key are checked automatically. Set `JeffOps:Authentication:Dpop` to `Required` to
+accept only bound tokens. With several instances of an API, register a shared `IReplayCache` (for example on Redis) so
+each proof is accepted once across all of them.
+
+## 3. A single-page app behind a BFF
+
+The browser never sees a token: the BFF keeps the session server-side and forwards API calls with the access token.
+Packages `JeffOps.Authentication.Bff`, `JeffOps.Authentication.Bff.Yarp` and `JeffOps.Security.AspNetCore`; the
+complete sample is [`samples/Spa.Bff`](../samples/Spa.Bff).
+
+```csharp
+builder.Services.AddJeffOpsSecurity(builder.Configuration);
+builder.Services.AddJeffOpsBff(builder.Configuration);
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
+    .AddBffTransforms();
+
+var app = builder.Build();
+
+app.UseJeffOpsSecurity();
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.UseJeffOpsBff();      // CSRF header check, then session cookie → bearer token
+app.MapJeffOpsBff();      // /bff/login, /bff/callback, /bff/logout, /bff/me, /bff/backchannel-logout
+app.MapReverseProxy();    // /api/** → your API
+app.Run();
+```
+
+```json
+{
+  "JeffOps": {
+    "Bff": {
+      "Authority": "https://login.example.com/",
+      "ClientId": "bff",
+      "ClientSecret": "<the client's secret>",
+      "Scopes": [ "profile", "email", "api" ]
+    }
+  },
+  "ReverseProxy": {
+    "Routes": { "api": { "ClusterId": "api", "Match": { "Path": "/api/{**rest}" } } },
+    "Clusters": { "api": { "Destinations": { "api": { "Address": "https://api.example.com/" } } } }
+  }
+}
+```
+
+From the SPA: navigate to `/bff/login` to sign in, call `/bff/me` for the user, and send state-changing API requests
+with the header `X-JeffOps-Csrf: 1`. Signing out at the token server ends the BFF session through back-channel logout.
+
+## 4. Service-to-service calls
+
+A service gets its own token with client credentials and attaches it to an `HttpClient`:
+
+```csharp
+builder.Services.AddJeffOpsServiceTokens(builder.Configuration);
+builder.Services.AddHttpClient("billing", client => client.BaseAddress = new Uri("https://billing.example.com/"))
+    .AddServiceToken();
+```
+
+```json
+{
+  "JeffOps": {
+    "ServiceToken": {
+      "TokenEndpoint": "https://login.example.com/connect/token",
+      "ClientId": "reports",
+      "ClientSecret": "<the client's secret>",
+      "Scope": "api"
+    }
+  }
+}
+```
+
+Register the client on the token server with `"GrantTypes": [ "client_credentials" ]` and the permissions it holds
+(`"ServicePermissions"`).
+
+## 5. Testing your API
+
+`JeffOps.Authentication.Testing` issues real, signed tokens that follow the same claims contract, so your tests go
+through the real validation and permission checks:
+
+```csharp
+var issuer = new TestTokenIssuer(audience: "api");
+
+// In the test host, after AddJeffOpsAuthenticationClient, with JeffOps:Authentication:Authority set to issuer.Issuer:
+builder.Services.AddJeffOpsTestTokens(issuer);
+
+var token = issuer.Token(TestPrincipal.User().InTenant(tenantId).SteppedUp());
+client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+```
+
+## Before going to production
+
+- **Issuer and hosts.** Set `JeffOps:TokenServer:Issuer` to the public URL, `AllowedHosts`, and
+  `JeffOps:ForwardedHeaders` for your proxy: DPoP and the SAML endpoints compare URLs with the request's scheme and host.
+- **Data Protection.** Share and protect the key ring across instances (`JeffOps:DataProtection`); it protects the
+  signing keys, cookies and sign-in state.
+- **Secrets.** Client secrets of at least 32 characters, kept out of `appsettings.json`.
+- **Back-channel logout.** Give every client with server-side sessions a `BackchannelLogoutUri`, so signing out, disabling
+  an account or a password change ends its sessions at once.
+- **SCIM.** Creating SCIM tokens needs the `auth.enterprise.scim_tokens` policy: define it to require at least the right
+  to assign the roles your groups hold.
+- **SQL Server licence.** `Microsoft.Data.SqlClient` brings its native networking component
+  (`Microsoft.Data.SqlClient.SNI.runtime`, under Microsoft's licence terms) on Windows. To keep it out of your
+  application, add to the host project:
+
+  ```xml
+  <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime" ExcludeAssets="all" PrivateAssets="all" />
+  <RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
+  ```
+
+## Where next
+
+- [DESIGN.md](DESIGN.md): every option, the security baseline, the claims contract and the decisions behind them.
+- [`hosts/TokenServer`](../hosts/TokenServer) and [`samples/Spa.Bff`](../samples/Spa.Bff): runnable starting points.
+- [SECURITY.md](../SECURITY.md): reporting a vulnerability.

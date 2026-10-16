@@ -23,6 +23,11 @@ Reusable authentication and authorization libraries for multi-tenant .NET 10 app
 - **Clients:** JWT validation for resource services (with DPoP), service tokens, and a backend-for-frontend with YARP,
   including acting sessions for impersonation and tenant switch.
 
+## Getting started
+
+[docs/getting-started.md](docs/getting-started.md) walks through a token server, an API with permissions, a SPA behind the
+BFF and service-to-service calls, with the configuration for each.
+
 ## Design
 
 Everything is in [docs/DESIGN.md](docs/DESIGN.md): the goals, architecture, package map, security baseline, decisions and roadmap.
