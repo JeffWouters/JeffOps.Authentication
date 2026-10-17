@@ -66,6 +66,26 @@ public interface ITenantIdentityProviderRepository
     void Remove(TenantIdentityProvider provider);
 }
 
+public interface ITenantOidcProviderRepository
+{
+    Task<TenantOidcIdentityProvider?> FindAsync(Guid providerId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<TenantOidcIdentityProvider>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken);
+
+    void Add(TenantOidcIdentityProvider provider);
+
+    void Remove(TenantOidcIdentityProvider provider);
+}
+
+/// <summary>Encrypts the client secrets of tenants' OIDC providers at rest. The default uses Data Protection.</summary>
+public interface IClientSecretProtector
+{
+    string Protect(string secret);
+
+    /// <summary>The secret, or null when it can't be decrypted (for example, its key was removed from the key ring).</summary>
+    string? Unprotect(string protectedSecret);
+}
+
 public interface ISsoPolicyRepository
 {
     Task<SsoPolicy?> FindAsync(Guid tenantId, CancellationToken cancellationToken);
@@ -102,9 +122,40 @@ public static class EnterpriseErrors
     public const string TooManyProviders = "too_many_providers";
 }
 
-/// <summary>Tenants' own SAML providers, for the SAML plugin; only while an operator allows the tenant to have them.</summary>
-public sealed class EnterpriseTenantProviders(ITenantIdentityProviderRepository providers, ISsoPolicyRepository policies) : ITenantProviderDirectory
+/// <summary>Tenants' own providers, for the SAML and OIDC plugins; only while an operator allows the tenant to have them.</summary>
+public sealed class EnterpriseTenantProviders(
+    ITenantIdentityProviderRepository providers,
+    ITenantOidcProviderRepository oidcProviders,
+    ISsoPolicyRepository policies,
+    IClientSecretProtector secrets) : ITenantProviderDirectory
 {
+    public async Task<TenantOidcProvider?> FindOidcAsync(string name, CancellationToken cancellationToken)
+    {
+        if (TenantOidcIdentityProvider.IdOf(name) is not { } id
+            || await oidcProviders.FindAsync(id, cancellationToken).ConfigureAwait(false) is not { } provider
+            || await policies.FindAsync(provider.TenantId, cancellationToken).ConfigureAwait(false) is not { CustomProvidersAllowed: true })
+        {
+            return null;
+        }
+
+        string? secret = null;
+        if (provider.ProtectedClientSecret is { } protectedSecret && (secret = secrets.Unprotect(protectedSecret)) is null)
+        {
+            // A secret that can't be decrypted can't sign anyone in; the administrator has to enter it again.
+            return null;
+        }
+
+        return new TenantOidcProvider(
+            provider.Name,
+            provider.TenantId,
+            provider.DisplayName,
+            new Uri(provider.Issuer),
+            provider.ClientId,
+            secret,
+            provider.ScopeList,
+            provider.MultiFactorAcrValueList);
+    }
+
     public async Task<TenantSamlProvider?> FindSamlAsync(string name, CancellationToken cancellationToken)
     {
         if (TenantIdentityProvider.IdOf(name) is not { } id

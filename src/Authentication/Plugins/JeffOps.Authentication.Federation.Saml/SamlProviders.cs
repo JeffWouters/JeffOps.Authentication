@@ -118,7 +118,7 @@ internal sealed class SamlProviders(
 
     private bool IsConfigured(string provider) => registrations.Any(registration => string.Equals(registration.Name, provider, StringComparison.Ordinal));
 
-    private static bool IsTenantName(string provider) => TenantProviderNames.IsTenantProvider(provider);
+    private static bool IsTenantName(string provider) => TenantProviderNames.IsSaml(provider);
 
     public string ChallengePath(string provider, string returnUrl, string? loginHint) =>
         $"/{SamlEndpoints.Prefix}/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(returnUrl)}"

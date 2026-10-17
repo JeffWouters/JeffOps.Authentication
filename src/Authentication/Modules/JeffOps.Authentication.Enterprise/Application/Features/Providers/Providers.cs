@@ -82,7 +82,7 @@ internal static class TenantProviderRules
         return failures.Count == 0 ? null : Error.Validation(failures);
     }
 
-    private static bool IsHttpsHost(string url) =>
+    internal static bool IsHttpsHost(string url) =>
         Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
         && uri.HostNameType == UriHostNameType.Dns && !IPAddress.TryParse(uri.Host, out _) && uri.Host.Contains('.', StringComparison.Ordinal);
 
@@ -119,6 +119,7 @@ public sealed record SaveTenantProviderCommand(EnterpriseCaller Caller, Guid? Pr
 
 public sealed class SaveTenantProviderHandler(
     ITenantIdentityProviderRepository providers,
+    ITenantOidcProviderRepository oidcProviders,
     ISsoPolicyRepository policies,
     IEnterpriseUnitOfWork unitOfWork,
     IAuditSink audit,
@@ -152,7 +153,9 @@ public sealed class SaveTenantProviderHandler(
         }
         else
         {
-            if ((await providers.ListForTenantAsync(tenantId, cancellationToken).ConfigureAwait(false)).Count >= options.Value.MaxProvidersPerTenant)
+            var count = (await providers.ListForTenantAsync(tenantId, cancellationToken).ConfigureAwait(false)).Count
+                + (await oidcProviders.ListForTenantAsync(tenantId, cancellationToken).ConfigureAwait(false)).Count;
+            if (count >= options.Value.MaxProvidersPerTenant)
             {
                 return Error.Failure(EnterpriseErrors.TooManyProviders, $"A tenant can have at most {options.Value.MaxProvidersPerTenant} providers.");
             }

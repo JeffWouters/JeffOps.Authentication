@@ -14,6 +14,7 @@ using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Enterprise.Endpoints;
 using JeffOps.Authentication.Enterprise.Infrastructure;
+using JeffOps.Authentication.Federation;
 using JeffOps.Authentication.Federation.Saml;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.Extensions.DependencyInjection;

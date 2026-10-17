@@ -12,6 +12,8 @@ using JeffOps.Authentication.Enterprise.Application.Features.Sso;
 using JeffOps.Authentication.Enterprise.Domain;
 using JeffOps.Authentication.SharedKernel.DependencyInjection;
 using JeffOps.Authentication.SharedKernel.Domain;
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -31,6 +33,8 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
     public DbSet<SsoPolicy> SsoPolicies => Set<SsoPolicy>();
 
     public DbSet<TenantIdentityProvider> IdentityProviders => Set<TenantIdentityProvider>();
+
+    public DbSet<TenantOidcIdentityProvider> OidcProviders => Set<TenantOidcIdentityProvider>();
 
     public DbSet<ScimToken> ScimTokens => Set<ScimToken>();
 
@@ -70,6 +74,21 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             provider.Ignore(entity => entity.Name);
             provider.Ignore(entity => entity.CertificateList);
             provider.Ignore(entity => entity.MultiFactorAuthnContextList);
+        });
+
+        modelBuilder.Entity<TenantOidcIdentityProvider>(provider =>
+        {
+            provider.ToTable("TenantOidcProviders");
+            provider.HasKey(entity => entity.Id);
+            provider.Property(entity => entity.Id).ValueGeneratedNever();
+            provider.Property(entity => entity.DisplayName).HasMaxLength(100).IsRequired();
+            provider.Property(entity => entity.Issuer).HasMaxLength(512).IsRequired();
+            provider.Property(entity => entity.ClientId).HasMaxLength(256).IsRequired();
+            provider.Property(entity => entity.Scopes).HasMaxLength(1024).IsRequired();
+            provider.HasIndex(entity => entity.TenantId);
+            provider.Ignore(entity => entity.Name);
+            provider.Ignore(entity => entity.ScopeList);
+            provider.Ignore(entity => entity.MultiFactorAcrValueList);
         });
 
         modelBuilder.Entity<SsoPolicy>(policy =>
@@ -157,6 +176,39 @@ internal sealed class TenantIdentityProviderRepository(EnterpriseDbContext db) :
     public void Add(TenantIdentityProvider provider) => db.IdentityProviders.Add(provider);
 
     public void Remove(TenantIdentityProvider provider) => db.IdentityProviders.Remove(provider);
+}
+
+internal sealed class TenantOidcProviderRepository(EnterpriseDbContext db) : ITenantOidcProviderRepository
+{
+    public Task<TenantOidcIdentityProvider?> FindAsync(Guid providerId, CancellationToken cancellationToken) =>
+        db.OidcProviders.FirstOrDefaultAsync(provider => provider.Id == providerId, cancellationToken);
+
+    public async Task<IReadOnlyList<TenantOidcIdentityProvider>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken) =>
+        await db.OidcProviders.Where(provider => provider.TenantId == tenantId).OrderBy(provider => provider.DisplayName).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public void Add(TenantOidcIdentityProvider provider) => db.OidcProviders.Add(provider);
+
+    public void Remove(TenantOidcIdentityProvider provider) => db.OidcProviders.Remove(provider);
+}
+
+/// <summary>Client secrets encrypted with the Data Protection key ring the token server already shares between instances.</summary>
+internal sealed class DataProtectionClientSecrets(IDataProtectionProvider dataProtection) : IClientSecretProtector
+{
+    private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.Enterprise.TenantOidcClientSecret.v1");
+
+    public string Protect(string secret) => _protector.Protect(secret);
+
+    public string? Unprotect(string protectedSecret)
+    {
+        try
+        {
+            return _protector.Unprotect(protectedSecret);
+        }
+        catch (CryptographicException)
+        {
+            return null;
+        }
+    }
 }
 
 internal sealed class SsoPolicyRepository(EnterpriseDbContext db) : ISsoPolicyRepository
@@ -339,6 +391,9 @@ public static class EnterpriseServiceCollectionExtensions
         services.TryAddScoped<ITenantDomainRepository, TenantDomainRepository>();
         services.TryAddScoped<ISsoPolicyRepository, SsoPolicyRepository>();
         services.TryAddScoped<ITenantIdentityProviderRepository, TenantIdentityProviderRepository>();
+        services.TryAddScoped<ITenantOidcProviderRepository, TenantOidcProviderRepository>();
+        services.AddDataProtection();
+        services.TryAddSingleton<IClientSecretProtector, DataProtectionClientSecrets>();
         services.TryAddScoped<IEnterpriseUnitOfWork, EnterpriseUnitOfWork>();
         services.TryAddScoped<IDnsTxtResolver, DnsOverHttpsResolver>();
         services.AddHttpClient(DnsOverHttpsResolver.HttpClientName);
@@ -365,6 +420,9 @@ public static class EnterpriseServiceCollectionExtensions
             .AddHandler<SaveTenantProviderHandler>()
             .AddHandler<DeleteTenantProviderHandler>()
             .AddHandler<SetCustomProvidersAllowedHandler>()
+            .AddHandler<ListTenantOidcProvidersHandler>()
+            .AddHandler<SaveTenantOidcProviderHandler>()
+            .AddHandler<DeleteTenantOidcProviderHandler>()
             .AddHandler<CreateScimTokenHandler>()
             .AddHandler<ListScimTokensHandler>()
             .AddHandler<RevokeScimTokenHandler>()

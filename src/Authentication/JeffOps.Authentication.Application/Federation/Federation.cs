@@ -80,23 +80,59 @@ public interface ITenantProviderDirectory
 {
     /// <summary>The tenant SAML provider named <paramref name="name"/>, or null (unknown, or its tenant may no longer use it).</summary>
     Task<TenantSamlProvider?> FindSamlAsync(string name, CancellationToken cancellationToken);
+
+    /// <summary>The tenant OpenID Connect provider named <paramref name="name"/>, or null (unknown, or its tenant may no longer use it).</summary>
+    Task<TenantOidcProvider?> FindOidcAsync(string name, CancellationToken cancellationToken);
+}
+
+/// <summary>An OpenID Connect provider a tenant registered for its own people (docs/DESIGN.md §8.4).</summary>
+/// <param name="Name">Its name in sign-in URLs (<c>tenant-oidc-{id}</c>).</param>
+/// <param name="TenantId">The tenant it signs people in for: only addresses in that tenant's verified domains.</param>
+/// <param name="DisplayName">What the tenant calls it.</param>
+/// <param name="Issuer">The provider's issuer (HTTPS); its discovery document is read from there.</param>
+/// <param name="ClientId">This server's client id at the provider.</param>
+/// <param name="ClientSecret">This server's client secret at the provider, if it issued one (decrypted).</param>
+/// <param name="Scopes">Scopes to request besides <c>openid</c>.</param>
+/// <param name="MultiFactorAcrValues">Authentication context (<c>acr</c>) values that count as multi-factor.</param>
+public sealed record TenantOidcProvider(
+    string Name,
+    Guid TenantId,
+    string DisplayName,
+    Uri Issuer,
+    string ClientId,
+    string? ClientSecret,
+    IReadOnlyList<string> Scopes,
+    IReadOnlyList<string> MultiFactorAcrValues)
+{
+    /// <summary>Leaves the client secret out, so it never reaches a log.</summary>
+    public override string ToString() => $"TenantOidcProvider {{ Name = {Name}, TenantId = {TenantId}, Issuer = {Issuer}, ClientId = {ClientId} }}";
 }
 
 /// <summary>
-/// Names of providers tenants registered: <c>tenant-{32 hex}</c>. They never appear on the login page; only home realm
-/// discovery of the tenant's verified domains sends people to them.
+/// Names of providers tenants registered: <c>tenant-{32 hex}</c> (SAML) and <c>tenant-oidc-{32 hex}</c> (OpenID Connect).
+/// They never appear on the login page; only home realm discovery of the tenant's verified domains sends people to them.
 /// </summary>
 public static class TenantProviderNames
 {
     public const string Prefix = "tenant-";
 
-    public static bool IsTenantProvider(string? provider) =>
-        provider is not null && provider.StartsWith(Prefix, StringComparison.Ordinal) && Guid.TryParseExact(provider[Prefix.Length..], "N", out _);
+    public const string OidcPrefix = "tenant-oidc-";
+
+    public static bool IsTenantProvider(string? provider) => IsSaml(provider) || IsOidc(provider);
+
+    public static bool IsSaml(string? provider) => IdOf(provider, Prefix) is not null;
+
+    public static bool IsOidc(string? provider) => IdOf(provider, OidcPrefix) is not null;
+
+    private static Guid? IdOf(string? provider, string prefix) =>
+        provider is not null && provider.StartsWith(prefix, StringComparison.Ordinal) && Guid.TryParseExact(provider[prefix.Length..], "N", out var id) ? id : null;
 }
 
 public sealed class NoTenantProviders : ITenantProviderDirectory
 {
     public Task<TenantSamlProvider?> FindSamlAsync(string name, CancellationToken cancellationToken) => Task.FromResult<TenantSamlProvider?>(null);
+
+    public Task<TenantOidcProvider?> FindOidcAsync(string name, CancellationToken cancellationToken) => Task.FromResult<TenantOidcProvider?>(null);
 }
 
 /// <summary>

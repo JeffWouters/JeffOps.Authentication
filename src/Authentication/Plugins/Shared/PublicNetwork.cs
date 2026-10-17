@@ -1,12 +1,13 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace JeffOps.Authentication.Federation.Saml;
+namespace JeffOps.Authentication.Federation;
 
 /// <summary>
 /// Outbound connections to addresses tenants supply (their providers' metadata URLs): only to public addresses. The check
 /// runs on every connection, after DNS resolution, so a host name that resolves (or later re-resolves) to a private,
-/// loopback or link-local address can't make this server reach its own network (SSRF).
+/// loopback or link-local address can't make this server reach its own network (SSRF). Shared source: compiled into each
+/// federation plug-in that fetches from tenant-supplied URLs.
 /// </summary>
 internal static class PublicNetwork
 {
@@ -17,6 +18,35 @@ internal static class PublicNetwork
         ConnectTimeout = TimeSpan.FromSeconds(10),
         ConnectCallback = ConnectAsync,
     };
+
+    /// <summary>The body as text, refusing (<see cref="InvalidOperationException"/>) anything larger than <paramref name="maxBytes"/>.</summary>
+    public static async Task<string> ReadLimitedAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        if (response.Content.Headers.ContentLength > maxBytes)
+        {
+            throw new InvalidOperationException("The response is too large.");
+        }
+
+        var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            using var buffer = new MemoryStream();
+            var chunk = new byte[16 * 1024];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                if (buffer.Length + read > maxBytes)
+                {
+                    throw new InvalidOperationException("The response is too large.");
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+        }
+    }
 
     public static bool IsPublic(IPAddress address)
     {

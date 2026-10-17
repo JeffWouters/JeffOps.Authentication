@@ -34,6 +34,8 @@ public static class EnterpriseEndpointRouteBuilderExtensions
 
     public const string ProviderRoutes = "enterprise/providers";
 
+    public const string OidcProviderRoutes = "enterprise/oidc-providers";
+
     public const string OperatorProviderRoute = "enterprise/admin/tenants/{tenantId:guid}/custom-providers";
 
     /// <summary>
@@ -65,11 +67,19 @@ public static class EnterpriseEndpointRouteBuilderExtensions
 
         root.MapGet(SsoRoute, async (HttpContext context, IQueryHandler<GetSsoPolicyQuery, SsoPolicyDto> handler) =>
             ToResult(await handler.HandleAsync(new GetSsoPolicyQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
-        root.MapPut(SsoRoute, async (SetSsoPolicyRequest request, HttpContext context, IEnumerable<IExternalIdentityMapper> mappers, ITenantIdentityProviderRepository own, ICommandHandler<SetSsoPolicyCommand, SsoPolicyDto> handler) =>
+        root.MapPut(SsoRoute, async (
+            SetSsoPolicyRequest request,
+            HttpContext context,
+            IEnumerable<IExternalIdentityMapper> mappers,
+            ITenantIdentityProviderRepository own,
+            ITenantOidcProviderRepository ownOidc,
+            ICommandHandler<SetSsoPolicyCommand, SsoPolicyDto> handler) =>
         {
             // The server's providers, and this tenant's own (never another tenant's).
+            var tenantId = Caller(context).TenantId;
             var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name)
-                .Concat((await own.ListForTenantAsync(Caller(context).TenantId, context.RequestAborted).ConfigureAwait(false)).Select(provider => provider.Name))
+                .Concat((await own.ListForTenantAsync(tenantId, context.RequestAborted).ConfigureAwait(false)).Select(provider => provider.Name))
+                .Concat((await ownOidc.ListForTenantAsync(tenantId, context.RequestAborted).ConfigureAwait(false)).Select(provider => provider.Name))
                 .ToList();
             return ToResult(await handler.HandleAsync(new SetSsoPolicyCommand(Caller(context), request.Provider, request.SsoOnly, known), context.RequestAborted).ConfigureAwait(false));
         }).AddEndpointFilter<StepUpFilter>();
@@ -116,6 +126,20 @@ public static class EnterpriseEndpointRouteBuilderExtensions
         root.MapDelete(ProviderRoutes + "/{providerId:guid}", async (Guid providerId, HttpContext context, ICommandHandler<DeleteTenantProviderCommand> handler) =>
         {
             var result = await handler.HandleAsync(new DeleteTenantProviderCommand(Caller(context), providerId), context.RequestAborted).ConfigureAwait(false);
+            return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
+        }).AddEndpointFilter<StepUpFilter>();
+
+        root.MapGet(OidcProviderRoutes, async (HttpContext context, IQueryHandler<ListTenantOidcProvidersQuery, IReadOnlyList<TenantOidcProviderDto>> handler) =>
+            ToResult(await handler.HandleAsync(new ListTenantOidcProvidersQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
+        root.MapPost(OidcProviderRoutes, async (TenantOidcProviderData request, HttpContext context, ICommandHandler<SaveTenantOidcProviderCommand, TenantOidcProviderDto> handler) =>
+            ToResult(await handler.HandleAsync(new SaveTenantOidcProviderCommand(Caller(context), null, request), context.RequestAborted).ConfigureAwait(false)))
+            .AddEndpointFilter<StepUpFilter>();
+        root.MapPut(OidcProviderRoutes + "/{providerId:guid}", async (Guid providerId, TenantOidcProviderData request, HttpContext context, ICommandHandler<SaveTenantOidcProviderCommand, TenantOidcProviderDto> handler) =>
+            ToResult(await handler.HandleAsync(new SaveTenantOidcProviderCommand(Caller(context), providerId, request), context.RequestAborted).ConfigureAwait(false)))
+            .AddEndpointFilter<StepUpFilter>();
+        root.MapDelete(OidcProviderRoutes + "/{providerId:guid}", async (Guid providerId, HttpContext context, ICommandHandler<DeleteTenantOidcProviderCommand> handler) =>
+        {
+            var result = await handler.HandleAsync(new DeleteTenantOidcProviderCommand(Caller(context), providerId), context.RequestAborted).ConfigureAwait(false);
             return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
         }).AddEndpointFilter<StepUpFilter>();
 

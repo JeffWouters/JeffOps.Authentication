@@ -12,6 +12,11 @@
     <PackageReference Include="OpenIddict.Client.AspNetCore" />
     <PackageReference Include="OpenIddict.Client.SystemNetHttp" />
     <PackageReference Include="OpenIddict.Client.DataProtection" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\PublicNetwork.cs" Link="Shared\PublicNetwork.cs" />
   </ItemGroup>
 
   <ItemGroup>

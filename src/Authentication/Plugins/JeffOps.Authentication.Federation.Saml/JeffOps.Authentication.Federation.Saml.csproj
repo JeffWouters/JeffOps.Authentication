@@ -13,6 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\Shared\PublicNetwork.cs" Link="Shared\PublicNetwork.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
   </ItemGroup>
 
