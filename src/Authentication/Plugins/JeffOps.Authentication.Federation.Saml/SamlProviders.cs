@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Security.Cryptography.X509Certificates;
 using ITfoxtec.Identity.Saml2;
@@ -8,6 +9,7 @@ using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Domain.Accounts;
 using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.SharedKernel.Results;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
@@ -23,15 +25,100 @@ public sealed record SamlProviderRegistration(string Name);
 internal sealed class SamlProviders(
     IEnumerable<SamlProviderRegistration> registrations,
     IOptionsMonitor<SamlProviderOptions> options,
-    SamlMetadata metadata) : IExternalIdentityMapper, IExternalProviderChallenge
+    IOptions<SamlTenantProviderOptions> tenantDefaults,
+    SamlMetadata metadata,
+    SamlMetadataClient metadataClient,
+    IServiceScopeFactory scopes,
+    TimeProvider time) : IExternalIdentityMapper, IExternalProviderChallenge
 {
+    private static readonly TimeSpan TenantSettingsLifetime = TimeSpan.FromMinutes(1);
+
+    private readonly ConcurrentDictionary<string, (SamlProviderOptions Settings, DateTimeOffset LoadedAt)> _tenants = new(StringComparer.Ordinal);
+    private readonly Lazy<(X509Certificate2? Signing, X509Certificate2? Decryption)> _tenantCertificates = new(() =>
+        (LoadPfx(tenantDefaults.Value.SigningCertificatePfx, tenantDefaults.Value.SigningCertificatePassword),
+         LoadPfx(tenantDefaults.Value.DecryptionCertificatePfx, tenantDefaults.Value.DecryptionCertificatePassword)));
+
     /// <summary>The claim the ACS endpoint adds with the authentication context class reference.</summary>
     public const string AuthnContextClaim = "jeffops:saml:authn_context";
 
     public IReadOnlyCollection<ExternalProviderInfo> Providers =>
         [.. registrations.Select(registration => new ExternalProviderInfo(registration.Name, options.Get(registration.Name).DisplayName ?? registration.Name))];
 
-    public bool Handles(string provider) => registrations.Any(registration => string.Equals(registration.Name, provider, StringComparison.Ordinal));
+    public bool Handles(string provider) => IsConfigured(provider) || IsTenantName(provider);
+
+    /// <summary>
+    /// Makes <paramref name="provider"/>'s settings available to <see cref="Settings"/>: configured providers always are; a
+    /// provider a tenant registered is read from its directory (at most a minute old), with its metadata. False when there is
+    /// no such provider, or its tenant may no longer use it.
+    /// </summary>
+    public async Task<bool> PrepareAsync(string provider, CancellationToken cancellationToken)
+    {
+        if (IsConfigured(provider))
+        {
+            return true;
+        }
+
+        if (!IsTenantName(provider))
+        {
+            return false;
+        }
+
+        if (_tenants.TryGetValue(provider, out var cached) && time.GetUtcNow() - cached.LoadedAt < TenantSettingsLifetime)
+        {
+            return true;
+        }
+
+        TenantSamlProvider? found;
+        await using (var scope = scopes.CreateAsyncScope())
+        {
+            found = await scope.ServiceProvider.GetRequiredService<ITenantProviderDirectory>().FindSamlAsync(provider, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (found is null)
+        {
+            _tenants.TryRemove(provider, out _);
+            return false;
+        }
+
+        var settings = new SamlProviderOptions
+        {
+            DisplayName = found.DisplayName,
+            IdpEntityId = found.IdpEntityId,
+            IdpMetadataUrl = found.MetadataUrl,
+            IdpSingleSignOnUrl = found.SingleSignOnUrl,
+            IdpSingleLogoutUrl = found.SingleLogoutUrl,
+            OwnerTenantId = found.TenantId,
+            LoginIssuer = "urn:jeffops:tenant-provider:" + provider[TenantProviderNames.Prefix.Length..],
+
+            // The tenant owns the domain the address is in (checked at every sign-in), so its provider vouches for it.
+            EmailVerified = true,
+            SigningCertificate = _tenantCertificates.Value.Signing,
+            DecryptionCertificate = _tenantCertificates.Value.Decryption,
+        };
+        foreach (var certificate in found.SigningCertificates)
+        {
+            settings.IdpSigningCertificates.Add(certificate);
+        }
+
+        foreach (var context in found.MultiFactorAuthnContexts)
+        {
+            settings.MultiFactorAuthnContexts.Add(context);
+        }
+
+        await metadataClient.EnsureAsync(provider, settings, cancellationToken).ConfigureAwait(false);
+        _tenants[provider] = (settings, time.GetUtcNow());
+        return true;
+    }
+
+    /// <summary>The settings of a provider (after <see cref="PrepareAsync"/> for one a tenant registered).</summary>
+    public SamlProviderOptions Settings(string provider) =>
+        IsTenantName(provider)
+            ? _tenants.TryGetValue(provider, out var cached) ? cached.Settings : new SamlProviderOptions()
+            : options.Get(provider);
+
+    private bool IsConfigured(string provider) => registrations.Any(registration => string.Equals(registration.Name, provider, StringComparison.Ordinal));
+
+    private static bool IsTenantName(string provider) => TenantProviderNames.IsTenantProvider(provider);
 
     public string ChallengePath(string provider, string returnUrl, string? loginHint) =>
         $"/{SamlEndpoints.Prefix}/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(returnUrl)}"
@@ -40,7 +127,7 @@ internal sealed class SamlProviders(
     public Result<ExternalIdentity> Map(string provider, ClaimsPrincipal providerClaims)
     {
         ArgumentNullException.ThrowIfNull(providerClaims);
-        var settings = options.Get(provider);
+        var settings = Settings(provider);
 
         var nameId = providerClaims.FindFirst(Saml2ClaimTypes.NameId)?.Value;
         if (string.IsNullOrWhiteSpace(nameId) || string.IsNullOrWhiteSpace(settings.IdpEntityId))
@@ -56,13 +143,13 @@ internal sealed class SamlProviders(
             ? new AuthenticationStrength(["pwd", "mfa"])
             : AuthenticationStrength.Password;
 
-        return new ExternalIdentity(provider, new ExternalLoginKey(settings.IdpEntityId, nameId), email, settings.EmailVerified && email is not null, name, strength);
+        return new ExternalIdentity(provider, new ExternalLoginKey(settings.LoginIssuer ?? settings.IdpEntityId, nameId), email, settings.EmailVerified && email is not null, name, strength);
     }
 
     /// <summary>The ITfoxtec configuration of a provider, with this server as the relying party.</summary>
     public Saml2Configuration Configuration(string provider, string serviceProviderEntityId, ITokenReplayCache replayCache)
     {
-        var settings = options.Get(provider);
+        var settings = Settings(provider);
         var configuration = new Saml2Configuration
         {
             Issuer = serviceProviderEntityId,
@@ -102,20 +189,20 @@ internal sealed class SamlProviders(
     }
 
     /// <summary>The provider's single logout URL: configured, or from its metadata; null when it has none.</summary>
-    public Uri? SingleLogoutUrl(string provider) => options.Get(provider).IdpSingleLogoutUrl ?? metadata.For(provider)?.SingleLogoutUrl;
+    public Uri? SingleLogoutUrl(string provider) => Settings(provider).IdpSingleLogoutUrl ?? metadata.For(provider)?.SingleLogoutUrl;
 
     /// <summary>This server's signing certificate for <paramref name="provider"/>, or null when requests go unsigned.</summary>
     public X509Certificate2? SigningCertificate(string provider)
     {
         // Loaded once per provider: the options instance is cached by the options monitor.
-        var settings = options.Get(provider);
+        var settings = Settings(provider);
         return settings.SigningCertificate ??= LoadPfx(settings.SigningCertificatePfx, settings.SigningCertificatePassword);
     }
 
     /// <summary>This server's decryption certificate for <paramref name="provider"/>, or null when assertions aren't encrypted.</summary>
     public X509Certificate2? DecryptionCertificate(string provider)
     {
-        var settings = options.Get(provider);
+        var settings = Settings(provider);
         return settings.DecryptionCertificate ??= LoadPfx(settings.DecryptionCertificatePfx, settings.DecryptionCertificatePassword);
     }
 
@@ -123,7 +210,7 @@ internal sealed class SamlProviders(
         string.IsNullOrWhiteSpace(pfx) ? null : X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(pfx), password, X509KeyStorageFlags.EphemeralKeySet);
 
     public string ServiceProviderEntityId(string provider, IOptions<TokenServerOptions> tokenServer, Uri requestOrigin) =>
-        options.Get(provider).ServiceProviderEntityId
+        Settings(provider).ServiceProviderEntityId
         ?? new Uri(tokenServer.Value.Issuer ?? requestOrigin, $"{SamlEndpoints.Prefix}/{provider}").AbsoluteUri;
 
     private static X509Certificate2 Load(string encoded)

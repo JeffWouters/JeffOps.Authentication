@@ -124,7 +124,17 @@ internal sealed class TokenServerHost : IAsyncDisposable
         }
         if (cookieSignIn)
         {
-            builder.Services.AddAuthentication().AddCookie("JeffOps.SignIn", options => options.LoginPath = "/account/login");
+            // A browser's sign-in cookie, as hosts run it; requests carrying the test header still sign in by header, so a test
+            // can mix browsers with tokens for administrators.
+            builder.Services.AddAuthentication()
+                .AddCookie("JeffOps.SignIn.Cookie", options => options.LoginPath = "/account/login")
+                .AddScheme<AuthenticationSchemeOptions, HeaderSignIn>("JeffOps.SignIn.Header", _ => { })
+                .AddPolicyScheme("JeffOps.SignIn", "JeffOps sign-in", options =>
+                {
+                    options.ForwardDefaultSelector = context => context.Request.Headers.ContainsKey(HeaderSignIn.Header) ? "JeffOps.SignIn.Header" : "JeffOps.SignIn.Cookie";
+                    options.ForwardSignIn = "JeffOps.SignIn.Cookie";
+                    options.ForwardSignOut = "JeffOps.SignIn.Cookie";
+                });
         }
         else
         {
@@ -215,6 +225,12 @@ internal sealed class TokenServerHost : IAsyncDisposable
         scope.ServiceProvider.GetRequiredService<IAccountRepository>().Add(account);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync(TestContext.Current.CancellationToken);
         return account;
+    }
+
+    public async Task<Account?> FindAccountAsync(string email)
+    {
+        await using var scope = Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<IAccountRepository>().FindByEmailAsync(email, TestContext.Current.CancellationToken);
     }
 
     public async Task WithAccountAsync(Guid accountId, Action<Account> change)

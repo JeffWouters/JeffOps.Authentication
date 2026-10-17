@@ -70,6 +70,18 @@ public sealed class EnterpriseTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Without_an_operator_policy_nobody_allows_tenant_providers()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+
+        var refused = await _host.SendAsync(HttpMethod.Put, $"enterprise/admin/tenants/{Contoso}/custom-providers", admin, JsonContent.Create(new { allowed = true }));
+
+        refused.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeAsync(refused)).ShouldBe("not_allowed");
+    }
+
+    [Fact]
     public async Task Sso_policy_needs_a_known_provider_and_a_verified_domain_for_sso_only()
     {
         await StartAsync();

@@ -57,7 +57,9 @@ internal static class FederationEndpoints
         IEnumerable<IExternalIdentityMapper> mappers,
         IEnumerable<IExternalProviderChallenge> challenges)
     {
-        if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal)))
+        // Providers tenants registered aren't listed; their own sign-in endpoint checks they exist and may still be used.
+        if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal))
+            && !(TenantProviderNames.IsTenantProvider(provider) && challenges.Any(challenge => challenge.Handles(provider))))
         {
             return TypedResults.NotFound();
         }

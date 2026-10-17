@@ -35,8 +35,8 @@ internal sealed class SamlSignOut(IServiceScopeFactory scopes) : IExternalSignOu
 
         await using var scope = scopes.CreateAsyncScope();
         var saml = scope.ServiceProvider.GetRequiredService<SamlServices>();
-        var settings = saml.Options.Get(provider);
-        if (!saml.Providers.Handles(provider) || saml.Providers.SingleLogoutUrl(provider) is not { } logoutUrl || saml.Providers.SigningCertificate(provider) is null)
+        if (!await saml.Providers.PrepareAsync(provider, cancellationToken).ConfigureAwait(false)
+            || saml.Providers.SingleLogoutUrl(provider) is not { } logoutUrl || saml.Providers.SigningCertificate(provider) is null)
         {
             return null;
         }

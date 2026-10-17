@@ -3,6 +3,7 @@ using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Application;
 using JeffOps.Authentication.Enterprise.Application.Features.Domains;
+using JeffOps.Authentication.Enterprise.Application.Features.Providers;
 using JeffOps.Authentication.Enterprise.Application.Features.ScimTokens;
 using JeffOps.Authentication.Enterprise.Application.Features.Sso;
 using JeffOps.Authentication.SharedKernel.Handlers;
@@ -23,11 +24,17 @@ public sealed record SetSsoPolicyRequest(string? Provider, bool SsoOnly);
 
 public sealed record CreateScimTokenRequest(string Name);
 
+public sealed record SetCustomProvidersRequest(bool Allowed);
+
 public static class EnterpriseEndpointRouteBuilderExtensions
 {
     public const string DomainRoutes = "enterprise/domains";
     public const string SsoRoute = "enterprise/sso";
     public const string ScimTokenRoutes = "enterprise/scim-tokens";
+
+    public const string ProviderRoutes = "enterprise/providers";
+
+    public const string OperatorProviderRoute = "enterprise/admin/tenants/{tenantId:guid}/custom-providers";
 
     /// <summary>
     /// Maps tenant administration of verified domains (<c>enterprise/domains</c>: list, claim, verify, remove), the
@@ -58,9 +65,12 @@ public static class EnterpriseEndpointRouteBuilderExtensions
 
         root.MapGet(SsoRoute, async (HttpContext context, IQueryHandler<GetSsoPolicyQuery, SsoPolicyDto> handler) =>
             ToResult(await handler.HandleAsync(new GetSsoPolicyQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
-        root.MapPut(SsoRoute, async (SetSsoPolicyRequest request, HttpContext context, IEnumerable<IExternalIdentityMapper> mappers, ICommandHandler<SetSsoPolicyCommand, SsoPolicyDto> handler) =>
+        root.MapPut(SsoRoute, async (SetSsoPolicyRequest request, HttpContext context, IEnumerable<IExternalIdentityMapper> mappers, ITenantIdentityProviderRepository own, ICommandHandler<SetSsoPolicyCommand, SsoPolicyDto> handler) =>
         {
-            var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name).ToList();
+            // The server's providers, and this tenant's own (never another tenant's).
+            var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name)
+                .Concat((await own.ListForTenantAsync(Caller(context).TenantId, context.RequestAborted).ConfigureAwait(false)).Select(provider => provider.Name))
+                .ToList();
             return ToResult(await handler.HandleAsync(new SetSsoPolicyCommand(Caller(context), request.Provider, request.SsoOnly, known), context.RequestAborted).ConfigureAwait(false));
         }).AddEndpointFilter<StepUpFilter>();
 
@@ -94,6 +104,32 @@ public static class EnterpriseEndpointRouteBuilderExtensions
             var result = await handler.HandleAsync(new RevokeScimTokenCommand(Caller(context), tokenId), context.RequestAborted).ConfigureAwait(false);
             return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
         }).AddEndpointFilter<StepUpFilter>();
+
+        root.MapGet(ProviderRoutes, async (HttpContext context, IQueryHandler<ListTenantProvidersQuery, IReadOnlyList<TenantProviderDto>> handler) =>
+            ToResult(await handler.HandleAsync(new ListTenantProvidersQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
+        root.MapPost(ProviderRoutes, async (TenantProviderData request, HttpContext context, ICommandHandler<SaveTenantProviderCommand, TenantProviderDto> handler) =>
+            ToResult(await handler.HandleAsync(new SaveTenantProviderCommand(Caller(context), null, request), context.RequestAborted).ConfigureAwait(false)))
+            .AddEndpointFilter<StepUpFilter>();
+        root.MapPut(ProviderRoutes + "/{providerId:guid}", async (Guid providerId, TenantProviderData request, HttpContext context, ICommandHandler<SaveTenantProviderCommand, TenantProviderDto> handler) =>
+            ToResult(await handler.HandleAsync(new SaveTenantProviderCommand(Caller(context), providerId, request), context.RequestAborted).ConfigureAwait(false)))
+            .AddEndpointFilter<StepUpFilter>();
+        root.MapDelete(ProviderRoutes + "/{providerId:guid}", async (Guid providerId, HttpContext context, ICommandHandler<DeleteTenantProviderCommand> handler) =>
+        {
+            var result = await handler.HandleAsync(new DeleteTenantProviderCommand(Caller(context), providerId), context.RequestAborted).ConfigureAwait(false);
+            return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
+        }).AddEndpointFilter<StepUpFilter>();
+
+        // Platform operators: which tenants may register their own identity providers.
+        endpoints.MapPut(OperatorProviderRoute, async (Guid tenantId, SetCustomProvidersRequest request, HttpContext context, ICommandHandler<SetCustomProvidersAllowedCommand> handler) =>
+        {
+            var operatorId = AccessContextReader.Read(context.User, Names(context)).UserId!.Value;
+            var result = await handler.HandleAsync(new SetCustomProvidersAllowedCommand(operatorId, tenantId, request.Allowed), context.RequestAborted).ConfigureAwait(false);
+            return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
+        })
+            .WithTags("Enterprise")
+            .RequireAuthorization(tokenPolicy)
+            .AddEndpointFilter<OperatorFilter>()
+            .AddEndpointFilter<StepUpFilter>();
 
         return endpoints;
     }
@@ -147,6 +183,34 @@ internal sealed class TenantAdministratorFilter : IEndpointFilter
         if (!authorized.Succeeded)
         {
             return TypedResults.Problem(detail: "You are not allowed to manage this tenant's sign-in settings.", statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "not_allowed" });
+        }
+
+        return await next(context).ConfigureAwait(false);
+    }
+}
+
+/// <summary>Platform operators in their own session, holding <see cref="EnterpriseOptions.OperatorPolicy"/>.</summary>
+internal sealed class OperatorFilter : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+
+        var http = context.HttpContext;
+        var names = EnterpriseEndpointRouteBuilderExtensions.Names(http);
+        var access = AccessContextReader.Read(http.User, names);
+        var ownSession = AccessContextReader.IsInteractiveUser(http.User, names) && access.UserId is not null
+            && !AccessContextReader.IsImpersonation(http.User, names) && !access.IsDelegated
+            && !http.User.HasClaim(claim => claim.Type == names.PatCeiling || claim.Type == names.DelegationScope);
+        // A host that doesn't define the operator policy has no operators (fail closed).
+        var policy = http.RequestServices.GetRequiredService<IOptions<EnterpriseOptions>>().Value.OperatorPolicy;
+        var defined = await http.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>().GetPolicyAsync(policy).ConfigureAwait(false);
+        if (!ownSession || defined is null
+            || !(await http.RequestServices.GetRequiredService<IAuthorizationService>().AuthorizeAsync(http.User, defined).ConfigureAwait(false)).Succeeded)
+        {
+            return TypedResults.Problem(detail: "Only a platform operator in their own session can do this.", statusCode: StatusCodes.Status403Forbidden,
                 extensions: new Dictionary<string, object?> { ["code"] = "not_allowed" });
         }
 

@@ -5,6 +5,7 @@ using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Application;
 using JeffOps.Authentication.Enterprise.Application.Features.Domains;
+using JeffOps.Authentication.Enterprise.Application.Features.Providers;
 using JeffOps.Authentication.Enterprise.Application.Features.Scim;
 using JeffOps.Authentication.Enterprise.Application.Features.ScimTokens;
 using JeffOps.Authentication.Enterprise.Application.Features.Sso;
@@ -28,6 +29,8 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
     public DbSet<TenantDomain> Domains => Set<TenantDomain>();
 
     public DbSet<SsoPolicy> SsoPolicies => Set<SsoPolicy>();
+
+    public DbSet<TenantIdentityProvider> IdentityProviders => Set<TenantIdentityProvider>();
 
     public DbSet<ScimToken> ScimTokens => Set<ScimToken>();
 
@@ -53,11 +56,28 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             domain.Ignore(entity => entity.DomainEvents);
         });
 
+        modelBuilder.Entity<TenantIdentityProvider>(provider =>
+        {
+            provider.ToTable("TenantIdentityProviders");
+            provider.HasKey(entity => entity.Id);
+            provider.Property(entity => entity.Id).ValueGeneratedNever();
+            provider.Property(entity => entity.DisplayName).HasMaxLength(100).IsRequired();
+            provider.Property(entity => entity.EntityId).HasMaxLength(512).IsRequired();
+            provider.Property(entity => entity.MetadataUrl).HasMaxLength(2048);
+            provider.Property(entity => entity.SingleSignOnUrl).HasMaxLength(2048);
+            provider.Property(entity => entity.SingleLogoutUrl).HasMaxLength(2048);
+            provider.HasIndex(entity => entity.TenantId);
+            provider.Ignore(entity => entity.Name);
+            provider.Ignore(entity => entity.CertificateList);
+            provider.Ignore(entity => entity.MultiFactorAuthnContextList);
+        });
+
         modelBuilder.Entity<SsoPolicy>(policy =>
         {
             policy.ToTable("SsoPolicies");
             policy.HasKey(entity => entity.TenantId);
             policy.Property(entity => entity.Provider).HasMaxLength(100);
+            policy.Property(entity => entity.CustomProvidersAllowed).HasDefaultValue(false);
         });
 
         modelBuilder.Entity<ScimToken>(token =>
@@ -124,6 +144,19 @@ internal sealed class TenantDomainRepository(EnterpriseDbContext db) : ITenantDo
     public void Add(TenantDomain domain) => db.Domains.Add(domain);
 
     public void Remove(TenantDomain domain) => db.Domains.Remove(domain);
+}
+
+internal sealed class TenantIdentityProviderRepository(EnterpriseDbContext db) : ITenantIdentityProviderRepository
+{
+    public Task<TenantIdentityProvider?> FindAsync(Guid providerId, CancellationToken cancellationToken) =>
+        db.IdentityProviders.FirstOrDefaultAsync(provider => provider.Id == providerId, cancellationToken);
+
+    public async Task<IReadOnlyList<TenantIdentityProvider>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken) =>
+        await db.IdentityProviders.Where(provider => provider.TenantId == tenantId).OrderBy(provider => provider.DisplayName).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public void Add(TenantIdentityProvider provider) => db.IdentityProviders.Add(provider);
+
+    public void Remove(TenantIdentityProvider provider) => db.IdentityProviders.Remove(provider);
 }
 
 internal sealed class SsoPolicyRepository(EnterpriseDbContext db) : ISsoPolicyRepository
@@ -305,6 +338,7 @@ public static class EnterpriseServiceCollectionExtensions
         services.AddOptions<EnterpriseOptions>().Bind(configuration.GetSection(EnterpriseOptions.SectionName));
         services.TryAddScoped<ITenantDomainRepository, TenantDomainRepository>();
         services.TryAddScoped<ISsoPolicyRepository, SsoPolicyRepository>();
+        services.TryAddScoped<ITenantIdentityProviderRepository, TenantIdentityProviderRepository>();
         services.TryAddScoped<IEnterpriseUnitOfWork, EnterpriseUnitOfWork>();
         services.TryAddScoped<IDnsTxtResolver, DnsOverHttpsResolver>();
         services.AddHttpClient(DnsOverHttpsResolver.HttpClientName);
@@ -318,6 +352,7 @@ public static class EnterpriseServiceCollectionExtensions
         services.RemoveAll<IHomeRealmDirectory>();
         services.AddScoped<IHomeRealmDirectory, EnterpriseHomeRealms>();
         services.AddScoped<IProvisionedAccountDirectory, ScimProvisionedAccounts>();
+        services.AddScoped<ITenantProviderDirectory, EnterpriseTenantProviders>();
 
         services
             .AddHandler<ClaimDomainHandler>()
@@ -326,6 +361,10 @@ public static class EnterpriseServiceCollectionExtensions
             .AddHandler<RemoveDomainHandler>()
             .AddHandler<GetSsoPolicyHandler>()
             .AddHandler<SetSsoPolicyHandler>()
+            .AddHandler<ListTenantProvidersHandler>()
+            .AddHandler<SaveTenantProviderHandler>()
+            .AddHandler<DeleteTenantProviderHandler>()
+            .AddHandler<SetCustomProvidersAllowedHandler>()
             .AddHandler<CreateScimTokenHandler>()
             .AddHandler<ListScimTokensHandler>()
             .AddHandler<RevokeScimTokenHandler>()

@@ -122,6 +122,7 @@ migrations in your deployment pipeline, for example with `dotnet ef database upd
 | SAML 2.0 | `.AddSamlProvider("corp")` under `JeffOps:TokenServer:Federation:Saml:corp`, and `app.MapJeffOpsSaml()` |
 | Local accounts (passwords, TOTP, emailed codes, passkeys) | `.AddLocalAccounts().AddSqlServerPersistence()` and `app.MapJeffOpsLocalAccounts()`; options under `JeffOps:LocalAccounts` |
 | Verified domains, per-tenant SSO, SCIM | `.AddEnterprise().AddSqlServerPersistence()`, `app.MapJeffOpsEnterprise()`, `app.MapJeffOpsScim()` |
+| Tenants' own SAML providers (allowed per tenant by an operator) | `.AddSamlTenantProviders()` beside `.AddEnterprise()`, an `auth.enterprise.operate` policy for your operators, and `app.MapJeffOpsSaml()` |
 | Impersonation, lockbox, tenant switch | `.AddDelegation().AddSqlServerPersistence()` and `app.MapJeffOpsDelegation()` |
 
 **Signing keys** live in the database by default, protected by the Data Protection key ring and rotated automatically.

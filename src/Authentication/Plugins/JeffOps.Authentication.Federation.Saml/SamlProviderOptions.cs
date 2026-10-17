@@ -52,6 +52,18 @@ public sealed class SamlProviderOptions
     /// <summary>Authentication context class references that count as multi-factor, for example <c>http://schemas.microsoft.com/claims/multipleauthn</c>.</summary>
     public IList<string> MultiFactorAuthnContexts { get; } = [];
 
+    /// <summary>
+    /// For a provider a tenant registered: that tenant. Its sign-ins must carry an address in the tenant's verified domains.
+    /// Set by the server, never from configuration.
+    /// </summary>
+    public Guid? OwnerTenantId { get; set; }
+
+    /// <summary>
+    /// The issuer logins of this provider are linked under; null uses <see cref="IdpEntityId"/>. Tenant providers get one
+    /// of their own, so two tenants naming the same entity id never share a login.
+    /// </summary>
+    public string? LoginIssuer { get; set; }
+
     /// <summary>How long a sign-in may take at the provider. Default: 10 minutes.</summary>
     public TimeSpan SignInTimeout { get; set; } = TimeSpan.FromMinutes(10);
 
@@ -101,4 +113,27 @@ public sealed class SamlProviderOptions
     /// Whether assertions must arrive encrypted (needs a decryption certificate); an unencrypted one is refused. Default: false.
     /// </summary>
     public bool RequireEncryptedAssertions { get; set; }
+}
+
+/// <summary>
+/// This server's own certificates for the SAML providers tenants register (bound from
+/// <c>JeffOps:TokenServer:Federation:Saml:TenantProviders</c>): one signing certificate (signed AuthnRequests and logout
+/// requests) and one decryption certificate, shared by every tenant provider.
+/// </summary>
+public sealed class SamlTenantProviderOptions
+{
+    /// <summary>The configuration section: <c>JeffOps:TokenServer:Federation:Saml:TenantProviders</c>.</summary>
+    public const string SectionName = "JeffOps:TokenServer:Federation:Saml:TenantProviders";
+
+    /// <summary>The signing certificate as a base64 PKCS#12 (PFX) blob.</summary>
+    public string? SigningCertificatePfx { get; set; }
+
+    /// <summary>The password of <see cref="SigningCertificatePfx"/>, if any.</summary>
+    public string? SigningCertificatePassword { get; set; }
+
+    /// <summary>The decryption certificate as a base64 PKCS#12 (PFX) blob.</summary>
+    public string? DecryptionCertificatePfx { get; set; }
+
+    /// <summary>The password of <see cref="DecryptionCertificatePfx"/>, if any.</summary>
+    public string? DecryptionCertificatePassword { get; set; }
 }

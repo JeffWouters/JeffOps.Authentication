@@ -125,7 +125,7 @@ public sealed class RequestImpersonationHandler(
             }
 
             // A lockbox tenant: its administrator's approval comes first, for impersonating its users as for switching in.
-            var lockbox = await Tokens.ActorTokens.LockboxGrantAsync(tenantAccess, directory, caller.UserId, organization, tenant, now, cancellationToken).ConfigureAwait(false);
+            var lockbox = await Lockbox.GrantAsync(tenantAccess, directory, caller.UserId, organization, tenant, now, cancellationToken).ConfigureAwait(false);
             if (lockbox.IsFailure)
             {
                 return lockbox.Error.Code == DelegationErrors.TenantApprovalRequired ? Error.Forbidden(lockbox.Error.Code, lockbox.Error.Message) : lockbox.Error;

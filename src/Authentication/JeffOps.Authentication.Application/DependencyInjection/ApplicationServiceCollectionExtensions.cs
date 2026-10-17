@@ -31,6 +31,7 @@ public static class ApplicationServiceCollectionExtensions
         services.TryAddSingleton<ITenantDirectory, NoTenantDirectory>();
         services.TryAddScoped<Federation.IHomeRealmDirectory, Federation.NoHomeRealms>();
         services.TryAddScoped<Federation.IProvisionedAccountDirectory, Federation.NoProvisionedAccounts>();
+        services.TryAddScoped<Federation.ITenantProviderDirectory, Federation.NoTenantProviders>();
         services.TryAddScoped<SessionBuilder>();
         services.TryAddScoped<ServiceIdentity>();
         services.AddScoped<IExtensionGrantHandler, Features.Grants.WorkloadIdentity.WorkloadIdentityGrantHandler>();

@@ -130,11 +130,31 @@ public sealed class SsoPolicy
 
     public bool SsoOnly { get; private set; }
 
+    /// <summary>Whether a platform operator allowed this tenant to register its own identity providers.</summary>
+    public bool CustomProvidersAllowed { get; private set; }
+
     public DateTimeOffset UpdatedAt { get; private set; }
 
     public Guid? UpdatedBy { get; private set; }
 
     public static SsoPolicy For(Guid tenantId) => new(tenantId);
+
+    /// <summary>
+    /// Allows or stops the tenant's own identity providers (an operator's decision). Stopping them also drops them from the SSO
+    /// policy, since they no longer sign anyone in.
+    /// </summary>
+    public void AllowCustomProviders(bool allowed, Guid by, DateTimeOffset now)
+    {
+        CustomProvidersAllowed = allowed;
+        if (!allowed && Provider?.StartsWith(TenantIdentityProvider.NamePrefix, StringComparison.Ordinal) == true)
+        {
+            Provider = null;
+            SsoOnly = false;
+        }
+
+        UpdatedBy = by;
+        UpdatedAt = now;
+    }
 
     /// <summary>Sets the policy. SSO-only needs a provider, or nobody of the tenant's domains could sign in.</summary>
     public void Set(string? provider, bool ssoOnly, Guid? by, DateTimeOffset now)

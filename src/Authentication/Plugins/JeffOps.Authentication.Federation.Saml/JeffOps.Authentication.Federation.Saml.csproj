@@ -16,4 +16,8 @@
     <ProjectReference Include="..\..\JeffOps.Authentication.Application\JeffOps.Authentication.Application.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="JeffOps.Authentication.Server.Tests" />
+  </ItemGroup>
+
 </Project>

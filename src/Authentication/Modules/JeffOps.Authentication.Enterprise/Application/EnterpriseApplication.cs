@@ -24,6 +24,15 @@ public sealed class EnterpriseOptions
 
     public int MaxDomainsPerTenant { get; set; } = 20;
 
+    /// <summary>How many of its own identity providers a tenant may register. Default: 5.</summary>
+    public int MaxProvidersPerTenant { get; set; } = 5;
+
+    /// <summary>
+    /// The authorization policy platform operators need to allow a tenant its own identity providers. Default:
+    /// <c>auth.enterprise.operate</c>.
+    /// </summary>
+    public string OperatorPolicy { get; set; } = "auth.enterprise.operate";
+
     /// <summary>
     /// The policy needed, on top of <see cref="ManagePolicy"/>, to create SCIM tokens. A SCIM token controls group membership,
     /// and groups can hold roles, so whoever holds one can put people (themselves included) into role-bearing groups: require
@@ -44,6 +53,17 @@ public interface ITenantDomainRepository
     void Add(TenantDomain domain);
 
     void Remove(TenantDomain domain);
+}
+
+public interface ITenantIdentityProviderRepository
+{
+    Task<TenantIdentityProvider?> FindAsync(Guid providerId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<TenantIdentityProvider>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken);
+
+    void Add(TenantIdentityProvider provider);
+
+    void Remove(TenantIdentityProvider provider);
 }
 
 public interface ISsoPolicyRepository
@@ -78,6 +98,35 @@ public static class EnterpriseErrors
     public const string DnsUnavailable = "dns_unavailable";
     public const string UnknownProvider = "unknown_provider";
     public const string NoVerifiedDomain = "no_verified_domain";
+    public const string CustomProvidersNotAllowed = "custom_providers_not_allowed";
+    public const string TooManyProviders = "too_many_providers";
+}
+
+/// <summary>Tenants' own SAML providers, for the SAML plugin; only while an operator allows the tenant to have them.</summary>
+public sealed class EnterpriseTenantProviders(ITenantIdentityProviderRepository providers, ISsoPolicyRepository policies) : ITenantProviderDirectory
+{
+    public async Task<TenantSamlProvider?> FindSamlAsync(string name, CancellationToken cancellationToken)
+    {
+        if (TenantIdentityProvider.IdOf(name) is not { } id
+            || await providers.FindAsync(id, cancellationToken).ConfigureAwait(false) is not { } provider
+            || await policies.FindAsync(provider.TenantId, cancellationToken).ConfigureAwait(false) is not { CustomProvidersAllowed: true })
+        {
+            return null;
+        }
+
+        return new TenantSamlProvider(
+            provider.Name,
+            provider.TenantId,
+            provider.DisplayName,
+            provider.EntityId,
+            Url(provider.MetadataUrl),
+            Url(provider.SingleSignOnUrl),
+            Url(provider.SingleLogoutUrl),
+            provider.CertificateList,
+            provider.MultiFactorAuthnContextList);
+    }
+
+    private static Uri? Url(string? value) => value is null ? null : new Uri(value);
 }
 
 /// <summary>The accounts a tenant's SCIM provisioning created or linked, by email.</summary>

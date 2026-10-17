@@ -54,6 +54,51 @@ public interface IExternalProviderChallenge
     string ChallengePath(string provider, string returnUrl, string? loginHint);
 }
 
+/// <summary>A SAML identity provider a tenant registered for its own people (docs/DESIGN.md §8.4).</summary>
+/// <param name="Name">Its name in sign-in URLs (<c>tenant-{id}</c>).</param>
+/// <param name="TenantId">The tenant it signs people in for: only addresses in that tenant's verified domains.</param>
+/// <param name="DisplayName">What the tenant calls it.</param>
+/// <param name="IdpEntityId">The provider's SAML entity id.</param>
+/// <param name="MetadataUrl">Its metadata (HTTPS), when it is configured that way.</param>
+/// <param name="SingleSignOnUrl">Its sign-in URL (HTTP-Redirect), unless the metadata gives it.</param>
+/// <param name="SingleLogoutUrl">Its logout URL, if any.</param>
+/// <param name="SigningCertificates">Its signing certificates (base64 DER or PEM), besides the metadata's.</param>
+/// <param name="MultiFactorAuthnContexts">Authentication context classes that count as multi-factor.</param>
+public sealed record TenantSamlProvider(
+    string Name,
+    Guid TenantId,
+    string DisplayName,
+    string IdpEntityId,
+    Uri? MetadataUrl,
+    Uri? SingleSignOnUrl,
+    Uri? SingleLogoutUrl,
+    IReadOnlyList<string> SigningCertificates,
+    IReadOnlyList<string> MultiFactorAuthnContexts);
+
+/// <summary>Identity providers tenants registered themselves. The Enterprise module provides one; the default knows none.</summary>
+public interface ITenantProviderDirectory
+{
+    /// <summary>The tenant SAML provider named <paramref name="name"/>, or null (unknown, or its tenant may no longer use it).</summary>
+    Task<TenantSamlProvider?> FindSamlAsync(string name, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Names of providers tenants registered: <c>tenant-{32 hex}</c>. They never appear on the login page; only home realm
+/// discovery of the tenant's verified domains sends people to them.
+/// </summary>
+public static class TenantProviderNames
+{
+    public const string Prefix = "tenant-";
+
+    public static bool IsTenantProvider(string? provider) =>
+        provider is not null && provider.StartsWith(Prefix, StringComparison.Ordinal) && Guid.TryParseExact(provider[Prefix.Length..], "N", out _);
+}
+
+public sealed class NoTenantProviders : ITenantProviderDirectory
+{
+    public Task<TenantSamlProvider?> FindSamlAsync(string name, CancellationToken cancellationToken) => Task.FromResult<TenantSamlProvider?>(null);
+}
+
 /// <summary>
 /// Single logout towards the provider a sign-in came from: when the user signs out at the token server, the browser is sent
 /// to the provider to sign out there too, and comes back to finish signing out here.
@@ -146,7 +191,8 @@ public static class HomeRealm
 {
     /// <summary>
     /// The provider for a sign-in, in order: an explicit <paramref name="idpHint"/>, the host's domain mapping, the tenant's
-    /// verified domain, the default provider. Null when the user must choose (or use a local method).
+    /// verified domain, the default provider. Null when the user must choose (or use a local method). A provider a tenant
+    /// registered itself is reached only through the tenant's verified domain, never by hint or default.
     /// </summary>
     public static async Task<string?> DiscoverAsync(
         string? email, string? idpHint, FederationOptions options, IReadOnlyCollection<string> knownProviders, IHomeRealmDirectory realms, CancellationToken cancellationToken)
@@ -168,7 +214,8 @@ public static class HomeRealm
             return mapped;
         }
 
-        if (domain is not null && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { Provider: { } tenantProvider } && Known(tenantProvider))
+        if (domain is not null && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { Provider: { } tenantProvider }
+            && (Known(tenantProvider) || TenantProviderNames.IsTenantProvider(tenantProvider)))
         {
             return tenantProvider;
         }

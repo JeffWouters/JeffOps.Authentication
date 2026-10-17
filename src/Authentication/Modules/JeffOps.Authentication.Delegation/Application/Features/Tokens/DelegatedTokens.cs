@@ -63,35 +63,6 @@ internal static class ActorTokens
             ? DateTimeOffset.FromUnixTimeSeconds(Math.Clamp(authTime, 0, 253402300799))
             : DateTimeOffset.UnixEpoch);
 
-    /// <summary>
-    /// The live lockbox grant a partner needs for <paramref name="tenant"/> when the tenant requires approval; null when it
-    /// doesn't; an error when it does and there is none. The same rule covers tenant switch and partner impersonation, so a
-    /// lockbox can't be bypassed by impersonating one of the tenant's users.
-    /// </summary>
-    public static async Task<Result<TenantAccessGrant?>> LockboxGrantAsync(
-        ITenantAccessGrantRepository grants, IDelegationDirectory directory, Guid actorId, Guid organization, Guid tenant, DateTimeOffset now, CancellationToken cancellationToken)
-    {
-        var lockbox = await DirectoryCalls.RequiresApprovalAsync(directory, tenant, cancellationToken).ConfigureAwait(false);
-        if (lockbox.IsFailure)
-        {
-            return lockbox.Error;
-        }
-
-        if (!lockbox.Value)
-        {
-            return Result.Success<TenantAccessGrant?>(null);
-        }
-
-        var open = await grants.ListOpenAsync(actorId, tenant, now, cancellationToken).ConfigureAwait(false);
-        return open
-            .Where(candidate => candidate.ActorUserId == actorId && candidate.TargetTenantId == tenant
-                && candidate.ActorOrganizationId == organization && candidate.CanMint(now))
-            .OrderByDescending(candidate => candidate.ApprovedAt)
-            .FirstOrDefault() is { } grant
-            ? grant
-            : Error.Unauthorized(DelegationErrors.TenantApprovalRequired, "This tenant requires approval and there is no approved access grant.");
-    }
-
     /// <summary>Levels a partner may act at in a managed tenant: never broader than the one tenant the relationship covers.</summary>
     public static void CapPartnerLevel(List<Claim> claims, ClaimNames names, IReadOnlyCollection<string> scopes)
     {
@@ -221,7 +192,7 @@ public sealed class MintImpersonationTokenHandler(
             }
 
             // A lockbox tenant's approval covers impersonating its users too.
-            var lockbox = await ActorTokens.LockboxGrantAsync(tenantAccess, directory, actorId, organization, managedTenant, now, cancellationToken).ConfigureAwait(false);
+            var lockbox = await Lockbox.GrantAsync(tenantAccess, directory, actorId, organization, managedTenant, now, cancellationToken).ConfigureAwait(false);
             if (lockbox.IsFailure)
             {
                 return lockbox.Error;
@@ -388,7 +359,7 @@ public sealed class MintTenantSwitchTokenHandler(
             return Error.Unauthorized(GrantErrors.TenantInactive, "The tenant is not active.");
         }
 
-        var lockbox = await ActorTokens.LockboxGrantAsync(grants, directory, actorId, organization, target, now, cancellationToken).ConfigureAwait(false);
+        var lockbox = await Lockbox.GrantAsync(grants, directory, actorId, organization, target, now, cancellationToken).ConfigureAwait(false);
         if (lockbox.IsFailure)
         {
             return lockbox.Error.Code == DelegationErrors.TenantApprovalRequired ? Error.Unauthorized(DelegationErrors.GrantInvalid, lockbox.Error.Message) : lockbox.Error;

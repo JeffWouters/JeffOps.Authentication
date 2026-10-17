@@ -31,23 +31,51 @@ public static class SamlServiceCollectionExtensions
                 && (settings.IdpMetadataUrl is not null || (settings.IdpSingleSignOnUrl is not null && settings.IdpSigningCertificates.Count > 0)),
             $"SAML provider '{name}' needs IdpEntityId, and IdpMetadataUrl or IdpSingleSignOnUrl with at least one IdpSigningCertificates entry.").ValidateOnStart();
 
-        // The shared services, once for all SAML providers.
-        if (!services.Any(descriptor => descriptor.ServiceType == typeof(SamlProviderRegistration)))
-        {
-            services.AddMemoryCache();
-            services.AddDataProtection();
-            services.TryAddSingleton<ITokenReplayCache, SamlReplayCache>();
-            services.TryAddSingleton<SamlMetadata>();
-            services.AddHttpClient(SamlMetadataRefresher.HttpClientName);
-            services.AddHostedService<SamlMetadataRefresher>();
-            services.TryAddSingleton<SamlProviders>();
-            services.TryAddScoped<SamlServices>();
-            services.AddSingleton<IExternalSignOut, SamlSignOut>();
-            services.AddSingleton<IExternalIdentityMapper>(provider => provider.GetRequiredService<SamlProviders>());
-            services.AddSingleton<IExternalProviderChallenge>(provider => provider.GetRequiredService<SamlProviders>());
-        }
-
+        AddSharedServices(builder);
         services.AddSingleton(new SamlProviderRegistration(name));
         return builder;
     }
+
+    /// <summary>
+    /// Lets tenants register their own SAML providers (through the Enterprise module's <c>enterprise/providers</c> API, once
+    /// an operator allows the tenant): their sign-in, assertion and logout endpoints are served under <c>signin/saml/tenant-{id}</c>
+    /// by <c>MapJeffOpsSaml</c>. Not needed when configured providers are added with <see cref="AddSamlProvider"/>, which
+    /// enables them too. This server's certificates for them bind from <see cref="SamlTenantProviderOptions.SectionName"/>.
+    /// </summary>
+    public static AuthenticationBuilder AddSamlTenantProviders(this AuthenticationBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        AddSharedServices(builder);
+        return builder;
+    }
+
+    /// <summary>The services every SAML provider shares, registered once.</summary>
+    private static void AddSharedServices(AuthenticationBuilder builder)
+    {
+        var services = builder.Services;
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(SharedServicesMarker)))
+        {
+            return;
+        }
+
+        services.AddSingleton<SharedServicesMarker>();
+        services.AddMemoryCache();
+        services.AddDataProtection();
+        services.TryAddSingleton<ITokenReplayCache, SamlReplayCache>();
+        services.TryAddSingleton<SamlMetadata>();
+        services.TryAddSingleton<SamlMetadataClient>();
+        services.AddHttpClient(SamlMetadataClient.HttpClientName);
+
+        // Tenants' metadata URLs: public addresses only (SSRF), no redirects.
+        services.AddHttpClient(SamlMetadataClient.TenantHttpClientName).ConfigurePrimaryHttpMessageHandler(PublicNetwork.Handler);
+        services.AddOptions<SamlTenantProviderOptions>().Bind(builder.Configuration.GetSection(SamlTenantProviderOptions.SectionName));
+        services.AddHostedService<SamlMetadataRefresher>();
+        services.TryAddSingleton<SamlProviders>();
+        services.TryAddScoped<SamlServices>();
+        services.AddSingleton<IExternalSignOut, SamlSignOut>();
+        services.AddSingleton<IExternalIdentityMapper>(provider => provider.GetRequiredService<SamlProviders>());
+        services.AddSingleton<IExternalProviderChallenge>(provider => provider.GetRequiredService<SamlProviders>());
+    }
+
+    private sealed class SharedServicesMarker;
 }

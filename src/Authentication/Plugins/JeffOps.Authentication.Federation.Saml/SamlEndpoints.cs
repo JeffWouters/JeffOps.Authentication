@@ -50,14 +50,14 @@ public static partial class SamlEndpoints
         return endpoints;
     }
 
-    private static IResult Start(string provider, string? returnUrl, string? login_hint, HttpContext context, SamlServices saml)
+    private static async Task<IResult> Start(string provider, string? returnUrl, string? login_hint, HttpContext context, SamlServices saml)
     {
-        if (!saml.Providers.Handles(provider))
+        if (!await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
         }
 
-        var settings = saml.Options.Get(provider);
+        var settings = saml.Providers.Settings(provider);
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
         var request = new Saml2AuthnRequest(saml.Providers.Configuration(provider, entityId, saml.ReplayCache))
         {
@@ -93,11 +93,12 @@ public static partial class SamlEndpoints
         HttpContext context,
         SamlServices saml,
         ICommandHandler<CompleteExternalSignInCommand, ExternalSignInResult> completeSignIn,
+        Application.Federation.IHomeRealmDirectory realms,
         ClaimNames names,
         ILoggerFactory loggers)
     {
         var logger = loggers.CreateLogger("JeffOps.Authentication.Federation.Saml");
-        if (!saml.Providers.Handles(provider) || !context.Request.HasFormContentType)
+        if (!context.Request.HasFormContentType || !await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
         }
@@ -123,7 +124,7 @@ public static partial class SamlEndpoints
         }
 
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
-        if (saml.Options.Get(provider).RequireEncryptedAssertions && !IsEncrypted(form["SAMLResponse"].ToString()))
+        if (saml.Providers.Settings(provider).RequireEncryptedAssertions && !IsEncrypted(form["SAMLResponse"].ToString()))
         {
             LogRejected(logger, provider, "assertion not encrypted");
             return BackToLogin(returnUrl, "provider_error");
@@ -152,7 +153,7 @@ public static partial class SamlEndpoints
 
         var acs = new Uri(Origin(context), $"{Prefix}/{provider}/acs");
         var rejection = string.Equals(response.InResponseTo?.Value, requestId, StringComparison.Ordinal)
-            ? Rejection(response.Saml2SecurityToken?.Assertion, requestId, acs, saml.Options.Get(provider).IdpEntityId, saml.Time.GetUtcNow())
+            ? Rejection(response.Saml2SecurityToken?.Assertion, requestId, acs, saml.Providers.Settings(provider).IdpEntityId, saml.Time.GetUtcNow())
             : "response does not answer this browser's request";
         if (rejection is not null)
         {
@@ -178,6 +179,16 @@ public static partial class SamlEndpoints
         if (identity.IsFailure)
         {
             return BackToLogin(returnUrl, identity.Error.Code);
+        }
+
+        // A tenant's own provider signs in only that tenant's people: addresses in the domains the tenant verified.
+        if (saml.Providers.Settings(provider).OwnerTenantId is { } owner
+            && (Application.Federation.HomeRealm.DomainOf(identity.Value.Email) is not { } domain
+                || await realms.FindByDomainAsync(domain, context.RequestAborted).ConfigureAwait(false) is not { } realm
+                || realm.TenantId != owner))
+        {
+            LogRejected(logger, provider, "address outside the tenant's verified domains");
+            return BackToLogin(returnUrl, "domain_not_allowed");
         }
 
         var signedIn = await completeSignIn.HandleAsync(new CompleteExternalSignInCommand(identity.Value), context.RequestAborted).ConfigureAwait(false);
@@ -221,12 +232,12 @@ public static partial class SamlEndpoints
         ILoggerFactory loggers)
     {
         var logger = loggers.CreateLogger("JeffOps.Authentication.Federation.Saml");
-        if (!saml.Providers.Handles(provider))
+        if (!await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
         }
 
-        var settings = saml.Options.Get(provider);
+        var settings = saml.Providers.Settings(provider);
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
         var configuration = saml.Providers.Configuration(provider, entityId, saml.ReplayCache);
         var generic = await GenericRequestAsync(context).ConfigureAwait(false);
@@ -272,7 +283,7 @@ public static partial class SamlEndpoints
         }
 
         if (request.NameId?.Value is { Length: > 0 } nameId
-            && await accounts.FindByExternalLoginAsync(new Domain.Accounts.ExternalLoginKey(settings.IdpEntityId!, nameId), context.RequestAborted).ConfigureAwait(false) is { } account)
+            && await accounts.FindByExternalLoginAsync(new Domain.Accounts.ExternalLoginKey(settings.LoginIssuer ?? settings.IdpEntityId!, nameId), context.RequestAborted).ConfigureAwait(false) is { } account)
         {
             var now = saml.Time.GetUtcNow();
             account.RevokeSessions(now, "saml_single_logout");
@@ -406,9 +417,9 @@ public static partial class SamlEndpoints
         }
     }
 
-    private static IResult Metadata(string provider, HttpContext context, SamlServices saml)
+    private static async Task<IResult> Metadata(string provider, HttpContext context, SamlServices saml)
     {
-        if (!saml.Providers.Handles(provider))
+        if (!await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
         }
