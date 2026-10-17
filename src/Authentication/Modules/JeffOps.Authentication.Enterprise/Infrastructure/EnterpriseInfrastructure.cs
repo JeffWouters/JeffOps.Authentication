@@ -268,7 +268,7 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
     public Task<ScimUser?> FindAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken) =>
         db.ScimUsers.FirstOrDefaultAsync(user => user.TenantId == tenantId && user.AccountId == accountId, cancellationToken);
 
-    public async Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, CancellationToken cancellationToken)
+    public async Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
     {
         var query = db.ScimUsers.Where(user => user.TenantId == tenantId);
         if (filter is { Attribute: "userName" })
@@ -283,7 +283,16 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
         }
 
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
-        var page = await query.OrderBy(user => user.UserName).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var ordered = (sort?.Attribute, sort?.Descending ?? false) switch
+        {
+            ("externalId", var descending) => ScimOrder.By(query, user => user.ExternalId == null, user => user.ExternalId!.ToLower(), descending),
+            ("displayName", var descending) => ScimOrder.By(query, user => user.DisplayName == null, user => user.DisplayName!.ToLower(), descending),
+            ("name.givenName", var descending) => ScimOrder.By(query, user => user.GivenName == null, user => user.GivenName!.ToLower(), descending),
+            ("name.familyName", var descending) => ScimOrder.By(query, user => user.FamilyName == null, user => user.FamilyName!.ToLower(), descending),
+            (_, true) => query.OrderByDescending(user => user.UserName.ToLower()),
+            _ => query.OrderBy(user => user.UserName.ToLower()),
+        };
+        var page = await ordered.ThenBy(user => user.AccountId).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
         return (page, total);
     }
 
@@ -300,12 +309,19 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
     public void Remove(ScimUser user) => db.ScimUsers.Remove(user);
 }
 
+/// <summary>SCIM list order: resources without a value last ascending and first descending (RFC 7644 §3.4.2.3).</summary>
+internal static class ScimOrder
+{
+    public static IOrderedQueryable<T> By<T>(IQueryable<T> query, System.Linq.Expressions.Expression<Func<T, bool>> missing, System.Linq.Expressions.Expression<Func<T, string>> key, bool descending) =>
+        descending ? query.OrderByDescending(missing).ThenByDescending(key) : query.OrderBy(missing).ThenBy(key);
+}
+
 internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRepository
 {
     public Task<ScimGroup?> FindAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken) =>
         db.ScimGroups.FirstOrDefaultAsync(group => group.TenantId == tenantId && group.Id == groupId, cancellationToken);
 
-    public async Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, CancellationToken cancellationToken)
+    public async Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
     {
         var query = db.ScimGroups.Where(group => group.TenantId == tenantId);
         if (filter is { Attribute: "displayName" })
@@ -319,7 +335,13 @@ internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRe
         }
 
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
-        var page = await query.OrderBy(group => group.DisplayName).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var ordered = (sort?.Attribute, sort?.Descending ?? false) switch
+        {
+            ("externalId", var descending) => ScimOrder.By(query, group => group.ExternalId == null, group => group.ExternalId!.ToLower(), descending),
+            (_, true) => query.OrderByDescending(group => group.DisplayName.ToLower()),
+            _ => query.OrderBy(group => group.DisplayName.ToLower()),
+        };
+        var page = await ordered.ThenBy(group => group.Id).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
         return (page, total);
     }
 

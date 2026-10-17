@@ -51,23 +51,23 @@ public static partial class ScimEndpoints
         scim.MapGet("ResourceTypes", () => Scim(StatusCodes.Status200OK, ResourceTypes()));
 
         scim.MapGet("Users", ListUsersAsync);
-        scim.MapGet("Users/{id}", async Task<IResult> (string id, HttpContext context) => await GetUserAsync(context, id).ConfigureAwait(false));
+        scim.MapGet("Users/{id}", async Task<IResult> (string id, HttpContext context) => Selected(context, await GetUserAsync(context, id).ConfigureAwait(false)));
         scim.MapPost("Users", async Task<IResult> (HttpContext context) =>
-            await CreateUserAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false));
+            Selected(context, await CreateUserAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false)));
         scim.MapPut("Users/{id}", async Task<IResult> (string id, HttpContext context) =>
-            await ReplaceUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+            Selected(context, await ReplaceUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false)));
         scim.MapPatch("Users/{id}", async Task<IResult> (string id, HttpContext context) =>
-            await PatchUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+            Selected(context, await PatchUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false)));
         scim.MapDelete("Users/{id}", async Task<IResult> (string id, HttpContext context) => await DeleteUserAsync(context, context.RequestServices, id, IfMatch(context)).ConfigureAwait(false));
 
         scim.MapGet("Groups", ListGroupsAsync);
-        scim.MapGet("Groups/{id}", async Task<IResult> (string id, HttpContext context) => await GetGroupAsync(context, id).ConfigureAwait(false));
+        scim.MapGet("Groups/{id}", async Task<IResult> (string id, HttpContext context) => Selected(context, await GetGroupAsync(context, id).ConfigureAwait(false)));
         scim.MapPost("Groups", async Task<IResult> (HttpContext context) =>
-            await CreateGroupAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false));
+            Selected(context, await CreateGroupAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false)));
         scim.MapPut("Groups/{id}", async Task<IResult> (string id, HttpContext context) =>
-            await ReplaceGroupAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+            Selected(context, await ReplaceGroupAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false)));
         scim.MapPatch("Groups/{id}", async Task<IResult> (string id, HttpContext context) =>
-            await PatchGroupAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+            Selected(context, await PatchGroupAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false)));
         scim.MapDelete("Groups/{id}", async Task<IResult> (string id, HttpContext context) => await DeleteGroupAsync(context, context.RequestServices, id, IfMatch(context)).ConfigureAwait(false));
 
         scim.MapPost("Bulk", BulkAsync);
@@ -84,9 +84,15 @@ public static partial class ScimEndpoints
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidFilter, "Only 'attribute eq \"value\"' filters are supported.");
         }
 
+        if (!TrySort(context, out var sort))
+        {
+            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "sortOrder is 'ascending' or 'descending'.");
+        }
+
         var (startIndex, count) = Paging(context);
-        var result = await handler.HandleAsync(new ListScimUsersQuery(Tenant(context), filter, startIndex, count), context.RequestAborted).ConfigureAwait(false);
-        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, user => UserJson(user, context))) : Error(result.Error);
+        var selection = Selection(context);
+        var result = await handler.HandleAsync(new ListScimUsersQuery(Tenant(context), filter, startIndex, count, sort), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, user => Project(UserJson(user, context), selection))) : Error(result.Error);
     }
 
     private static async Task<ScimResult> GetUserAsync(HttpContext context, string id)
@@ -262,10 +268,15 @@ public static partial class ScimEndpoints
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidFilter, "Only 'attribute eq \"value\"' filters are supported.");
         }
 
+        if (!TrySort(context, out var sort))
+        {
+            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "sortOrder is 'ascending' or 'descending'.");
+        }
+
         var (startIndex, count) = Paging(context);
-        var excludeMembers = string.Equals(context.Request.Query["excludedAttributes"], "members", StringComparison.OrdinalIgnoreCase);
-        var result = await handler.HandleAsync(new ListScimGroupsQuery(Tenant(context), filter, startIndex, count), context.RequestAborted).ConfigureAwait(false);
-        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, group => GroupJson(group, context, excludeMembers))) : Error(result.Error);
+        var selection = Selection(context);
+        var result = await handler.HandleAsync(new ListScimGroupsQuery(Tenant(context), filter, startIndex, count, sort), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, group => Project(GroupJson(group, context), selection))) : Error(result.Error);
     }
 
     private static async Task<ScimResult> GetGroupAsync(HttpContext context, string id)
@@ -417,7 +428,7 @@ public static partial class ScimEndpoints
     private static ScimResult GroupResult(Result<ScimGroupView> result, HttpContext context) =>
         result.IsSuccess ? Scim(StatusCodes.Status200OK, GroupJson(result.Value, context), version: result.Value.Version) : Error(result.Error);
 
-    private static JsonObject GroupJson(ScimGroupView group, HttpContext context, bool excludeMembers = false)
+    private static JsonObject GroupJson(ScimGroupView group, HttpContext context)
     {
         var json = new JsonObject
         {
@@ -427,11 +438,7 @@ public static partial class ScimEndpoints
             ["displayName"] = group.DisplayName,
             ["meta"] = Meta("Group", group.Created, group.LastModified, group.Version, Location(context, "Groups", group.Id)),
         };
-        if (!excludeMembers)
-        {
-            json["members"] = new JsonArray([.. group.Members.Select(member => (JsonNode)new JsonObject { ["value"] = member.ToString(), ["$ref"] = Location(context, "Users", member) })]);
-        }
-
+        json["members"] = new JsonArray([.. group.Members.Select(member => (JsonNode)new JsonObject { ["value"] = member.ToString(), ["$ref"] = Location(context, "Users", member) })]);
         return json;
     }
 
@@ -505,20 +512,31 @@ public static partial class ScimEndpoints
 
         var failOnErrors = Has(request, "failOnErrors", out var limit) && limit.ValueKind == JsonValueKind.Number && limit.TryGetInt32(out var errors) && errors > 0 ? errors : (int?)null;
         var created = new Dictionary<string, (string Resource, string Id)>(StringComparer.Ordinal);
-        var results = new JsonArray();
-        var errorCount = 0;
         var logger = loggers.CreateLogger("JeffOps.Authentication.Enterprise.Scim");
+        var pending = operations.EnumerateArray()
+            .Select((operation, index) => new PendingOperation(
+                index,
+                operation,
+                Text(operation, "method")?.ToUpperInvariant() ?? string.Empty,
+                Text(operation, "bulkId"),
+                BulkReferences(operation)))
+            .ToList();
+        var results = new JsonObject?[pending.Count];
+        var errorCount = 0;
 
-        foreach (var operation in operations.EnumerateArray())
+        // Operations run as written, except that one referring to a bulkId waits for the operation that creates it (RFC 7644
+        // §3.7.2: forward references). References that can never resolve (a cycle) are reported, not run.
+        while (pending.Count > 0 && !(failOnErrors is { } stopAt && errorCount >= stopAt))
         {
-            if (failOnErrors is { } stopAt && errorCount >= stopAt)
-            {
-                break;
-            }
-
-            var method = Text(operation, "method")?.ToUpperInvariant() ?? string.Empty;
-            var bulkId = Text(operation, "bulkId");
-            var outcome = await BulkOperationAsync(context, scopes, logger, operation, method, bulkId, created).ConfigureAwait(false);
+            var definedLater = pending.Where(operation => operation.Method == "POST" && operation.BulkId is not null).Select(operation => operation.BulkId!).ToHashSet(StringComparer.Ordinal);
+            var next = pending.FirstOrDefault(operation => !operation.References.Any(definedLater.Contains));
+            var outcome = next is null
+                ? (Result: Error(StatusCodes.Status409Conflict, ScimErrors.InvalidValue, "Circular bulkId references can't be resolved."), Location: (string?)null)
+                : await BulkOperationAsync(context, scopes, logger, next.Operation, next.Method, next.BulkId, created).ConfigureAwait(false);
+            var current = next ?? pending[0];
+            pending.Remove(current);
+            var method = current.Method;
+            var bulkId = current.BulkId;
 
             var entry = new JsonObject { ["method"] = method, ["status"] = outcome.Result.Status.ToString(CultureInfo.InvariantCulture) };
             if (bulkId is not null)
@@ -542,10 +560,64 @@ public static partial class ScimEndpoints
                 entry["response"] = outcome.Result.Body?.DeepClone();
             }
 
-            results.Add(entry);
+            results[current.Index] = entry;
         }
 
-        return Scim(StatusCodes.Status200OK, new JsonObject { ["schemas"] = new JsonArray(BulkResponseSchema), ["Operations"] = results });
+        // In the order the client sent them; operations not run (after failOnErrors) are left out.
+        return Scim(StatusCodes.Status200OK, new JsonObject
+        {
+            ["schemas"] = new JsonArray(BulkResponseSchema),
+            ["Operations"] = new JsonArray([.. results.Where(entry => entry is not null).Cast<JsonNode>()]),
+        });
+    }
+
+    private sealed record PendingOperation(int Index, JsonElement Operation, string Method, string? BulkId, IReadOnlySet<string> References);
+
+    /// <summary>The bulkIds an operation refers to, in its path or anywhere in its data.</summary>
+    private static HashSet<string> BulkReferences(JsonElement operation)
+    {
+        var references = new HashSet<string>(StringComparer.Ordinal);
+        void Visit(JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.String when element.GetString() is { } text && text.StartsWith("bulkId:", StringComparison.Ordinal):
+                    references.Add(text["bulkId:".Length..]);
+                    break;
+                case JsonValueKind.Object:
+                    foreach (var property in element.EnumerateObject())
+                    {
+                        Visit(property.Value);
+                    }
+
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        Visit(item);
+                    }
+
+                    break;
+            }
+        }
+
+        if (operation.ValueKind == JsonValueKind.Object)
+        {
+            if (Has(operation, "data", out var data))
+            {
+                Visit(data);
+            }
+
+            foreach (var segment in (Text(operation, "path") ?? string.Empty).Split('/'))
+            {
+                if (segment.StartsWith("bulkId:", StringComparison.Ordinal))
+                {
+                    references.Add(segment["bulkId:".Length..]);
+                }
+            }
+        }
+
+        return references;
     }
 
     private static async Task<(ScimResult Result, string? Location)> BulkOperationAsync(
@@ -764,6 +836,122 @@ public static partial class ScimEndpoints
             : null;
     }
 
+    // ---- Sorting and attribute selection ---------------------------------------------------------------------------
+
+    /// <summary><c>sortBy</c> and <c>sortOrder</c> (RFC 7644 §3.4.2.3); false when <c>sortOrder</c> is neither value.</summary>
+    private static bool TrySort(HttpContext context, out ScimSort? sort)
+    {
+        sort = null;
+        var order = context.Request.Query["sortOrder"].ToString();
+        if (order.Length > 0 && !order.Equals("ascending", StringComparison.OrdinalIgnoreCase) && !order.Equals("descending", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (AttributeName(context.Request.Query["sortBy"].ToString()) is { } attribute)
+        {
+            sort = new ScimSort(attribute, order.Equals("descending", StringComparison.OrdinalIgnoreCase));
+        }
+
+        return true;
+    }
+
+    /// <summary>What <c>attributes</c> or <c>excludedAttributes</c> (RFC 7644 §3.9) ask for: dotted paths, lower-cased.</summary>
+    private sealed record AttributeSelection(IReadOnlyList<string[]>? Include, IReadOnlyList<string[]> Exclude);
+
+    private static AttributeSelection? Selection(HttpContext context)
+    {
+        var include = Paths(context.Request.Query["attributes"].ToString());
+        var exclude = Paths(context.Request.Query["excludedAttributes"].ToString());
+        return include is null && exclude is null ? null : new AttributeSelection(include, exclude ?? []);
+    }
+
+    private static List<string[]>? Paths(string raw)
+    {
+        var paths = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(AttributeName)
+            .Where(name => name is not null)
+            .Select(name => name!.ToLowerInvariant().Split('.'))
+            .ToList();
+        return paths.Count == 0 ? null : paths;
+    }
+
+    /// <summary>An attribute name without its schema (<c>urn:…:User:name.givenName</c> is <c>name.givenName</c>); null for none.</summary>
+    private static string? AttributeName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var trimmed = raw.Trim();
+        return trimmed.StartsWith("urn:", StringComparison.OrdinalIgnoreCase) ? trimmed[(trimmed.LastIndexOf(':') + 1)..] : trimmed;
+    }
+
+    /// <summary>The single-resource answer with only the attributes the request selects (POST, PUT, PATCH and GET alike).</summary>
+    private static ScimResult Selected(HttpContext context, ScimResult result) =>
+        result.Status < 300 && result.Body is { } body && Selection(context) is { } selection
+            ? new ScimResult(result.Status, Project(body, selection), result.Location, result.Version)
+            : result;
+
+    /// <summary>
+    /// The resource with only the selected attributes: <c>attributes</c> keeps those named (and sub-attributes of them),
+    /// <c>excludedAttributes</c> drops those named; <c>id</c> and <c>schemas</c> are always returned.
+    /// </summary>
+    private static JsonObject Project(JsonObject resource, AttributeSelection? selection)
+    {
+        if (selection is null)
+        {
+            return resource;
+        }
+
+        var projected = new JsonObject();
+        foreach (var (name, value) in resource)
+        {
+            var key = name.ToLowerInvariant();
+            if (key is "id" or "schemas")
+            {
+                projected[name] = value?.DeepClone();
+                continue;
+            }
+
+            if (selection.Include is { } include)
+            {
+                if (include.Any(path => path.Length == 1 && path[0] == key))
+                {
+                    projected[name] = value?.DeepClone();
+                }
+                else if (include.Where(path => path.Length == 2 && path[0] == key).Select(path => path[1]).ToHashSet(StringComparer.Ordinal) is { Count: > 0 } keep
+                    && Within(value, keep, keeping: true) is { } kept)
+                {
+                    projected[name] = kept;
+                }
+
+                continue;
+            }
+
+            if (selection.Exclude.Any(path => path.Length == 1 && path[0] == key))
+            {
+                continue;
+            }
+
+            var drop = selection.Exclude.Where(path => path.Length == 2 && path[0] == key).Select(path => path[1]).ToHashSet(StringComparer.Ordinal);
+            projected[name] = drop.Count > 0 ? Within(value, drop, keeping: false) : value?.DeepClone();
+        }
+
+        return projected;
+    }
+
+    /// <summary>A complex (or multi-valued complex) attribute with only, or without, the named sub-attributes.</summary>
+    private static JsonNode? Within(JsonNode? value, HashSet<string> names, bool keeping) => value switch
+    {
+        JsonObject complex => new JsonObject(complex
+            .Where(pair => names.Contains(pair.Key.ToLowerInvariant()) == keeping)
+            .Select(pair => KeyValuePair.Create(pair.Key, pair.Value?.DeepClone()))),
+        JsonArray values => new JsonArray([.. values.Select(item => Within(item, names, keeping))]),
+        _ => keeping ? null : value?.DeepClone(),
+    };
+
     // ---- Protocol helpers ----------------------------------------------------------------------------------------------
 
     private static Guid Tenant(HttpContext context) => (Guid)context.Items[TenantItem]!;
@@ -896,7 +1084,7 @@ public static partial class ScimEndpoints
         ["bulk"] = new JsonObject { ["supported"] = true, ["maxOperations"] = MaxBulkOperations, ["maxPayloadSize"] = MaxBulkPayloadBytes },
         ["filter"] = new JsonObject { ["supported"] = true, ["maxResults"] = 200 },
         ["changePassword"] = new JsonObject { ["supported"] = false },
-        ["sort"] = new JsonObject { ["supported"] = false },
+        ["sort"] = new JsonObject { ["supported"] = true },
         ["etag"] = new JsonObject { ["supported"] = true },
         ["authenticationSchemes"] = new JsonArray(new JsonObject
         {

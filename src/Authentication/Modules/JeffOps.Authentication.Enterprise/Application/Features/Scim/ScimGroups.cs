@@ -54,7 +54,7 @@ public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUse
             return tooLong;
         }
 
-        if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", command.DisplayName.Trim()), 0, 1, cancellationToken).ConfigureAwait(false)).Total > 0)
+        if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", command.DisplayName.Trim()), 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
         {
             return Error.Conflict(ScimErrors.Uniqueness, $"A group named '{command.DisplayName}' already exists.");
         }
@@ -113,7 +113,7 @@ public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUse
                 return tooLong;
             }
 
-            if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", newName.Trim()), 0, 1, cancellationToken).ConfigureAwait(false)).Total > 0)
+            if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", newName.Trim()), 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
             {
                 return Error.Conflict(ScimErrors.Uniqueness, $"A group named '{newName}' already exists.");
             }
@@ -194,7 +194,7 @@ public sealed class GetScimGroupHandler(IScimGroupRepository groups) : IQueryHan
     }
 }
 
-public sealed record ListScimGroupsQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count);
+public sealed record ListScimGroupsQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count, ScimSort? Sort = null);
 
 public sealed class ListScimGroupsHandler(IScimGroupRepository groups) : IQueryHandler<ListScimGroupsQuery, ScimPage<ScimGroupView>>
 {
@@ -207,7 +207,13 @@ public sealed class ListScimGroupsHandler(IScimGroupRepository groups) : IQueryH
             return Error.Failure(ScimErrors.InvalidFilter, "Groups can be filtered by displayName or externalId (eq).");
         }
 
-        var (page, total) = await groups.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200), cancellationToken).ConfigureAwait(false);
+        if (query.Sort is { } sort && ScimSort.Canonical(sort.Attribute, ScimSort.Groups) is null)
+        {
+            return Error.Failure(ScimErrors.InvalidValue, $"Groups can be sorted by {string.Join(", ", ScimSort.Groups)}.");
+        }
+
+        var (page, total) = await groups.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200),
+            query.Sort is { } requested ? requested with { Attribute = ScimSort.Canonical(requested.Attribute, ScimSort.Groups)! } : null, cancellationToken).ConfigureAwait(false);
         return new ScimPage<ScimGroupView>([.. page.Select(group => group.ToView())], total, Math.Max(query.StartIndex, 1));
     }
 }

@@ -343,6 +343,105 @@ public sealed class ScimTests : IAsyncDisposable
             .StatusCode.ShouldBe(HttpStatusCode.RequestEntityTooLarge);
     }
 
+    [Fact]
+    public async Task Bulk_resolves_references_to_operations_later_in_the_request()
+    {
+        await StartAsync();
+
+        var response = await ScimAsync(HttpMethod.Post, "Bulk", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],"Operations":[
+              {"method":"POST","path":"/Groups","bulkId":"eng","data":{"displayName":"Engineers","members":[{"value":"bulkId:ada"}]}},
+              {"method":"PATCH","path":"/Users/bulkId:ada","data":{"Operations":[{"op":"replace","path":"displayName","value":"Ada L."}]}},
+              {"method":"POST","path":"/Users","bulkId":"ada","data":{"userName":"ada@contoso.com","emails":[{"value":"ada@contoso.com"}]}}
+            ]}
+            """);
+
+        var results = (await JsonAsync(response)).GetProperty("Operations").EnumerateArray().ToList();
+        results.Select(result => result.TryGetProperty("bulkId", out var id) ? id.GetString() : result.GetProperty("method").GetString())
+            .ShouldBe(["eng", "PATCH", "ada"], "answers come in the order the client sent the operations");
+        results.Select(result => result.GetProperty("status").GetString()).ShouldBe(["201", "200", "201"]);
+        var ada = results[2].GetProperty("location").GetString()!.Split('/')[^1];
+        var group = await JsonAsync(await ScimAsync(HttpMethod.Get, $"Groups/{results[0].GetProperty("location").GetString()!.Split('/')[^1]}"));
+        group.GetProperty("members").EnumerateArray().Select(member => member.GetProperty("value").GetString()).ShouldBe([ada]);
+        (await JsonAsync(await ScimAsync(HttpMethod.Get, $"Users/{ada}"))).GetProperty("displayName").GetString().ShouldBe("Ada L.");
+
+        // References that can never resolve are reported, and nothing of them is created.
+        var circular = await ScimAsync(HttpMethod.Post, "Bulk", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],"Operations":[
+              {"method":"POST","path":"/Users","bulkId":"x","data":{"userName":"x@contoso.com","externalId":"bulkId:y","emails":[{"value":"x@contoso.com"}]}},
+              {"method":"POST","path":"/Users","bulkId":"y","data":{"userName":"y@contoso.com","externalId":"bulkId:x","emails":[{"value":"y@contoso.com"}]}},
+              {"method":"POST","path":"/Groups","bulkId":"self","data":{"displayName":"Self","externalId":"bulkId:self"}}
+            ]}
+            """);
+        (await JsonAsync(circular)).GetProperty("Operations").EnumerateArray().Select(result => result.GetProperty("status").GetString()).ShouldBe(["409", "409", "409"]);
+        (await JsonAsync(await ScimAsync(HttpMethod.Get, "Users?filter=" + Uri.EscapeDataString("userName eq \"x@contoso.com\"")))).GetProperty("totalResults").GetInt32().ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Lists_sort_by_the_attribute_asked_for()
+    {
+        await StartAsync();
+        foreach (var (user, display) in new[] { ("bea@contoso.com", "Bea"), ("Abe@contoso.com", (string?)null), ("cy@contoso.com", "al") })
+        {
+            var body = display is null
+                ? $$"""{"userName":"{{user}}","emails":[{"value":"{{user.ToLowerInvariant()}}"}]}"""
+                : $$"""{"userName":"{{user}}","displayName":"{{display}}","emails":[{"value":"{{user.ToLowerInvariant()}}"}]}""";
+            (await ScimAsync(HttpMethod.Post, "Users", body)).StatusCode.ShouldBe(HttpStatusCode.Created);
+        }
+
+        async Task<string?[]> UsersAsync(string query) =>
+            [.. (await JsonAsync(await ScimAsync(HttpMethod.Get, "Users?" + query))).GetProperty("Resources").EnumerateArray().Select(user => user.GetProperty("userName").GetString())];
+
+        (await UsersAsync("sortBy=userName")).ShouldBe(["Abe@contoso.com", "bea@contoso.com", "cy@contoso.com"], "case doesn't decide the order");
+        (await UsersAsync("sortBy=userName&sortOrder=descending")).ShouldBe(["cy@contoso.com", "bea@contoso.com", "Abe@contoso.com"]);
+        (await UsersAsync("sortBy=displayName")).ShouldBe(["cy@contoso.com", "bea@contoso.com", "Abe@contoso.com"], "no value comes last");
+        (await UsersAsync("sortBy=displayName&sortOrder=descending")).ShouldBe(["Abe@contoso.com", "bea@contoso.com", "cy@contoso.com"]);
+        (await UsersAsync("sortBy=urn:ietf:params:scim:schemas:core:2.0:User:userName&count=2&startIndex=2")).ShouldBe(["bea@contoso.com", "cy@contoso.com"]);
+
+        (await ScimAsync(HttpMethod.Get, "Users?sortBy=meta.created")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await ScimAsync(HttpMethod.Get, "Users?sortBy=userName&sortOrder=sideways")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        foreach (var name in new[] { "Beta", "alpha", "Gamma" })
+        {
+            await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"{{name}}"}""");
+        }
+
+        var groups = await JsonAsync(await ScimAsync(HttpMethod.Get, "Groups?sortBy=displayName&sortOrder=descending"));
+        groups.GetProperty("Resources").EnumerateArray().Select(group => group.GetProperty("displayName").GetString()).ShouldBe(["Gamma", "Beta", "alpha"]);
+        (await JsonAsync(await ScimAsync(HttpMethod.Get, "ServiceProviderConfig"))).GetProperty("sort").GetProperty("supported").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Attributes_select_what_a_resource_returns()
+    {
+        await StartAsync();
+        var created = await JsonAsync(await ScimAsync(HttpMethod.Post, "Users?attributes=userName", """
+            {"userName":"jo@contoso.com","name":{"givenName":"Jo","familyName":"Doe"},"emails":[{"value":"jo@contoso.com","primary":true}]}
+            """));
+        created.EnumerateObject().Select(property => property.Name).ShouldBe(["schemas", "id", "userName"], ignoreOrder: true);
+        var id = created.GetProperty("id").GetString();
+
+        var some = await JsonAsync(await ScimAsync(HttpMethod.Get, $"Users/{id}?attributes=urn:ietf:params:scim:schemas:core:2.0:User:name.givenName,emails.value"));
+        some.EnumerateObject().Select(property => property.Name).ShouldBe(["schemas", "id", "name", "emails"], ignoreOrder: true);
+        some.GetProperty("name").EnumerateObject().Select(property => property.Name).ShouldBe(["givenName"]);
+        some.GetProperty("emails")[0].EnumerateObject().Select(property => property.Name).ShouldBe(["value"]);
+
+        var without = await JsonAsync(await ScimAsync(HttpMethod.Get, $"Users/{id}?excludedAttributes=emails,meta,name.familyName,id"));
+        without.TryGetProperty("emails", out _).ShouldBeFalse();
+        without.TryGetProperty("meta", out _).ShouldBeFalse();
+        without.GetProperty("id").GetString().ShouldBe(id, "id is always returned");
+        without.GetProperty("name").TryGetProperty("familyName", out _).ShouldBeFalse();
+        without.GetProperty("name").GetProperty("givenName").GetString().ShouldBe("Jo");
+
+        await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Engineers","members":[{"value":"{{id}}"}]}""");
+        var groups = await JsonAsync(await ScimAsync(HttpMethod.Get, "Groups?excludedAttributes=members"));
+        groups.GetProperty("Resources")[0].TryGetProperty("members", out _).ShouldBeFalse();
+        groups.GetProperty("Resources")[0].GetProperty("displayName").GetString().ShouldBe("Engineers");
+
+        var patched = await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{id}?attributes=displayName", """{"Operations":[{"op":"replace","path":"displayName","value":"Jo D."}]}"""));
+        patched.EnumerateObject().Select(property => property.Name).ShouldBe(["schemas", "id", "displayName"], ignoreOrder: true);
+    }
+
     private async Task ShouldNotFailAsync(HttpMethod method, string path, string? body, string input)
     {
         var response = await ScimAsync(method, path, body);

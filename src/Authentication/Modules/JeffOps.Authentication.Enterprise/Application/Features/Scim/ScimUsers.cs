@@ -144,7 +144,7 @@ public sealed class GetScimUserHandler(IScimUserRepository users, ScimProvisioni
 }
 
 /// <summary>Lists users, 1-based <paramref name="StartIndex"/> as SCIM pages.</summary>
-public sealed record ListScimUsersQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count);
+public sealed record ListScimUsersQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count, ScimSort? Sort = null);
 
 public sealed class ListScimUsersHandler(IScimUserRepository users, ScimProvisioning provisioning) : IQueryHandler<ListScimUsersQuery, ScimPage<ScimUserView>>
 {
@@ -157,7 +157,13 @@ public sealed class ListScimUsersHandler(IScimUserRepository users, ScimProvisio
             return Error.Failure(ScimErrors.InvalidFilter, "Users can be filtered by userName or externalId (eq).");
         }
 
-        var (page, total) = await users.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200), cancellationToken).ConfigureAwait(false);
+        if (query.Sort is { } sort && ScimSort.Canonical(sort.Attribute, ScimSort.Users) is null)
+        {
+            return Error.Failure(ScimErrors.InvalidValue, $"Users can be sorted by {string.Join(", ", ScimSort.Users)}.");
+        }
+
+        var (page, total) = await users.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200),
+            query.Sort is { } requested ? requested with { Attribute = ScimSort.Canonical(requested.Attribute, ScimSort.Users)! } : null, cancellationToken).ConfigureAwait(false);
         var views = new List<ScimUserView>(page.Count);
         foreach (var user in page)
         {
