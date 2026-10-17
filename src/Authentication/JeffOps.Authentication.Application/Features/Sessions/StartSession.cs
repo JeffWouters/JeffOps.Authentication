@@ -26,6 +26,7 @@ public sealed record StartSessionCommand(
 
 public sealed class StartSessionHandler(
     IAccountRepository accounts,
+    IEndedSessions endedSessions,
     SessionBuilder sessions,
     IEventPublisher events,
     JeffOps.Authentication.Abstractions.Claims.ClaimNames names,
@@ -40,6 +41,19 @@ public sealed class StartSessionHandler(
         if (account is not { CanAuthenticate: true })
         {
             return Error.Unauthorized(GrantErrors.AccountInactive, "This account is not active.");
+        }
+
+        // The sign-in itself must still stand: not past its lifetime, not revoked for the account (a password change, a
+        // provider's logout of every session), not ended by signing out (here, or at the provider through single logout).
+        if (SessionLifetime.HasExpired(command.SignedInAt, time.GetUtcNow(), options.Value.SessionLifetime))
+        {
+            return Error.Unauthorized(GrantErrors.SessionExpired, "The session has reached its maximum lifetime. Sign in again.");
+        }
+
+        if (account.IsSessionRevoked(command.SignedInAt)
+            || (command.SessionId is { } ended && await endedSessions.IsEndedAsync(ended, cancellationToken).ConfigureAwait(false)))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "This session was ended. Sign in again.");
         }
 
         if (!sessions.AllowsSignIn(command.Strength))

@@ -188,6 +188,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddSingleton<Application.Features.Grants.WorkloadIdentity.IExternalTokenValidator, ExternalTokenValidator>();
         services.AddDomainEventHandler<BackchannelLogoutNotifier>();
         services.TryAddScoped<IEndedSessions, DatabaseEndedSessions>();
+        services.TryAddScoped<Application.Federation.IExternalSessions, DatabaseExternalSessions>();
         services.TryAddScoped<ISessionLogoutNotifier, BackchannelLogoutNotifier>();
 
         return new AuthenticationBuilder(services, configuration);

@@ -314,6 +314,7 @@ public sealed class SamlTests : IAsyncDisposable
         await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
         var tokens = await AuthorizeAsync(browser, "openid offline_access api");
         tokens.RefreshToken.ShouldNotBeNull();
+        _host.Time.Advance(TimeSpan.FromSeconds(5));
 
         var logout = await _host.Client.GetAsync(LogoutRequest("employee-4711", _idpCertificate), TestContext.Current.CancellationToken);
 
@@ -321,6 +322,12 @@ public sealed class SamlTests : IAsyncDisposable
         logout.Headers.Location!.GetLeftPart(UriPartial.Path).ShouldBe("https://idp.test/slo");
         System.Web.HttpUtility.ParseQueryString(logout.Headers.Location.Query)["SAMLResponse"].ShouldNotBeNullOrEmpty();
         (await _host.RefreshAsync(tokens.RefreshToken)).Error.ShouldBe("invalid_grant");
+
+        // The browser's sign-in here ended with it: it can't get new codes without signing in again.
+        var again = await browser.GetAsync(null!,
+            $"connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
+            $"&scope=openid&code_challenge={SoftwareAuthenticator.Base64Url(SHA256.HashData("verifier"u8))}&code_challenge_method=S256&state=xyz");
+        again.Headers.Location!.OriginalString.ShouldContain("account/login");
     }
 
     [Fact]

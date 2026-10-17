@@ -8,8 +8,8 @@ namespace JeffOps.Authentication.Enterprise.Application.Features.Providers;
 
 /// <summary>
 /// A tenant's own OpenID Connect provider. <c>Name</c> is what sign-in URLs use (select it as the tenant's SSO provider to use
-/// it); <c>RedirectPath</c> is the redirect URI to register at the provider, relative to the token server. The client secret is
-/// never returned: <c>HasClientSecret</c> says whether one is stored.
+/// it); <c>RedirectPath</c>, <c>PostLogoutRedirectPath</c> and <c>BackchannelLogoutPath</c> are the URIs to register at the
+/// provider, relative to the token server. The client secret is never returned: <c>HasClientSecret</c> says whether one is stored.
 /// </summary>
 public sealed record TenantOidcProviderDto(
     Guid Id,
@@ -21,6 +21,8 @@ public sealed record TenantOidcProviderDto(
     IReadOnlyList<string> Scopes,
     IReadOnlyList<string> MultiFactorAcrValues,
     string RedirectPath,
+    string PostLogoutRedirectPath,
+    string BackchannelLogoutPath,
     DateTimeOffset UpdatedAt);
 
 /// <summary>
@@ -40,7 +42,8 @@ internal static class TenantOidcProviderRules
 {
     public static TenantOidcProviderDto ToDto(this TenantOidcIdentityProvider provider) => new(
         provider.Id, provider.Name, provider.DisplayName, provider.Issuer, provider.ClientId, provider.ProtectedClientSecret is not null,
-        provider.ScopeList, provider.MultiFactorAcrValueList, $"signin/oidc/{provider.Name}/callback", provider.UpdatedAt);
+        provider.ScopeList, provider.MultiFactorAcrValueList, $"signin/oidc/{provider.Name}/callback",
+        $"signin/oidc/{provider.Name}/signed-out", $"signin/oidc/{provider.Name}/backchannel-logout", provider.UpdatedAt);
 
     /// <summary>
     /// Refuses settings that can't work or aren't safe: the issuer is an <c>https://</c> URL naming a host, not an IP address

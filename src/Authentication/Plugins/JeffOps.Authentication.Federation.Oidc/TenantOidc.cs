@@ -7,6 +7,8 @@ using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Abstractions.Http;
 using JeffOps.Authentication.Abstractions.Replay;
 using JeffOps.Authentication.Application;
+using JeffOps.Authentication.Application.Abstractions;
+using JeffOps.Authentication.Application.Features.Sessions.EndSession;
 using JeffOps.Authentication.Application.Features.Federation.CompleteExternalSignIn;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Application.Sessions;
@@ -33,7 +35,10 @@ namespace JeffOps.Authentication.Federation.Oidc;
 /// OpenID Connect providers tenants register themselves (docs/DESIGN.md §8.4). They can't be OpenIddict client
 /// registrations, which are fixed at startup, so this is a small relying party of its own: the authorization code flow with
 /// PKCE, <c>state</c> and <c>nonce</c> bound to the browser, and the ID token checked against the provider's published keys.
-/// Everything is fetched from the tenant's issuer through a client that reaches public addresses only.
+/// Everything is fetched from the tenant's issuer through a client that reaches public addresses only. Single logout both
+/// ways: signing out here sends the browser to the provider's <c>end_session_endpoint</c> (RP-Initiated Logout 1.0), and the
+/// provider's <c>logout_token</c> at <c>signin/oidc/{provider}/backchannel-logout</c> ends the sessions it names
+/// (Back-Channel Logout 1.0).
 /// </summary>
 public static partial class TenantOidcEndpoints
 {
@@ -47,6 +52,14 @@ public static partial class TenantOidcEndpoints
     private const int MaxResponseBytes = 512 * 1024;
     private static readonly TimeSpan SignInTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan LogoutTokenMaxAge = TimeSpan.FromMinutes(5);
+    private const string BackchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout";
+
+    /// <summary>The session claim naming the tenant OIDC provider a sign-in came from.</summary>
+    internal const string ProviderClaim = "jeffops:oidc:provider";
+
+    /// <summary>The session claim holding the provider's ID token, the <c>id_token_hint</c> for logging out there.</summary>
+    internal const string IdTokenClaim = "jeffops:oidc:id_token";
 
     private static readonly string[] Algorithms =
     [
@@ -69,16 +82,22 @@ public static partial class TenantOidcEndpoints
             .ConfigurePrimaryHttpMessageHandler(PublicNetwork.Handler);
         services.TryAddSingleton<TenantOidcDocuments>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IExternalProviderChallenge, TenantOidcChallenge>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IExternalSignOut, TenantOidcSignOut>());
         return builder;
     }
 
-    /// <summary>Maps <c>signin/oidc/{provider}</c> and <c>signin/oidc/{provider}/callback</c>; anonymous, left out of the API description.</summary>
+    /// <summary>
+    /// Maps <c>signin/oidc/{provider}</c> (start), <c>/callback</c> (the redirect URI), <c>/signed-out</c> (the post-logout
+    /// redirect URI) and <c>/backchannel-logout</c> (the back-channel logout URI); anonymous, left out of the API description.
+    /// </summary>
     public static IEndpointRouteBuilder MapJeffOpsTenantOidc(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         var group = endpoints.MapGroup(Prefix).AllowAnonymous().ExcludeFromDescription();
         group.MapGet("{provider}", StartAsync);
         group.MapGet("{provider}/callback", CallbackAsync);
+        group.MapGet("{provider}/signed-out", SignedOut);
+        group.MapPost("{provider}/backchannel-logout", BackchannelLogoutAsync).DisableAntiforgery();
         return endpoints;
     }
 
@@ -158,6 +177,7 @@ public static partial class TenantOidcEndpoints
         ICommandHandler<CompleteExternalSignInCommand, ExternalSignInResult> completeSignIn,
         IOptions<TokenServerOptions> tokenServer,
         IOptions<FederationOptions> federation,
+        IExternalSessions externalSessions,
         ClaimNames names,
         TimeProvider time,
         ILoggerFactory loggers)
@@ -190,12 +210,14 @@ public static partial class TenantOidcEndpoints
         }
 
         JsonWebToken idToken;
+        string rawIdToken;
         string? email;
         try
         {
             var document = await documents.GetAsync(settings.Issuer, context.RequestAborted).ConfigureAwait(false);
             using var client = httpClients.CreateClient(HttpClientName);
             var tokens = await RedeemAsync(client, document, settings, code, RedirectUri(context, provider), pending.Verifier, context.RequestAborted).ConfigureAwait(false);
+            rawIdToken = tokens.IdToken;
             idToken = await ValidateAsync(documents, document, settings, tokens.IdToken, time, context.RequestAborted).ConfigureAwait(false);
             if (!idToken.TryGetPayloadValue<string>("nonce", out var nonce) || !FixedTimeEquals(nonce, pending.Nonce))
             {
@@ -247,9 +269,166 @@ public static partial class TenantOidcEndpoints
             return BackToLogin(pending.ReturnUrl, signedIn.Error.Code);
         }
 
+        // Remember where the session came from: signing out here signs out at the provider too, and the provider's logout
+        // (by its session, or by the user) can find this session.
         var scheme = tokenServer.Value.SignInScheme;
-        await context.SignInAsync(scheme, SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, scheme)).ConfigureAwait(false);
+        var now = time.GetUtcNow();
+        var principal = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, now, names, scheme);
+        var session = (System.Security.Claims.ClaimsIdentity)principal.Identity!;
+        session.AddClaim(new System.Security.Claims.Claim(ProviderClaim, provider));
+        session.AddClaim(new System.Security.Claims.Claim(IdTokenClaim, rawIdToken));
+        await externalSessions.RecordAsync(
+            provider, Claim(idToken, "sid"), signedIn.Value.AccountId, SignInPrincipal.SessionId(principal, names)!, now + tokenServer.Value.SessionLifetime, context.RequestAborted).ConfigureAwait(false);
+
+        await context.SignInAsync(scheme, principal).ConfigureAwait(false);
         return Results.Redirect(pending.ReturnUrl);
+    }
+
+    /// <summary>The provider sends the browser back after logging out there: continue where signing out here left off.</summary>
+    private static IResult SignedOut(string provider, string? state, IDataProtectionProvider dataProtection, TimeProvider time) =>
+        Results.Redirect(TenantOidcSignOut.ReadState(state, provider, dataProtection, time) ?? "/");
+
+    /// <summary>
+    /// Back-Channel Logout 1.0: the provider posts a signed <c>logout_token</c> naming its session (<c>sid</c>), the user
+    /// (<c>sub</c>), or both. Every session here that sign-ins through this provider started for them ends: tokens stop
+    /// refreshing, the browser's sign-in stops working, and clients are told in turn.
+    /// </summary>
+    private static async Task<IResult> BackchannelLogoutAsync(
+        string provider,
+        HttpContext context,
+        ITenantProviderDirectory directory,
+        TenantOidcDocuments documents,
+        IReplayCache replay,
+        IExternalSessions externalSessions,
+        IAccountRepository accounts,
+        ICommandHandler<EndSessionCommand> endSession,
+        TimeProvider time,
+        ILoggerFactory loggers)
+    {
+        var logger = loggers.CreateLogger(LoggerName);
+        context.Response.Headers.CacheControl = "no-store";
+        if (!TenantProviderNames.IsOidc(provider) || await directory.FindOidcAsync(provider, context.RequestAborted).ConfigureAwait(false) is not { } settings)
+        {
+            return TypedResults.NotFound();
+        }
+
+        if (!context.Request.HasFormContentType
+            || (await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false))["logout_token"].ToString() is not { Length: > 0 } logoutToken)
+        {
+            return Results.BadRequest(new { error = "invalid_request", error_description = "A logout_token is required." });
+        }
+
+        JsonWebToken token;
+        try
+        {
+            token = await ValidateLogoutTokenAsync(documents, settings, logoutToken, time, context.RequestAborted).ConfigureAwait(false);
+            if (!await replay.TryAddAsync(ReplayKeys.For("oidc-logout", provider + "|" + token.Id), time.GetUtcNow() + LogoutTokenMaxAge + ClockSkew, context.RequestAborted).ConfigureAwait(false))
+            {
+                throw new SecurityTokenReplayDetectedException("The logout token was used before.");
+            }
+        }
+#pragma warning disable CA1031 // Any invalid logout token is refused, never acted on.
+        catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            LogInvalid(logger, exception, provider);
+            return Results.BadRequest(new { error = "invalid_request", error_description = "The logout token is not valid." });
+        }
+
+        Guid? accountId = null;
+        var subject = Claim(token, "sub");
+        if (subject is not null)
+        {
+            var login = new ExternalLoginKey("urn:jeffops:tenant-provider:" + provider[TenantProviderNames.OidcPrefix.Length..], subject);
+            if (await accounts.FindByExternalLoginAsync(login, context.RequestAborted).ConfigureAwait(false) is not { } account)
+            {
+                return Results.Ok();
+            }
+
+            accountId = account.Id;
+        }
+
+        var ended = await externalSessions.FindAsync(provider, Claim(token, "sid"), accountId, context.RequestAborted).ConfigureAwait(false);
+        foreach (var session in ended)
+        {
+            await endSession.HandleAsync(new EndSessionCommand(session.AccountId, session.SessionId), context.RequestAborted).ConfigureAwait(false);
+        }
+
+        await externalSessions.RemoveAsync([.. ended.Select(session => session.SessionId)], context.RequestAborted).ConfigureAwait(false);
+        LogBackchannelLogout(logger, provider, ended.Count);
+        return Results.Ok();
+    }
+
+    /// <summary>
+    /// A logout token (Back-Channel Logout 1.0 §2.6): signed by the provider's keys, its issuer, this client as audience,
+    /// issued in the last five minutes, the logout event, a <c>jti</c>, <c>sub</c> or <c>sid</c>, and no <c>nonce</c> (so
+    /// an ID token can't pass for one).
+    /// </summary>
+    private static async Task<JsonWebToken> ValidateLogoutTokenAsync(
+        TenantOidcDocuments documents, TenantOidcProvider settings, string logoutToken, TimeProvider time, CancellationToken cancellationToken)
+    {
+        var document = await documents.GetAsync(settings.Issuer, cancellationToken).ConfigureAwait(false);
+        var handler = new JsonWebTokenHandler { MapInboundClaims = false };
+        var result = await handler.ValidateTokenAsync(logoutToken, LogoutParameters(document, settings, time)).ConfigureAwait(false);
+        if (result.Exception is SecurityTokenSignatureKeyNotFoundException)
+        {
+            document = await documents.RefreshKeysAsync(settings.Issuer, cancellationToken).ConfigureAwait(false);
+            result = await handler.ValidateTokenAsync(logoutToken, LogoutParameters(document, settings, time)).ConfigureAwait(false);
+        }
+
+        if (!result.IsValid)
+        {
+            throw result.Exception ?? new SecurityTokenValidationException("The logout token is not valid.");
+        }
+
+        var token = (JsonWebToken)result.SecurityToken;
+        var now = time.GetUtcNow();
+        if (token.Typ is { Length: > 0 } typ && !typ.Equals("logout+jwt", StringComparison.OrdinalIgnoreCase) && !typ.Equals("JWT", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SecurityTokenValidationException($"A logout token isn't typed '{typ}'.");
+        }
+
+        if (!token.TryGetPayloadValue<long>("iat", out var issuedAt)
+            || DateTimeOffset.FromUnixTimeSeconds(issuedAt) < now - LogoutTokenMaxAge - ClockSkew
+            || DateTimeOffset.FromUnixTimeSeconds(issuedAt) > now + ClockSkew)
+        {
+            throw new SecurityTokenValidationException("The logout token wasn't issued just now.");
+        }
+
+        if (!token.TryGetPayloadValue<JsonElement>("events", out var events) || events.ValueKind != JsonValueKind.Object
+            || !events.TryGetProperty(BackchannelLogoutEvent, out var logout) || logout.ValueKind != JsonValueKind.Object)
+        {
+            throw new SecurityTokenValidationException("The token isn't a logout token.");
+        }
+
+        if (token.TryGetPayloadValue<object>("nonce", out _))
+        {
+            throw new SecurityTokenValidationException("A logout token has no nonce.");
+        }
+
+        if (string.IsNullOrEmpty(token.Id) || (Claim(token, "sub") is null && Claim(token, "sid") is null))
+        {
+            throw new SecurityTokenValidationException("A logout token needs a jti, and a sub or sid.");
+        }
+
+        if (token.TryGetPayloadValue<string>("azp", out var azp) ? azp != settings.ClientId : token.Audiences.Count() > 1)
+        {
+            throw new SecurityTokenInvalidAudienceException("The logout token was issued to another client.");
+        }
+
+        return token;
+    }
+
+    private static TokenValidationParameters LogoutParameters(TenantOidcDocument document, TenantOidcProvider settings, TimeProvider time)
+    {
+        var parameters = Parameters(document, settings, time);
+        parameters.RequireExpirationTime = false;
+        parameters.LifetimeValidator = (notBefore, expires, _, _) =>
+        {
+            var now = time.GetUtcNow().UtcDateTime;
+            return (expires is not { } until || until > now - ClockSkew) && (notBefore is not { } from || from <= now + ClockSkew);
+        };
+        return parameters;
     }
 
     /// <summary>Redeems the code at the token endpoint, authenticating as the provider allows (RFC 6749 §2.3.1).</summary>
@@ -432,8 +611,100 @@ public static partial class TenantOidcEndpoints
     [LoggerMessage(EventId = 8603, Level = LogLevel.Warning, Message = "Tenant OIDC provider {Provider} could not be reached or described itself wrongly.")]
     private static partial void LogUnavailable(ILogger logger, Exception exception, string provider);
 
+    [LoggerMessage(EventId = 8604, Level = LogLevel.Information, Message = "Tenant OIDC provider {Provider} logged out {Count} session(s) through the back channel.")]
+    private static partial void LogBackchannelLogout(ILogger logger, string provider, int count);
+
     /// <summary>What the browser's cookie holds between the start and the callback.</summary>
     private sealed record PendingSignIn(string State, string Nonce, string Verifier, string ReturnUrl, long ExpiresAt);
+}
+
+/// <summary>
+/// Logout started here (RP-Initiated Logout 1.0): signing out at the token server sends a browser that signed in through a
+/// tenant OIDC provider to the provider's <c>end_session_endpoint</c>, with the ID token as <c>id_token_hint</c>; the provider
+/// sends it back to <c>signin/oidc/{provider}/signed-out</c>, which continues signing out here. Only for providers whose
+/// discovery document has an end-session endpoint.
+/// </summary>
+internal sealed class TenantOidcSignOut(IServiceScopeFactory scopes, TenantOidcDocuments documents, IDataProtectionProvider dataProtection, TimeProvider time) : IExternalSignOut
+{
+    private static readonly TimeSpan StateLifetime = TimeSpan.FromMinutes(10);
+
+    public async Task<string?> SignOutUrlAsync(System.Security.Claims.ClaimsPrincipal signIn, Uri requestOrigin, string returnUrl, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(signIn);
+        ArgumentNullException.ThrowIfNull(requestOrigin);
+        if (signIn.FindFirst(TenantOidcEndpoints.ProviderClaim)?.Value is not { } provider || !TenantProviderNames.IsOidc(provider))
+        {
+            return null;
+        }
+
+        TenantOidcProvider? settings;
+        await using (var scope = scopes.CreateAsyncScope())
+        {
+            settings = await scope.ServiceProvider.GetRequiredService<ITenantProviderDirectory>().FindOidcAsync(provider, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (settings is null)
+        {
+            return null;
+        }
+
+        TenantOidcDocument document;
+        try
+        {
+            document = await documents.GetAsync(settings.Issuer, cancellationToken).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // A provider that can't be reached is not signed out at; signing out here goes on.
+        catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            _ = exception;
+            return null;
+        }
+
+        if (!Uri.TryCreate(document.Configuration.EndSessionEndpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
+        {
+            return null;
+        }
+
+        var state = new SignOutState(LocalRedirect.OrRoot(returnUrl), (time.GetUtcNow() + StateLifetime).ToUnixTimeSeconds());
+        var query = new Dictionary<string, string>
+        {
+            ["client_id"] = settings.ClientId,
+            ["post_logout_redirect_uri"] = new Uri(requestOrigin, $"{TenantOidcEndpoints.Prefix}/{provider}/signed-out").AbsoluteUri,
+            ["state"] = Protector(dataProtection, provider).Protect(JsonSerializer.Serialize(state)),
+        };
+        if (signIn.FindFirst(TenantOidcEndpoints.IdTokenClaim)?.Value is { Length: > 0 } idToken)
+        {
+            query["id_token_hint"] = idToken;
+        }
+
+        var separator = endpoint.Query.Length > 0 ? '&' : '?';
+        return endpoint.AbsoluteUri + separator + string.Join('&', query.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
+    }
+
+    /// <summary>Where to continue after the provider logged out; null when the state is invalid or expired.</summary>
+    public static string? ReadState(string? state, string provider, IDataProtectionProvider dataProtection, TimeProvider time)
+    {
+        if (string.IsNullOrEmpty(state))
+        {
+            return null;
+        }
+
+        try
+        {
+            var read = JsonSerializer.Deserialize<SignOutState>(Protector(dataProtection, provider).Unprotect(state));
+            return read is not null && DateTimeOffset.FromUnixTimeSeconds(read.ExpiresAt) > time.GetUtcNow() ? LocalRedirect.OrRoot(read.ReturnUrl) : null;
+        }
+        catch (Exception exception) when (exception is CryptographicException or JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static IDataProtector Protector(IDataProtectionProvider dataProtection, string provider) =>
+        dataProtection.CreateProtector("JeffOps.Oidc.TenantSignOut.v1", provider);
+
+    private sealed record SignOutState(string ReturnUrl, long ExpiresAt);
 }
 
 /// <summary>Sends <c>signin/tenant-oidc-{id}</c> to <c>signin/oidc/tenant-oidc-{id}</c>.</summary>

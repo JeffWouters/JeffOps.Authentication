@@ -165,6 +165,100 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
         (await _host.Client.GetAsync(new Uri($"signin/oidc/{provider}", UriKind.Relative), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.NotFound);
     }
 
+    [Fact]
+    public async Task Signing_out_here_signs_out_at_the_provider_too()
+    {
+        var provider = await StartWithProviderAsync();
+        using var browser = new Browser(_host);
+        await SignInThroughAsync(browser, "account/login/discover?email=jo%40contoso.com&returnUrl=%2Fdone", "jo@contoso.com");
+
+        var signOut = await browser.GetAsync(null!, "connect/endsession");
+        signOut.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        var toProvider = signOut.Headers.Location!;
+        toProvider.GetLeftPart(UriPartial.Path).ShouldBe($"{Issuer}/logout");
+        var query = System.Web.HttpUtility.ParseQueryString(toProvider.Query);
+        query["id_token_hint"].ShouldBe(_idp.LastIdToken);
+        query["client_id"].ShouldBe(ClientId);
+        query["post_logout_redirect_uri"].ShouldBe($"https://localhost/signin/oidc/{provider}/signed-out");
+
+        // The provider logs the user out and sends the browser back; signing out here then completes.
+        var back = await browser.GetAsync(null!, $"signin/oidc/{provider}/signed-out?state={Uri.EscapeDataString(query["state"]!)}");
+        back.Headers.Location!.OriginalString.ShouldStartWith("/connect/endsession");
+        var finished = await browser.GetAsync(null!, back.Headers.Location.OriginalString.TrimStart('/'));
+        finished.Headers.Location!.OriginalString.ShouldNotContain("idp.contoso.test", customMessage: "signed out here already, the second pass completes");
+
+        (await browser.GetAsync(null!, $"signin/oidc/{provider}/signed-out?state=forged")).Headers.Location!.OriginalString.ShouldBe("/");
+    }
+
+    [Fact]
+    public async Task The_provider_s_back_channel_logout_ends_the_session_it_names()
+    {
+        var provider = await StartWithProviderAsync();
+        using var laptop = new Browser(_host);
+        await SignInThroughAsync(laptop, $"signin/{provider}?returnUrl=%2Fdone", "jo@contoso.com");
+        var laptopSession = _idp.LastSid!;
+        var laptopTokens = await AuthorizeAsync(laptop);
+        using var phone = new Browser(_host);
+        await SignInThroughAsync(phone, $"signin/{provider}?returnUrl=%2Fdone", "jo@contoso.com");
+        var phoneTokens = await AuthorizeAsync(phone);
+
+        (await LogoutAsync(provider, _idp.LogoutToken(sid: laptopSession))).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        (await _host.RefreshAsync(laptopTokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
+        (await _host.RefreshAsync(phoneTokens.RefreshToken!)).AccessToken.ShouldNotBeNull("the phone's session is another provider session");
+
+        // The laptop's browser must sign in again; the phone's still gets codes.
+        (await laptop.GetAsync(null!, AuthorizePath())).Headers.Location!.OriginalString.ShouldContain("account/login");
+        TokenServerHost.QueryValue((await phone.GetAsync(null!, AuthorizePath())).Headers.Location!, "code").ShouldNotBeNull();
+    }
+
+    [Fact]
+    public async Task A_back_channel_logout_naming_only_the_user_ends_all_their_sessions_from_the_provider()
+    {
+        var provider = await StartWithProviderAsync();
+        using var laptop = new Browser(_host);
+        await SignInThroughAsync(laptop, $"signin/{provider}?returnUrl=%2Fdone", "jo@contoso.com");
+        var laptopTokens = await AuthorizeAsync(laptop);
+        using var phone = new Browser(_host);
+        await SignInThroughAsync(phone, $"signin/{provider}?returnUrl=%2Fdone", "jo@contoso.com");
+        var phoneTokens = await AuthorizeAsync(phone);
+
+        (await LogoutAsync(provider, _idp.LogoutToken(sub: "subject-jo@contoso.com"))).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        (await _host.RefreshAsync(laptopTokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
+        (await _host.RefreshAsync(phoneTokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
+    }
+
+    [Fact]
+    public async Task Invalid_logout_tokens_are_refused_and_end_nothing()
+    {
+        var provider = await StartWithProviderAsync();
+        using var browser = new Browser(_host);
+        await SignInThroughAsync(browser, $"signin/{provider}?returnUrl=%2Fdone", "jo@contoso.com");
+        var sid = _idp.LastSid!;
+        var tokens = await AuthorizeAsync(browser);
+
+        var impostor = FakeOidcProvider.NewKey("impostor");
+        foreach (var forged in new[]
+        {
+            _idp.LogoutToken(sid: sid, key: impostor),                                   // not the provider's key
+            _idp.LogoutToken(sid: sid, audience: "someone-else"),                        // another client
+            _idp.LogoutToken(sid: sid, extra: new() { ["nonce"] = "n" }),               // an ID token posing as one
+            _idp.LogoutToken(sid: sid, logoutEvent: false),                              // not the logout event
+            _idp.LogoutToken(sid: sid, issuedAt: DateTime.UtcNow.AddHours(-1)),          // old
+            _idp.LogoutToken(),                                                          // names nobody
+        })
+        {
+            (await LogoutAsync(provider, forged)).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        }
+
+        (await _host.RefreshAsync(tokens.RefreshToken!)).AccessToken.ShouldNotBeNull("nothing was ended");
+
+        var valid = _idp.LogoutToken(sid: sid);
+        (await LogoutAsync(provider, valid)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await LogoutAsync(provider, valid)).StatusCode.ShouldBe(HttpStatusCode.BadRequest, "a logout token works once");
+    }
+
     public async ValueTask DisposeAsync()
     {
         _idp.Dispose();
@@ -220,6 +314,52 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
         var token = (await _host.SignInAsync(account.Id)).AccessToken!;
         (await _host.SendAsync(HttpMethod.Put, $"enterprise/admin/tenants/{tenant}/custom-providers", token, JsonContent.Create(new { allowed })))
             .StatusCode.ShouldBe(HttpStatusCode.NoContent);
+    }
+
+    /// <summary>A started host with Contoso's verified domain, allowed custom providers, and its OIDC provider as SSO provider.</summary>
+    private async Task<string> StartWithProviderAsync()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await AllowAsync(Contoso);
+        var provider = (await RegisterAsync(admin)).GetProperty("name").GetString()!;
+        await ReadOkAsync(await _host.SendAsync(HttpMethod.Put, "enterprise/sso", admin, JsonContent.Create(new { provider, ssoOnly = false })));
+        return provider;
+    }
+
+    private async Task<HttpResponseMessage> LogoutAsync(string provider, string logoutToken) =>
+        await _host.Client.PostAsync(
+            new Uri($"signin/oidc/{provider}/backchannel-logout", UriKind.Relative),
+            new FormUrlEncodedContent(new Dictionary<string, string> { ["logout_token"] = logoutToken }),
+            TestContext.Current.CancellationToken);
+
+    private string _verifier = string.Empty;
+
+    private string AuthorizePath()
+    {
+        _verifier = SoftwareAuthenticator.Base64Url(RandomNumberGenerator.GetBytes(32));
+        var challenge = SoftwareAuthenticator.Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(_verifier)));
+        return $"connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
+            $"&scope={Uri.EscapeDataString("openid offline_access api")}&code_challenge={challenge}&code_challenge_method=S256&state=xyz";
+    }
+
+    /// <summary>The BFF's authorization code flow in <paramref name="browser"/>'s session.</summary>
+    private async Task<TokenResponse> AuthorizeAsync(Browser browser)
+    {
+        var authorize = await browser.GetAsync(null!, AuthorizePath());
+        var code = TokenServerHost.QueryValue(authorize.Headers.Location!, "code").ShouldNotBeNull(authorize.Headers.Location!.ToString());
+        var tokens = await _host.TokenAsync(new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = code,
+            ["redirect_uri"] = TokenServerHost.BffRedirect,
+            ["code_verifier"] = _verifier,
+            ["client_id"] = TokenServerHost.BffClient,
+            ["client_secret"] = TokenServerHost.BffSecret,
+        });
+        tokens.RefreshToken.ShouldNotBeNull();
+        return tokens;
     }
 
     private static object ProviderData() => new
@@ -284,6 +424,12 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
 
     public string? LastClientAuthentication { get; private set; }
 
+    /// <summary>The provider session (<c>sid</c>) of the last sign-in.</summary>
+    public string? LastSid { get; private set; }
+
+    /// <summary>The last ID token issued.</summary>
+    public string? LastIdToken { get; private set; }
+
     public static RsaSecurityKey NewKey(string keyId) => new(RSA.Create(2048)) { KeyId = keyId };
 
     /// <summary>The user signs in at the provider; returns where the provider sends the browser back to.</summary>
@@ -292,8 +438,12 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
         query["response_type"].ShouldBe("code");
         query["code_challenge_method"].ShouldBe("S256");
         var code = Guid.NewGuid().ToString("N");
-        var token = new IdToken(query["client_id"]!, query["nonce"]!, query["code_challenge"]!, query["redirect_uri"]!, "subject-" + email, email, _key);
+        var token = new IdToken(query["client_id"]!, query["nonce"]!, query["code_challenge"]!, query["redirect_uri"]!, "subject-" + email, email, _key)
+        {
+            Sid = "idp-session-" + Guid.NewGuid().ToString("N"),
+        };
         _codes[code] = Forge?.Invoke(token) ?? token;
+        LastSid = token.Sid;
         return new Uri($"{query["redirect_uri"]}?code={code}&state={Uri.EscapeDataString(query["state"]!)}");
     }
 
@@ -308,6 +458,7 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
                 ["authorization_endpoint"] = $"{_issuer}/authorize",
                 ["token_endpoint"] = $"{_issuer}/token",
                 ["jwks_uri"] = $"{_issuer}/jwks",
+                ["end_session_endpoint"] = $"{_issuer}/logout",
                 ["token_endpoint_auth_methods_supported"] = new[] { "client_secret_basic" },
             });
         }
@@ -331,10 +482,47 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
                 return new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = JsonContent.Create(new { error = "invalid_grant" }) };
             }
 
-            return Json(new { access_token = "at", token_type = "Bearer", id_token = token.Issue(_issuer) });
+            LastIdToken = token.Issue(_issuer);
+            return Json(new { access_token = "at", token_type = "Bearer", id_token = LastIdToken });
         }
 
         return new HttpResponseMessage(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>A Back-Channel Logout 1.0 logout token, signed with the provider's key unless another is given.</summary>
+    public string LogoutToken(
+        string? sub = null, string? sid = null, RsaSecurityKey? key = null, string audience = "jeffops-at-contoso",
+        Dictionary<string, object>? extra = null, bool logoutEvent = true, DateTime? issuedAt = null)
+    {
+        var claims = new Dictionary<string, object>
+        {
+            ["jti"] = Guid.NewGuid().ToString("N"),
+            ["events"] = new Dictionary<string, object> { [logoutEvent ? "http://schemas.openid.net/event/backchannel-logout" : "urn:other:event"] = new Dictionary<string, object>() },
+        };
+        if (sub is not null)
+        {
+            claims["sub"] = sub;
+        }
+
+        if (sid is not null)
+        {
+            claims["sid"] = sid;
+        }
+
+        foreach (var (name, value) in extra ?? [])
+        {
+            claims[name] = value;
+        }
+
+        return new JsonWebTokenHandler { SetDefaultTimesOnTokenCreation = false }.CreateToken(new SecurityTokenDescriptor
+        {
+            Issuer = _issuer,
+            Audience = audience,
+            IssuedAt = issuedAt ?? DateTime.UtcNow,
+            TokenType = "logout+jwt",
+            Claims = claims,
+            SigningCredentials = new SigningCredentials(key ?? _key, SecurityAlgorithms.RsaSha256),
+        });
     }
 
     private static HttpResponseMessage Json(object body) => new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
@@ -352,6 +540,8 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
     /// <summary>What the provider puts in the ID token for one sign-in (a test may forge parts of it).</summary>
     internal sealed record IdToken(string Audience, string Nonce, string CodeChallenge, string RedirectUri, string Subject, string Email, RsaSecurityKey SigningKey)
     {
+        public string? Sid { get; init; }
+
         public string Issue(string issuer) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Issuer = issuer,
@@ -359,7 +549,9 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
             IssuedAt = DateTime.UtcNow,
             NotBefore = DateTime.UtcNow,
             Expires = DateTime.UtcNow.AddMinutes(5),
-            Claims = new Dictionary<string, object> { ["sub"] = Subject, ["email"] = Email, ["nonce"] = Nonce, ["name"] = "Jo" },
+            Claims = Sid is null
+                ? new Dictionary<string, object> { ["sub"] = Subject, ["email"] = Email, ["nonce"] = Nonce, ["name"] = "Jo" }
+                : new Dictionary<string, object> { ["sub"] = Subject, ["email"] = Email, ["nonce"] = Nonce, ["name"] = "Jo", ["sid"] = Sid },
             SigningCredentials = new SigningCredentials(SigningKey, SecurityAlgorithms.RsaSha256),
         });
     }

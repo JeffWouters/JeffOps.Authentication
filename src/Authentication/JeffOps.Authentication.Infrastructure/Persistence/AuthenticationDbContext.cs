@@ -33,6 +33,9 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
     /// <summary>Sign-in sessions ended by signing out, kept while their tokens could still be refreshed.</summary>
     public DbSet<Server.EndedSession> EndedSessions => Set<Server.EndedSession>();
 
+    /// <summary>Sessions started through external providers, by the provider's session, for their back-channel logout.</summary>
+    public DbSet<Server.ExternalSessionEntry> ExternalSessions => Set<Server.ExternalSessionEntry>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -111,6 +114,18 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
             session.HasKey(entity => entity.SessionId);
             session.Property(entity => entity.SessionId).HasMaxLength(64);
             session.HasIndex(entity => entity.EndedAtUnixMs);
+        });
+
+        modelBuilder.Entity<Server.ExternalSessionEntry>(session =>
+        {
+            session.ToTable("ExternalSessions");
+            session.HasKey(entity => entity.SessionId);
+            session.Property(entity => entity.SessionId).HasMaxLength(64);
+            session.Property(entity => entity.Provider).HasMaxLength(100).IsRequired();
+            session.Property(entity => entity.ProviderSessionHash).HasMaxLength(64);
+            session.HasIndex(entity => new { entity.Provider, entity.ProviderSessionHash });
+            session.HasIndex(entity => new { entity.Provider, entity.AccountId });
+            session.HasIndex(entity => entity.ExpiresAtUnixMs);
         });
     }
 }

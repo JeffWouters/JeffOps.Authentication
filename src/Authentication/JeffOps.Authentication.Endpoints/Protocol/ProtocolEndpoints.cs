@@ -57,7 +57,7 @@ internal static class ProtocolEndpoints
             || request.HasPromptValue(PromptValues.Login)
             || (request.MaxAge is { } maxAge && signedInAt is { } at && time.GetUtcNow() - at > TimeSpan.FromSeconds(maxAge));
 
-        if (mustSignIn)
+        IResult SignInAgain()
         {
             if (request.HasPromptValue(PromptValues.None))
             {
@@ -74,6 +74,11 @@ internal static class ProtocolEndpoints
             return Results.Challenge(new AuthenticationProperties { RedirectUri = returnUrl }, [signInScheme]);
         }
 
+        if (mustSignIn)
+        {
+            return SignInAgain();
+        }
+
         if (!Guid.TryParse(signedIn.Principal!.FindFirst(names.Subject)?.Value, out var accountId))
         {
             return Forbid(Errors.AccessDenied, "The sign-in does not identify an account.");
@@ -83,6 +88,13 @@ internal static class ProtocolEndpoints
         var result = await startSession.HandleAsync(
             new StartSessionCommand(accountId, strength, signedInAt ?? time.GetUtcNow(), request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names)),
             context.RequestAborted).ConfigureAwait(false);
+
+        if (result.IsFailure && result.Error.Code is GrantErrors.SessionRevoked or GrantErrors.SessionExpired)
+        {
+            // The browser's sign-in no longer stands (ended elsewhere, revoked, too old): forget it and sign in again.
+            await context.SignOutAsync(signInScheme).ConfigureAwait(false);
+            return SignInAgain();
+        }
 
         if (result.IsFailure)
         {

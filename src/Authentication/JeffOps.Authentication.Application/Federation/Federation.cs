@@ -135,6 +135,27 @@ public sealed class NoTenantProviders : ITenantProviderDirectory
     public Task<TenantOidcProvider?> FindOidcAsync(string name, CancellationToken cancellationToken) => Task.FromResult<TenantOidcProvider?>(null);
 }
 
+/// <summary>A session here that a sign-in through an external provider started.</summary>
+public sealed record ExternalSession(Guid AccountId, string SessionId);
+
+/// <summary>
+/// Sessions started through external providers, by the provider's own session (<c>sid</c>), so a provider's back-channel
+/// logout can end exactly the sessions it names. The token server keeps them in its database for the session lifetime.
+/// </summary>
+public interface IExternalSessions
+{
+    /// <summary>Records that <paramref name="sessionId"/> of <paramref name="accountId"/> came from <paramref name="provider"/>'s session <paramref name="providerSessionId"/>.</summary>
+    Task RecordAsync(string provider, string? providerSessionId, Guid accountId, string sessionId, DateTimeOffset expiresAt, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The live sessions from <paramref name="provider"/> matching its session id, the account, or both (at least one is given).
+    /// </summary>
+    Task<IReadOnlyList<ExternalSession>> FindAsync(string provider, string? providerSessionId, Guid? accountId, CancellationToken cancellationToken);
+
+    /// <summary>Forgets sessions that ended.</summary>
+    Task RemoveAsync(IReadOnlyCollection<string> sessionIds, CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// Single logout towards the provider a sign-in came from: when the user signs out at the token server, the browser is sent
 /// to the provider to sign out there too, and comes back to finish signing out here.
