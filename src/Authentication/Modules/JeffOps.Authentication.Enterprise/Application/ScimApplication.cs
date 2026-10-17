@@ -18,14 +18,6 @@ public interface IScimTokenRepository
     void Add(ScimToken token);
 }
 
-/// <summary>A SCIM list filter: one attribute compared for equality (<c>userName eq "x"</c>), the form identity providers send.</summary>
-public sealed record ScimFilter(string Attribute, string Value)
-{
-    /// <summary>The attribute's canonical spelling: SCIM attribute names are case-insensitive (RFC 7643 §2.1).</summary>
-    public static string Canonical(string attribute) =>
-        new[] { "userName", "externalId", "displayName" }.FirstOrDefault(known => string.Equals(known, attribute, StringComparison.OrdinalIgnoreCase)) ?? attribute;
-}
-
 /// <summary>
 /// A list's order (RFC 7644 §3.4.2.3): <paramref name="Attribute"/> canonical (<see cref="Users"/>, <see cref="Groups"/>),
 /// compared case-insensitively; resources without a value come last ascending, first descending.
@@ -33,10 +25,10 @@ public sealed record ScimFilter(string Attribute, string Value)
 public sealed record ScimSort(string Attribute, bool Descending)
 {
     /// <summary>What users can be sorted by.</summary>
-    public static IReadOnlyList<string> Users { get; } = ["userName", "externalId", "displayName", "name.givenName", "name.familyName"];
+    public static IReadOnlyList<string> Users { get; } = ["userName", "externalId", "displayName", "name.givenName", "name.familyName", "meta.created", "meta.lastModified"];
 
     /// <summary>What groups can be sorted by.</summary>
-    public static IReadOnlyList<string> Groups { get; } = ["displayName", "externalId"];
+    public static IReadOnlyList<string> Groups { get; } = ["displayName", "externalId", "meta.created", "meta.lastModified"];
 
     /// <summary>The canonical spelling of <paramref name="attribute"/> among <paramref name="supported"/>, or null.</summary>
     public static string? Canonical(string attribute, IReadOnlyList<string> supported)
@@ -51,7 +43,7 @@ public interface IScimUserRepository
 {
     Task<ScimUser?> FindAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken);
 
-    Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken);
+    Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, System.Linq.Expressions.Expression<Func<ScimUser, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken);
 
     /// <summary>The tenant's provisioned users among <paramref name="accountIds"/>, in one query.</summary>
     Task<IReadOnlyList<ScimUser>> FindManyAsync(Guid tenantId, IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken);
@@ -68,7 +60,7 @@ public interface IScimGroupRepository
 {
     Task<ScimGroup?> FindAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken);
 
-    Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken);
+    Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, System.Linq.Expressions.Expression<Func<ScimGroup, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<ScimGroup>> ListForMemberAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken);
 
@@ -162,7 +154,7 @@ public sealed class ScimProvisioning(
         ArgumentNullException.ThrowIfNull(data);
         var now = time.GetUtcNow();
 
-        if ((await users.ListAsync(tenantId, new ScimFilter("userName", data.UserName), 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
+        if ((await users.ListAsync(tenantId, ScimFilters.ForUsers(ScimFilter.Eq("userName", data.UserName)).Value, 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
         {
             return Error.Conflict(ScimErrors.Uniqueness, $"A user with userName '{data.UserName}' already exists.");
         }
@@ -216,7 +208,7 @@ public sealed class ScimProvisioning(
         var now = time.GetUtcNow();
 
         if (!string.Equals(user.UserName, data.UserName, StringComparison.OrdinalIgnoreCase)
-            && (await users.ListAsync(user.TenantId, new ScimFilter("userName", data.UserName), 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
+            && (await users.ListAsync(user.TenantId, ScimFilters.ForUsers(ScimFilter.Eq("userName", data.UserName)).Value, 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
         {
             return Error.Conflict(ScimErrors.Uniqueness, $"A user with userName '{data.UserName}' already exists.");
         }

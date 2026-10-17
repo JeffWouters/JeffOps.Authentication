@@ -54,7 +54,7 @@ public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUse
             return tooLong;
         }
 
-        if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", command.DisplayName.Trim()), 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
+        if ((await groups.ListAsync(command.TenantId, ScimFilters.ForGroups(ScimFilter.Eq("displayName", command.DisplayName.Trim())).Value, 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
         {
             return Error.Conflict(ScimErrors.Uniqueness, $"A group named '{command.DisplayName}' already exists.");
         }
@@ -113,7 +113,7 @@ public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUse
                 return tooLong;
             }
 
-            if ((await groups.ListAsync(command.TenantId, new ScimFilter("displayName", newName.Trim()), 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
+            if ((await groups.ListAsync(command.TenantId, ScimFilters.ForGroups(ScimFilter.Eq("displayName", newName.Trim())).Value, 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
             {
                 return Error.Conflict(ScimErrors.Uniqueness, $"A group named '{newName}' already exists.");
             }
@@ -201,10 +201,16 @@ public sealed class ListScimGroupsHandler(IScimGroupRepository groups) : IQueryH
     public async Task<Result<ScimPage<ScimGroupView>>> HandleAsync(ListScimGroupsQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var filter = query.Filter is { } given ? given with { Attribute = ScimFilter.Canonical(given.Attribute) } : null;
-        if (filter is { Attribute: var attribute } && attribute is not ("displayName" or "externalId"))
+        System.Linq.Expressions.Expression<Func<Domain.ScimGroup, bool>>? filter = null;
+        if (query.Filter is { } given)
         {
-            return Error.Failure(ScimErrors.InvalidFilter, "Groups can be filtered by displayName or externalId (eq).");
+            var translated = ScimFilters.ForGroups(given);
+            if (translated.IsFailure)
+            {
+                return translated.Error;
+            }
+
+            filter = translated.Value;
         }
 
         if (query.Sort is { } sort && ScimSort.Canonical(sort.Attribute, ScimSort.Groups) is null)

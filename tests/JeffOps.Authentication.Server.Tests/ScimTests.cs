@@ -387,6 +387,7 @@ public sealed class ScimTests : IAsyncDisposable
                 ? $$"""{"userName":"{{user}}","emails":[{"value":"{{user.ToLowerInvariant()}}"}]}"""
                 : $$"""{"userName":"{{user}}","displayName":"{{display}}","emails":[{"value":"{{user.ToLowerInvariant()}}"}]}""";
             (await ScimAsync(HttpMethod.Post, "Users", body)).StatusCode.ShouldBe(HttpStatusCode.Created);
+            _host.Time.Advance(TimeSpan.FromSeconds(1));
         }
 
         async Task<string?[]> UsersAsync(string query) =>
@@ -398,7 +399,8 @@ public sealed class ScimTests : IAsyncDisposable
         (await UsersAsync("sortBy=displayName&sortOrder=descending")).ShouldBe(["Abe@contoso.com", "bea@contoso.com", "cy@contoso.com"]);
         (await UsersAsync("sortBy=urn:ietf:params:scim:schemas:core:2.0:User:userName&count=2&startIndex=2")).ShouldBe(["bea@contoso.com", "cy@contoso.com"]);
 
-        (await ScimAsync(HttpMethod.Get, "Users?sortBy=meta.created")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await UsersAsync("sortBy=meta.created&sortOrder=descending")).ShouldBe(["cy@contoso.com", "Abe@contoso.com", "bea@contoso.com"], "newest first");
+        (await ScimAsync(HttpMethod.Get, "Users?sortBy=password")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
         (await ScimAsync(HttpMethod.Get, "Users?sortBy=userName&sortOrder=sideways")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
 
         foreach (var name in new[] { "Beta", "alpha", "Gamma" })
@@ -440,6 +442,106 @@ public sealed class ScimTests : IAsyncDisposable
 
         var patched = await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{id}?attributes=displayName", """{"Operations":[{"op":"replace","path":"displayName","value":"Jo D."}]}"""));
         patched.EnumerateObject().Select(property => property.Name).ShouldBe(["schemas", "id", "displayName"], ignoreOrder: true);
+    }
+
+    [Fact]
+    public async Task Filters_follow_the_scim_grammar()
+    {
+        await StartAsync();
+        var ada = await CreateUserAsync("""{"userName":"ada@contoso.com","externalId":"E-1","displayName":"Ada Lovelace","name":{"givenName":"Ada"},"emails":[{"value":"ada@contoso.com"}]}""");
+        _host.Time.Advance(TimeSpan.FromMinutes(1));
+        var since = _host.Time.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        _host.Time.Advance(TimeSpan.FromMinutes(1));
+        var bob = await CreateUserAsync("""{"userName":"bob@contoso.com","externalId":"e-2","displayName":"Bob","active":false,"emails":[{"value":"bob@contoso.com"}]}""");
+        var cy = await CreateUserAsync("""{"userName":"cy@contoso.com","emails":[{"value":"cy@contoso.com"}]}""");
+
+        async Task<string?[]> UsersAsync(string filter)
+        {
+            var response = await ScimAsync(HttpMethod.Get, "Users?sortBy=userName&filter=" + Uri.EscapeDataString(filter));
+            return [.. (await JsonAsync(response)).GetProperty("Resources").EnumerateArray().Select(user => user.GetProperty("id").GetString())];
+        }
+
+        (await UsersAsync("""userName sw "A" """)).ShouldBe([ada]);
+        (await UsersAsync("""displayName co "LOVE" """)).ShouldBe([ada], "strings compare case-insensitively");
+        (await UsersAsync("""externalId eq "e-1" """)).ShouldBeEmpty("externalId is case-exact");
+        (await UsersAsync("""externalId eq "E-1" """)).ShouldBe([ada]);
+        (await UsersAsync("""not (displayName pr)""")).ShouldBe([cy]);
+        (await UsersAsync("""active eq false""")).ShouldBe([bob]);
+        (await UsersAsync("""userName ne "ada@contoso.com" """)).ShouldBe([bob, cy]);
+        (await UsersAsync("""(userName eq "ada@contoso.com" or userName eq "bob@contoso.com") and active eq true""")).ShouldBe([ada]);
+        (await UsersAsync($$"""meta.created gt "{{since}}" """)).ShouldBe([bob, cy]);
+        (await UsersAsync("""urn:ietf:params:scim:schemas:core:2.0:User:name.givenName eq "ada" """)).ShouldBe([ada]);
+        (await UsersAsync($$"""id eq "{{bob}}" """)).ShouldBe([bob]);
+        (await UsersAsync("""displayName gt "B" and displayName lt "C" """)).ShouldBe([bob]);
+        (await UsersAsync("""displayName ew "e" """)).ShouldBe([ada], "JSON escapes in strings");
+
+        var engineers = (await JsonAsync(await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Engineers","members":[{"value":"{{ada}}"}]}"""))).GetProperty("id").GetString();
+        await ScimAsync(HttpMethod.Post, "Groups", """{"displayName":"Empty"}""");
+        async Task<string?[]> GroupsAsync(string filter) =>
+            [.. (await JsonAsync(await ScimAsync(HttpMethod.Get, "Groups?filter=" + Uri.EscapeDataString(filter)))).GetProperty("Resources").EnumerateArray().Select(group => group.GetProperty("id").GetString())];
+        (await GroupsAsync($$"""members[value eq "{{ada}}"]""")).ShouldBe([engineers]);
+        (await GroupsAsync($$"""members.value eq "{{ada}}" """)).ShouldBe([engineers]);
+        (await GroupsAsync("""members pr""")).ShouldBe([engineers]);
+        (await GroupsAsync($$"""members[value eq "{{bob}}"] or displayName sw "eng" """)).ShouldBe([engineers]);
+
+        foreach (var invalid in new[]
+        {
+            "userName eq", "userName xx \"a\"", "emails eq \"a\"", "active eq \"yes\"", "meta.created gt \"yesterday\"",
+            "userName eq \"unclosed", "not userName pr", "(userName pr", "userName eq a", new string('(', 40) + "userName pr" + new string(')', 40),
+            string.Join(" or ", Enumerable.Repeat("userName pr", 101)),
+        })
+        {
+            var response = await ScimAsync(HttpMethod.Get, "Users?filter=" + Uri.EscapeDataString(invalid));
+            response.StatusCode.ShouldBe(HttpStatusCode.BadRequest, invalid);
+            (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).ShouldContain("invalidFilter", customMessage: invalid);
+        }
+    }
+
+    [Fact]
+    public async Task Searches_take_the_list_parameters_in_a_body()
+    {
+        await StartAsync();
+        await CreateUserAsync("""{"userName":"ada@contoso.com","displayName":"Ada","emails":[{"value":"ada@contoso.com"}]}""");
+        await CreateUserAsync("""{"userName":"bob@contoso.com","displayName":"Bob","emails":[{"value":"bob@contoso.com"}]}""");
+        await ScimAsync(HttpMethod.Post, "Groups", """{"displayName":"Admins"}""");
+        await ScimAsync(HttpMethod.Post, "Groups", """{"displayName":"Builders"}""");
+
+        var users = await JsonAsync(await ScimAsync(HttpMethod.Post, "Users/.search", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"filter":"userName sw \"a\"","attributes":["userName"],"sortBy":"userName","startIndex":1,"count":10}
+            """));
+        users.GetProperty("totalResults").GetInt32().ShouldBe(1);
+        users.GetProperty("Resources")[0].EnumerateObject().Select(property => property.Name).ShouldBe(["schemas", "id", "userName"], ignoreOrder: true);
+
+        var groups = await JsonAsync(await ScimAsync(HttpMethod.Post, "Groups/.search", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"sortBy":"displayName","sortOrder":"descending","excludedAttributes":"members"}
+            """));
+        groups.GetProperty("Resources").EnumerateArray().Select(group => group.GetProperty("displayName").GetString()).ShouldBe(["Builders", "Admins"]);
+
+        // Across resource types: users first, then groups; an attribute a type doesn't have matches nothing of it.
+        var everything = await JsonAsync(await ScimAsync(HttpMethod.Post, ".search", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"filter":"displayName sw \"a\"","sortBy":"displayName"}
+            """));
+        everything.GetProperty("totalResults").GetInt32().ShouldBe(2);
+        everything.GetProperty("Resources").EnumerateArray().Select(resource => resource.GetProperty("schemas")[0].GetString()![^5..]).ShouldBe([":User", "Group"]);
+        var paged = await JsonAsync(await ScimAsync(HttpMethod.Post, ".search", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"startIndex":2,"count":2}
+            """));
+        paged.GetProperty("totalResults").GetInt32().ShouldBe(4);
+        paged.GetProperty("Resources").EnumerateArray().Select(resource => resource.GetProperty("schemas")[0].GetString()![^5..]).ShouldBe([":User", "Group"], "the page spans both types");
+        var onlyUsers = await JsonAsync(await ScimAsync(HttpMethod.Post, ".search", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"filter":"userName pr"}
+            """));
+        onlyUsers.GetProperty("totalResults").GetInt32().ShouldBe(2);
+
+        (await ScimAsync(HttpMethod.Post, "Users/.search", """{"filter":"userName pr"}""")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await ScimAsync(HttpMethod.Post, ".search", """{"schemas":["urn:ietf:params:scim:api:messages:2.0:SearchRequest"],"sortBy":"password"}""")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+    }
+
+    private async Task<string> CreateUserAsync(string body)
+    {
+        var created = await ScimAsync(HttpMethod.Post, "Users", body);
+        created.StatusCode.ShouldBe(HttpStatusCode.Created, await created.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        return (await JsonAsync(created)).GetProperty("id").GetString()!;
     }
 
     private async Task ShouldNotFailAsync(HttpMethod method, string path, string? body, string input)

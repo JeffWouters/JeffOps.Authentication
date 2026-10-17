@@ -146,6 +146,25 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             });
             group.Navigation(entity => entity.Members).HasField("_members").UsePropertyAccessMode(PropertyAccessMode.Field);
         });
+
+        // SCIM's externalId is case-exact (RFC 7643 §3.1); SQL Server compares case-insensitively unless told otherwise.
+        if (Database.ProviderName == "Microsoft.EntityFrameworkCore.SqlServer")
+        {
+            modelBuilder.Entity<ScimUser>().Property(entity => entity.ExternalId).UseCollation("Latin1_General_100_BIN2");
+            modelBuilder.Entity<ScimGroup>().Property(entity => entity.ExternalId).UseCollation("Latin1_General_100_BIN2");
+        }
+
+        // SQLite can't order or compare DateTimeOffset values (SCIM sorts and filters by meta timestamps): there, store them
+        // as order-preserving integers. Other databases keep their own timestamp type.
+        if (Database.ProviderName == "Microsoft.EntityFrameworkCore.Sqlite")
+        {
+            var converter = new Microsoft.EntityFrameworkCore.Storage.ValueConversion.DateTimeOffsetToBinaryConverter();
+            foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties())
+                .Where(property => property.ClrType == typeof(DateTimeOffset) || property.ClrType == typeof(DateTimeOffset?)))
+            {
+                property.SetValueConverter(converter);
+            }
+        }
     }
 }
 
@@ -268,18 +287,13 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
     public Task<ScimUser?> FindAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken) =>
         db.ScimUsers.FirstOrDefaultAsync(user => user.TenantId == tenantId && user.AccountId == accountId, cancellationToken);
 
-    public async Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
+    public async Task<(IReadOnlyList<ScimUser> Page, int Total)> ListAsync(
+        Guid tenantId, System.Linq.Expressions.Expression<Func<ScimUser, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
     {
         var query = db.ScimUsers.Where(user => user.TenantId == tenantId);
-        if (filter is { Attribute: "userName" })
+        if (filter is not null)
         {
-            // SCIM userName is case-insensitive (RFC 7643 section 4.1.1).
-            var value = filter.Value.ToLowerInvariant();
-            query = query.Where(user => user.UserName.ToLower() == value);
-        }
-        else if (filter is { Attribute: "externalId" })
-        {
-            query = query.Where(user => user.ExternalId == filter.Value);
+            query = query.Where(filter);
         }
 
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
@@ -289,6 +303,10 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
             ("displayName", var descending) => ScimOrder.By(query, user => user.DisplayName == null, user => user.DisplayName!.ToLower(), descending),
             ("name.givenName", var descending) => ScimOrder.By(query, user => user.GivenName == null, user => user.GivenName!.ToLower(), descending),
             ("name.familyName", var descending) => ScimOrder.By(query, user => user.FamilyName == null, user => user.FamilyName!.ToLower(), descending),
+            ("meta.created", false) => query.OrderBy(user => user.Created),
+            ("meta.created", true) => query.OrderByDescending(user => user.Created),
+            ("meta.lastModified", false) => query.OrderBy(user => user.LastModified),
+            ("meta.lastModified", true) => query.OrderByDescending(user => user.LastModified),
             (_, true) => query.OrderByDescending(user => user.UserName.ToLower()),
             _ => query.OrderBy(user => user.UserName.ToLower()),
         };
@@ -321,23 +339,23 @@ internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRe
     public Task<ScimGroup?> FindAsync(Guid tenantId, Guid groupId, CancellationToken cancellationToken) =>
         db.ScimGroups.FirstOrDefaultAsync(group => group.TenantId == tenantId && group.Id == groupId, cancellationToken);
 
-    public async Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, ScimFilter? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
+    public async Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(
+        Guid tenantId, System.Linq.Expressions.Expression<Func<ScimGroup, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
     {
         var query = db.ScimGroups.Where(group => group.TenantId == tenantId);
-        if (filter is { Attribute: "displayName" })
+        if (filter is not null)
         {
-            var value = filter.Value.ToLowerInvariant();
-            query = query.Where(group => group.DisplayName.ToLower() == value);
-        }
-        else if (filter is { Attribute: "externalId" })
-        {
-            query = query.Where(group => group.ExternalId == filter.Value);
+            query = query.Where(filter);
         }
 
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
         var ordered = (sort?.Attribute, sort?.Descending ?? false) switch
         {
             ("externalId", var descending) => ScimOrder.By(query, group => group.ExternalId == null, group => group.ExternalId!.ToLower(), descending),
+            ("meta.created", false) => query.OrderBy(group => group.Created),
+            ("meta.created", true) => query.OrderByDescending(group => group.Created),
+            ("meta.lastModified", false) => query.OrderBy(group => group.LastModified),
+            ("meta.lastModified", true) => query.OrderByDescending(group => group.LastModified),
             (_, true) => query.OrderByDescending(group => group.DisplayName.ToLower()),
             _ => query.OrderBy(group => group.DisplayName.ToLower()),
         };
@@ -471,7 +489,8 @@ public static class EnterpriseServiceCollectionExtensions
             .AddHandler<UpdateScimGroupHandler>()
             .AddHandler<DeleteScimGroupHandler>()
             .AddHandler<GetScimGroupHandler>()
-            .AddHandler<ListScimGroupsHandler>();
+            .AddHandler<ListScimGroupsHandler>()
+            .AddHandler<SearchScimHandler>();
 
         services.AddHostedService<EnterpriseStartup>();
         return new EnterpriseBuilder(services);

@@ -31,6 +31,7 @@ public static partial class ScimEndpoints
     private const string ListSchema = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
     private const string ErrorSchema = "urn:ietf:params:scim:api:messages:2.0:Error";
     private const string PatchSchema = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
+    private const string SearchRequestSchema = "urn:ietf:params:scim:api:messages:2.0:SearchRequest";
     private const string BulkRequestSchema = "urn:ietf:params:scim:api:messages:2.0:BulkRequest";
     private const string BulkResponseSchema = "urn:ietf:params:scim:api:messages:2.0:BulkResponse";
     private const string TenantItem = "JeffOps.Scim.Tenant";
@@ -50,7 +51,8 @@ public static partial class ScimEndpoints
         scim.MapGet("ServiceProviderConfig", () => Scim(StatusCodes.Status200OK, ServiceProviderConfig()));
         scim.MapGet("ResourceTypes", () => Scim(StatusCodes.Status200OK, ResourceTypes()));
 
-        scim.MapGet("Users", ListUsersAsync);
+        scim.MapGet("Users", async Task<IResult> (HttpContext context) => await ListUsersAsync(context, ListRequest.FromQuery(context)).ConfigureAwait(false));
+        scim.MapPost("Users/.search", async Task<IResult> (HttpContext context) => await SearchAsync(context, ListUsersAsync).ConfigureAwait(false));
         scim.MapGet("Users/{id}", async Task<IResult> (string id, HttpContext context) => Selected(context, await GetUserAsync(context, id).ConfigureAwait(false)));
         scim.MapPost("Users", async Task<IResult> (HttpContext context) =>
             Selected(context, await CreateUserAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false)));
@@ -60,7 +62,9 @@ public static partial class ScimEndpoints
             Selected(context, await PatchUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false)));
         scim.MapDelete("Users/{id}", async Task<IResult> (string id, HttpContext context) => await DeleteUserAsync(context, context.RequestServices, id, IfMatch(context)).ConfigureAwait(false));
 
-        scim.MapGet("Groups", ListGroupsAsync);
+        scim.MapGet("Groups", async Task<IResult> (HttpContext context) => await ListGroupsAsync(context, ListRequest.FromQuery(context)).ConfigureAwait(false));
+        scim.MapPost("Groups/.search", async Task<IResult> (HttpContext context) => await SearchAsync(context, ListGroupsAsync).ConfigureAwait(false));
+        scim.MapPost(".search", async Task<IResult> (HttpContext context) => await SearchAsync(context, SearchAllAsync).ConfigureAwait(false));
         scim.MapGet("Groups/{id}", async Task<IResult> (string id, HttpContext context) => Selected(context, await GetGroupAsync(context, id).ConfigureAwait(false)));
         scim.MapPost("Groups", async Task<IResult> (HttpContext context) =>
             Selected(context, await CreateGroupAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false)));
@@ -77,22 +81,16 @@ public static partial class ScimEndpoints
 
     // ---- Users ---------------------------------------------------------------------------------------------------------
 
-    private static async Task<IResult> ListUsersAsync(HttpContext context, IQueryHandler<ListScimUsersQuery, ScimPage<ScimUserView>> handler)
+    private static async Task<IResult> ListUsersAsync(HttpContext context, ListRequest request)
     {
-        if (!TryFilter(context, out var filter))
+        if (request.Validate() is { } invalid)
         {
-            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidFilter, "Only 'attribute eq \"value\"' filters are supported.");
+            return invalid;
         }
 
-        if (!TrySort(context, out var sort))
-        {
-            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "sortOrder is 'ascending' or 'descending'.");
-        }
-
-        var (startIndex, count) = Paging(context);
-        var selection = Selection(context);
-        var result = await handler.HandleAsync(new ListScimUsersQuery(Tenant(context), filter, startIndex, count, sort), context.RequestAborted).ConfigureAwait(false);
-        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, user => Project(UserJson(user, context), selection))) : Error(result.Error);
+        var result = await context.RequestServices.GetRequiredService<IQueryHandler<ListScimUsersQuery, ScimPage<ScimUserView>>>()
+            .HandleAsync(new ListScimUsersQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, user => Project(UserJson(user, context), request.Selection))) : Error(result.Error);
     }
 
     private static async Task<ScimResult> GetUserAsync(HttpContext context, string id)
@@ -261,22 +259,108 @@ public static partial class ScimEndpoints
 
     // ---- Groups --------------------------------------------------------------------------------------------------------
 
-    private static async Task<IResult> ListGroupsAsync(HttpContext context, IQueryHandler<ListScimGroupsQuery, ScimPage<ScimGroupView>> handler)
+    private static async Task<IResult> ListGroupsAsync(HttpContext context, ListRequest request)
     {
-        if (!TryFilter(context, out var filter))
+        if (request.Validate() is { } invalid)
         {
-            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidFilter, "Only 'attribute eq \"value\"' filters are supported.");
+            return invalid;
         }
 
-        if (!TrySort(context, out var sort))
+        var result = await context.RequestServices.GetRequiredService<IQueryHandler<ListScimGroupsQuery, ScimPage<ScimGroupView>>>()
+            .HandleAsync(new ListScimGroupsQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, group => Project(GroupJson(group, context), request.Selection))) : Error(result.Error);
+    }
+
+    // ---- Search --------------------------------------------------------------------------------------------------------
+
+    /// <summary><c>POST …/.search</c> (RFC 7644 §3.4.3): the list parameters in a SearchRequest body instead of the query.</summary>
+    private static async Task<IResult> SearchAsync(HttpContext context, Func<HttpContext, ListRequest, Task<IResult>> list)
+    {
+        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !Has(body, "schemas", out var schemas) || schemas.ValueKind != JsonValueKind.Array
+            || !schemas.EnumerateArray().Any(schema => schema.ValueKind == JsonValueKind.String && schema.GetString() == SearchRequestSchema))
         {
-            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "sortOrder is 'ascending' or 'descending'.");
+            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidSyntax, "A search needs a SearchRequest body.");
         }
 
-        var (startIndex, count) = Paging(context);
-        var selection = Selection(context);
-        var result = await handler.HandleAsync(new ListScimGroupsQuery(Tenant(context), filter, startIndex, count, sort), context.RequestAborted).ConfigureAwait(false);
-        return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, group => Project(GroupJson(group, context), selection))) : Error(result.Error);
+        return await list(context, ListRequest.FromSearch(body)).ConfigureAwait(false);
+    }
+
+    /// <summary><c>POST /.search</c>: users and groups together.</summary>
+    private static async Task<IResult> SearchAllAsync(HttpContext context, ListRequest request)
+    {
+        if (request.Validate() is { } invalid)
+        {
+            return invalid;
+        }
+
+        var result = await context.RequestServices.GetRequiredService<IQueryHandler<SearchScimQuery, ScimSearchPage>>()
+            .HandleAsync(new SearchScimQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort), context.RequestAborted).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return Error(result.Error);
+        }
+
+        var page = result.Value;
+        var resources = page.Users.Select(user => (JsonNode)Project(UserJson(user, context), request.Selection))
+            .Concat(page.Groups.Select(group => (JsonNode)Project(GroupJson(group, context), request.Selection)))
+            .ToList();
+        return Scim(StatusCodes.Status200OK, new JsonObject
+        {
+            ["schemas"] = new JsonArray(ListSchema),
+            ["totalResults"] = page.TotalResults,
+            ["startIndex"] = page.StartIndex,
+            ["itemsPerPage"] = resources.Count,
+            ["Resources"] = new JsonArray([.. resources]),
+        });
+    }
+
+    /// <summary>A list's parameters (RFC 7644 §3.4.2), from the query string or a SearchRequest body.</summary>
+    private sealed record ListRequest(Result<ScimFilter?> ParsedFilter, string? SortBy, string? SortOrder, int StartIndex, int Count, AttributeSelection? Selection)
+    {
+        public ScimFilter? Filter => ParsedFilter.IsSuccess ? ParsedFilter.Value : null;
+
+        public ScimSort? Sort => AttributeName(SortBy) is { } attribute
+            ? new ScimSort(attribute, string.Equals(SortOrder, "descending", StringComparison.OrdinalIgnoreCase))
+            : null;
+
+        public static ListRequest FromQuery(HttpContext context)
+        {
+            var query = context.Request.Query;
+            return new(
+                ScimEndpoints.Filter(query["filter"].ToString()),
+                query["sortBy"].ToString(),
+                query["sortOrder"].ToString(),
+                int.TryParse(query["startIndex"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var start) ? start : 1,
+                int.TryParse(query["count"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var count) ? count : 100,
+                ScimEndpoints.Selection(query["attributes"].ToString(), query["excludedAttributes"].ToString()));
+        }
+
+        public static ListRequest FromSearch(JsonElement body) => new(
+            ScimEndpoints.Filter(Text(body, "filter")),
+            Text(body, "sortBy"),
+            Text(body, "sortOrder"),
+            Has(body, "startIndex", out var start) && start.ValueKind == JsonValueKind.Number && start.TryGetInt32(out var startIndex) ? startIndex : 1,
+            Has(body, "count", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt32(out var size) ? size : 100,
+            ScimEndpoints.Selection(Names(body, "attributes"), Names(body, "excludedAttributes")));
+
+        /// <summary>A SCIM error for parameters that can't be used; null when they can.</summary>
+        public ScimResult? Validate()
+        {
+            if (ParsedFilter.IsFailure)
+            {
+                return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidFilter, ParsedFilter.Error.Message);
+            }
+
+            return !string.IsNullOrEmpty(SortOrder) && !SortOrder.Equals("ascending", StringComparison.OrdinalIgnoreCase) && !SortOrder.Equals("descending", StringComparison.OrdinalIgnoreCase)
+                ? Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "sortOrder is 'ascending' or 'descending'.")
+                : null;
+        }
+
+        /// <summary>A body's attribute list: an array of names, or one comma-separated string.</summary>
+        private static string Names(JsonElement body, string property) =>
+            Has(body, property, out var value) && value.ValueKind == JsonValueKind.Array
+                ? string.Join(',', value.EnumerateArray().Where(name => name.ValueKind == JsonValueKind.String).Select(name => name.GetString()))
+                : Text(body, property) ?? string.Empty;
     }
 
     private static async Task<ScimResult> GetGroupAsync(HttpContext context, string id)
@@ -838,31 +922,16 @@ public static partial class ScimEndpoints
 
     // ---- Sorting and attribute selection ---------------------------------------------------------------------------
 
-    /// <summary><c>sortBy</c> and <c>sortOrder</c> (RFC 7644 §3.4.2.3); false when <c>sortOrder</c> is neither value.</summary>
-    private static bool TrySort(HttpContext context, out ScimSort? sort)
-    {
-        sort = null;
-        var order = context.Request.Query["sortOrder"].ToString();
-        if (order.Length > 0 && !order.Equals("ascending", StringComparison.OrdinalIgnoreCase) && !order.Equals("descending", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (AttributeName(context.Request.Query["sortBy"].ToString()) is { } attribute)
-        {
-            sort = new ScimSort(attribute, order.Equals("descending", StringComparison.OrdinalIgnoreCase));
-        }
-
-        return true;
-    }
-
     /// <summary>What <c>attributes</c> or <c>excludedAttributes</c> (RFC 7644 §3.9) ask for: dotted paths, lower-cased.</summary>
     private sealed record AttributeSelection(IReadOnlyList<string[]>? Include, IReadOnlyList<string[]> Exclude);
 
-    private static AttributeSelection? Selection(HttpContext context)
+    private static AttributeSelection? Selection(HttpContext context) =>
+        Selection(context.Request.Query["attributes"].ToString(), context.Request.Query["excludedAttributes"].ToString());
+
+    private static AttributeSelection? Selection(string attributes, string excludedAttributes)
     {
-        var include = Paths(context.Request.Query["attributes"].ToString());
-        var exclude = Paths(context.Request.Query["excludedAttributes"].ToString());
+        var include = Paths(attributes);
+        var exclude = Paths(excludedAttributes);
         return include is null && exclude is null ? null : new AttributeSelection(include, exclude ?? []);
     }
 
@@ -969,27 +1038,17 @@ public static partial class ScimEndpoints
         }
     }
 
-    private static bool TryFilter(HttpContext context, out ScimFilter? filter)
+    /// <summary>The request's filter (RFC 7644 §3.4.2.2), parsed; an error when it isn't a valid filter.</summary>
+    private static Result<ScimFilter?> Filter(string? raw)
     {
-        filter = null;
-        var raw = context.Request.Query["filter"].ToString();
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return true;
+            return Result.Success<ScimFilter?>(null);
         }
 
-        if (EqualityFilter().Match(raw.Trim()) is not { Success: true } match)
-        {
-            return false;
-        }
-
-        filter = new ScimFilter(match.Groups[1].Value, match.Groups[2].Value.Replace("\\\"", "\"", StringComparison.Ordinal));
-        return true;
+        var parsed = ScimFilterParser.Parse(raw);
+        return parsed.IsSuccess ? parsed.Value : parsed.Error;
     }
-
-    private static (int StartIndex, int Count) Paging(HttpContext context) =>
-        (int.TryParse(context.Request.Query["startIndex"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var start) ? start : 1,
-         int.TryParse(context.Request.Query["count"], NumberStyles.Integer, CultureInfo.InvariantCulture, out var count) ? count : 100);
 
     private static JsonObject ListResponse<T>(ScimPage<T> page, Func<T, JsonObject> toJson) => new()
     {
@@ -1103,8 +1162,6 @@ public static partial class ScimEndpoints
             new JsonObject { ["schemas"] = new JsonArray("urn:ietf:params:scim:schemas:core:2.0:ResourceType"), ["id"] = "Group", ["name"] = "Group", ["endpoint"] = "/Groups", ["schema"] = GroupSchema }),
     };
 
-    [GeneratedRegex("^(userName|externalId|displayName) eq \"((?:[^\"\\\\]|\\\\.)*)\"$", RegexOptions.IgnoreCase)]
-    private static partial Regex EqualityFilter();
 
     [GeneratedRegex("^members\\[value eq \"([^\"]+)\"\\]$", RegexOptions.IgnoreCase)]
     private static partial Regex MemberFilter();

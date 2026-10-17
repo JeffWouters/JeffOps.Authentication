@@ -38,7 +38,8 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
 
                     b.Property<string>("ExternalId")
                         .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
+                        .HasColumnType("nvarchar(256)")
+                        .UseCollation("Latin1_General_100_BIN2");
 
                     b.Property<DateTimeOffset>("LastModified")
                         .HasColumnType("datetimeoffset");
@@ -122,7 +123,8 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
 
                     b.Property<string>("ExternalId")
                         .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
+                        .HasColumnType("nvarchar(256)")
+                        .UseCollation("Latin1_General_100_BIN2");
 
                     b.Property<string>("FamilyName")
                         .HasMaxLength(200)

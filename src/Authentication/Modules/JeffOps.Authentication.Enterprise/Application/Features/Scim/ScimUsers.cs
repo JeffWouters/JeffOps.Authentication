@@ -151,10 +151,16 @@ public sealed class ListScimUsersHandler(IScimUserRepository users, ScimProvisio
     public async Task<Result<ScimPage<ScimUserView>>> HandleAsync(ListScimUsersQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var filter = query.Filter is { } given ? given with { Attribute = ScimFilter.Canonical(given.Attribute) } : null;
-        if (filter is { Attribute: var attribute } && attribute is not ("userName" or "externalId"))
+        System.Linq.Expressions.Expression<Func<Domain.ScimUser, bool>>? filter = null;
+        if (query.Filter is { } given)
         {
-            return Error.Failure(ScimErrors.InvalidFilter, "Users can be filtered by userName or externalId (eq).");
+            var translated = ScimFilters.ForUsers(given);
+            if (translated.IsFailure)
+            {
+                return translated.Error;
+            }
+
+            filter = translated.Value;
         }
 
         if (query.Sort is { } sort && ScimSort.Canonical(sort.Attribute, ScimSort.Users) is null)
