@@ -16,13 +16,16 @@ public enum AccountStatus
 /// <summary>A user of the platform. Credentials live elsewhere: external logins here, local credentials in LocalAccounts.</summary>
 public sealed class Account : AggregateRoot<Guid>
 {
+    /// <summary>The longest display name kept; longer ones (from a provider or SCIM) are cut.</summary>
+    public const int MaxDisplayNameLength = 200;
+
     private readonly List<ExternalLogin> _externalLogins = [];
 
     private Account(Guid id, string email, string displayName, bool emailVerified, DateTimeOffset now)
         : base(id)
     {
         Email = NormalizeEmail(email);
-        DisplayName = displayName.Trim();
+        DisplayName = Clip(displayName);
         EmailVerified = emailVerified;
         Status = AccountStatus.Active;
         CreatedAt = now;
@@ -97,9 +100,9 @@ public sealed class Account : AggregateRoot<Guid>
             changed = true;
         }
 
-        if (!string.IsNullOrWhiteSpace(displayName) && displayName.Trim() != DisplayName)
+        if (!string.IsNullOrWhiteSpace(displayName) && Clip(displayName) != DisplayName)
         {
-            DisplayName = displayName.Trim();
+            DisplayName = Clip(displayName);
             changed = true;
         }
 
@@ -165,6 +168,19 @@ public sealed class Account : AggregateRoot<Guid>
     /// <summary>Whether a session that signed in at <paramref name="signedInAt"/> has been revoked since (second precision, as <c>auth_time</c>).</summary>
     public bool IsSessionRevoked(DateTimeOffset signedInAt) =>
         SessionsRevokedAt is { } revoked && signedInAt.ToUnixTimeSeconds() < revoked.ToUnixTimeSeconds();
+
+    private static string Clip(string displayName)
+    {
+        var trimmed = displayName.Trim();
+        if (trimmed.Length <= MaxDisplayNameLength)
+        {
+            return trimmed;
+        }
+
+        // Never cut between the two halves of a surrogate pair.
+        var length = char.IsHighSurrogate(trimmed[MaxDisplayNameLength - 1]) ? MaxDisplayNameLength - 1 : MaxDisplayNameLength;
+        return trimmed[..length].TrimEnd();
+    }
 
     public static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 }

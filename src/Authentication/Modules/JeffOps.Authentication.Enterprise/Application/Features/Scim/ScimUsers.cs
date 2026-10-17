@@ -13,10 +13,20 @@ internal static class ScimLimits
     /// <summary>The most members one request may add or set.</summary>
     public const int MaxMembersPerRequest = 1_000;
 
-    public static Error? Check(ScimUserData data) =>
-        new[] { data.UserName, data.ExternalId, data.GivenName, data.FamilyName, data.DisplayName, data.Email }.Any(value => value?.Length > MaxLength)
-            ? Error.Validation([new ValidationFailure("userName", $"Values are limited to {MaxLength} characters.")])
-            : null;
+    /// <summary>The longest given or family name kept.</summary>
+    public const int MaxNameLength = 200;
+
+    public static Error? Check(ScimUserData data)
+    {
+        var failures = new[] { ("userName", data.UserName), ("externalId", data.ExternalId), ("displayName", data.DisplayName), ("emails", data.Email) }
+            .Where(field => field.Item2?.Length > MaxLength)
+            .Select(field => new ValidationFailure(field.Item1, $"Values are limited to {MaxLength} characters."))
+            .Concat(new[] { ("name.givenName", data.GivenName), ("name.familyName", data.FamilyName) }
+                .Where(field => field.Item2?.Length > MaxNameLength)
+                .Select(field => new ValidationFailure(field.Item1, $"Names are limited to {MaxNameLength} characters.")))
+            .ToList();
+        return failures.Count == 0 ? null : Error.Validation(failures);
+    }
 }
 
 public sealed record CreateScimUserCommand(Guid TenantId, ScimUserData Data);
@@ -44,9 +54,10 @@ public sealed class CreateScimUserHandler(ScimProvisioning provisioning, IEnterp
 
 /// <summary>
 /// Replaces a user's attributes (PUT), or applies a PATCH: the endpoint turns PATCH operations into the full new state with
-/// <see cref="UpdateScimUserCommand.Change"/>, so both paths run the same rules.
+/// <see cref="UpdateScimUserCommand.Change"/>, so both paths run the same rules. <paramref name="IfMatch"/>: the versions the
+/// caller allows (<c>If-Match</c>); null for any.
 /// </summary>
-public sealed record UpdateScimUserCommand(Guid TenantId, Guid UserId, Func<ScimUserData, Result<ScimUserData>> Change);
+public sealed record UpdateScimUserCommand(Guid TenantId, Guid UserId, Func<ScimUserData, Result<ScimUserData>> Change, IReadOnlyList<int>? IfMatch = null);
 
 public sealed class UpdateScimUserHandler(IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork)
     : ICommandHandler<UpdateScimUserCommand, ScimUserView>
@@ -58,6 +69,11 @@ public sealed class UpdateScimUserHandler(IScimUserRepository users, ScimProvisi
         if (user is null)
         {
             return Error.NotFound(ScimErrors.NotFound, "No such user.");
+        }
+
+        if (ScimVersions.Check(command.IfMatch, user.Version) is { } changed)
+        {
+            return changed;
         }
 
         var current = await provisioning.ViewAsync(user, cancellationToken).ConfigureAwait(false);
@@ -78,12 +94,16 @@ public sealed class UpdateScimUserHandler(IScimUserRepository users, ScimProvisi
             return applied.Error;
         }
 
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return ScimVersions.Overtaken(command.IfMatch);
+        }
+
         return await provisioning.ViewAsync(user, cancellationToken).ConfigureAwait(false);
     }
 }
 
-public sealed record DeleteScimUserCommand(Guid TenantId, Guid UserId);
+public sealed record DeleteScimUserCommand(Guid TenantId, Guid UserId, IReadOnlyList<int>? IfMatch = null);
 
 public sealed class DeleteScimUserHandler(IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork) : ICommandHandler<DeleteScimUserCommand>
 {
@@ -96,13 +116,17 @@ public sealed class DeleteScimUserHandler(IScimUserRepository users, ScimProvisi
             return Error.NotFound(ScimErrors.NotFound, "No such user.");
         }
 
+        if (ScimVersions.Check(command.IfMatch, user.Version) is { } changed)
+        {
+            return changed;
+        }
+
         if (await provisioning.DeleteAsync(user, cancellationToken).ConfigureAwait(false) is { } failure)
         {
             return failure;
         }
 
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return Result.Success();
+        return await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false) ? Result.Success() : ScimVersions.Overtaken(command.IfMatch);
     }
 }
 

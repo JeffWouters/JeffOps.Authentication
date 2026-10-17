@@ -221,6 +221,20 @@ internal sealed class SsoPolicyRepository(EnterpriseDbContext db) : ISsoPolicyRe
 
 internal sealed class EnterpriseUnitOfWork(EnterpriseDbContext db, IDomainEventDispatcher dispatcher) : IEnterpriseUnitOfWork
 {
+    public async Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            db.ChangeTracker.Clear();
+            return false;
+        }
+    }
+
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         var aggregates = db.ChangeTracker.Entries<IHasDomainEvents>().Select(entry => entry.Entity).Where(entity => entity.DomainEvents.Count > 0).ToList();

@@ -11,13 +11,15 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace JeffOps.Authentication.Enterprise.Endpoints;
 
 /// <summary>
 /// SCIM 2.0 (RFC 7643/7644) for tenants' identity providers: <c>Users</c> and <c>Groups</c> with create, replace, patch,
-/// delete, get and list (filters: <c>userName</c>/<c>externalId</c>/<c>displayName</c> <c>eq</c>), plus the discovery
-/// resources. Authenticated with a tenant's SCIM token; everything happens in that tenant.
+/// delete, get and list (filters: <c>userName</c>/<c>externalId</c>/<c>displayName</c> <c>eq</c>), <c>Bulk</c>, ETags
+/// (<c>If-Match</c>, <c>If-None-Match</c>), plus the discovery resources. Authenticated with a tenant's SCIM token;
+/// everything happens in that tenant.
 /// </summary>
 public static partial class ScimEndpoints
 {
@@ -29,7 +31,15 @@ public static partial class ScimEndpoints
     private const string ListSchema = "urn:ietf:params:scim:api:messages:2.0:ListResponse";
     private const string ErrorSchema = "urn:ietf:params:scim:api:messages:2.0:Error";
     private const string PatchSchema = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
+    private const string BulkRequestSchema = "urn:ietf:params:scim:api:messages:2.0:BulkRequest";
+    private const string BulkResponseSchema = "urn:ietf:params:scim:api:messages:2.0:BulkResponse";
     private const string TenantItem = "JeffOps.Scim.Tenant";
+
+    /// <summary>The most operations one <c>Bulk</c> request may carry.</summary>
+    public const int MaxBulkOperations = 100;
+
+    /// <summary>The largest <c>Bulk</c> request body, in bytes.</summary>
+    public const int MaxBulkPayloadBytes = 1024 * 1024;
 
     public static IEndpointRouteBuilder MapJeffOpsScim(this IEndpointRouteBuilder endpoints)
     {
@@ -41,26 +51,26 @@ public static partial class ScimEndpoints
         scim.MapGet("ResourceTypes", () => Scim(StatusCodes.Status200OK, ResourceTypes()));
 
         scim.MapGet("Users", ListUsersAsync);
-        scim.MapGet("Users/{id}", async (string id, HttpContext context, IQueryHandler<GetScimUserQuery, ScimUserView> handler) =>
-            !Guid.TryParse(id, out var userId) ? NotFound()
-            : UserResult(await handler.HandleAsync(new GetScimUserQuery(Tenant(context), userId), context.RequestAborted).ConfigureAwait(false), context));
-        scim.MapPost("Users", CreateUserAsync);
-        scim.MapPut("Users/{id}", ReplaceUserAsync);
-        scim.MapPatch("Users/{id}", PatchUserAsync);
-        scim.MapDelete("Users/{id}", async (string id, HttpContext context, ICommandHandler<DeleteScimUserCommand> handler) =>
-            !Guid.TryParse(id, out var userId) ? NotFound()
-            : NoContent(await handler.HandleAsync(new DeleteScimUserCommand(Tenant(context), userId), context.RequestAborted).ConfigureAwait(false)));
+        scim.MapGet("Users/{id}", async Task<IResult> (string id, HttpContext context) => await GetUserAsync(context, id).ConfigureAwait(false));
+        scim.MapPost("Users", async Task<IResult> (HttpContext context) =>
+            await CreateUserAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false));
+        scim.MapPut("Users/{id}", async Task<IResult> (string id, HttpContext context) =>
+            await ReplaceUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+        scim.MapPatch("Users/{id}", async Task<IResult> (string id, HttpContext context) =>
+            await PatchUserAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+        scim.MapDelete("Users/{id}", async Task<IResult> (string id, HttpContext context) => await DeleteUserAsync(context, context.RequestServices, id, IfMatch(context)).ConfigureAwait(false));
 
         scim.MapGet("Groups", ListGroupsAsync);
-        scim.MapGet("Groups/{id}", async (string id, HttpContext context, IQueryHandler<GetScimGroupQuery, ScimGroupView> handler) =>
-            !Guid.TryParse(id, out var groupId) ? NotFound()
-            : GroupResult(await handler.HandleAsync(new GetScimGroupQuery(Tenant(context), groupId), context.RequestAborted).ConfigureAwait(false), context));
-        scim.MapPost("Groups", CreateGroupAsync);
-        scim.MapPut("Groups/{id}", ReplaceGroupAsync);
-        scim.MapPatch("Groups/{id}", PatchGroupAsync);
-        scim.MapDelete("Groups/{id}", async (string id, HttpContext context, ICommandHandler<DeleteScimGroupCommand> handler) =>
-            !Guid.TryParse(id, out var groupId) ? NotFound()
-            : NoContent(await handler.HandleAsync(new DeleteScimGroupCommand(Tenant(context), groupId), context.RequestAborted).ConfigureAwait(false)));
+        scim.MapGet("Groups/{id}", async Task<IResult> (string id, HttpContext context) => await GetGroupAsync(context, id).ConfigureAwait(false));
+        scim.MapPost("Groups", async Task<IResult> (HttpContext context) =>
+            await CreateGroupAsync(context, context.RequestServices, await BodyAsync(context).ConfigureAwait(false)).ConfigureAwait(false));
+        scim.MapPut("Groups/{id}", async Task<IResult> (string id, HttpContext context) =>
+            await ReplaceGroupAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+        scim.MapPatch("Groups/{id}", async Task<IResult> (string id, HttpContext context) =>
+            await PatchGroupAsync(context, context.RequestServices, id, await BodyAsync(context).ConfigureAwait(false), IfMatch(context)).ConfigureAwait(false));
+        scim.MapDelete("Groups/{id}", async Task<IResult> (string id, HttpContext context) => await DeleteGroupAsync(context, context.RequestServices, id, IfMatch(context)).ConfigureAwait(false));
+
+        scim.MapPost("Bulk", BulkAsync);
 
         return endpoints;
     }
@@ -79,47 +89,70 @@ public static partial class ScimEndpoints
         return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, user => UserJson(user, context))) : Error(result.Error);
     }
 
-    private static async Task<IResult> CreateUserAsync(HttpContext context, ICommandHandler<CreateScimUserCommand, ScimUserView> handler)
-    {
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || ParseUser(body) is not { } data)
-        {
-            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A user needs a userName.");
-        }
-
-        var result = await handler.HandleAsync(new CreateScimUserCommand(Tenant(context), data), context.RequestAborted).ConfigureAwait(false);
-        return result.IsSuccess ? Scim(StatusCodes.Status201Created, UserJson(result.Value, context), Location(context, "Users", result.Value.Id)) : Error(result.Error);
-    }
-
-    private static async Task<IResult> ReplaceUserAsync(string id, HttpContext context, ICommandHandler<UpdateScimUserCommand, ScimUserView> handler)
+    private static async Task<ScimResult> GetUserAsync(HttpContext context, string id)
     {
         if (!Guid.TryParse(id, out var userId))
         {
             return NotFound();
         }
 
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || ParseUser(body) is not { } data)
+        var result = await context.RequestServices.GetRequiredService<IQueryHandler<GetScimUserQuery, ScimUserView>>()
+            .HandleAsync(new GetScimUserQuery(Tenant(context), userId), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess ? NotModified(context, result.Value.Version) ?? UserResult(result, context) : Error(result.Error);
+    }
+
+    private static async Task<ScimResult> CreateUserAsync(HttpContext context, IServiceProvider services, JsonElement? body)
+    {
+        if (body is not { } given || ParseUser(given) is not { } data)
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A user needs a userName.");
         }
 
-        return UserResult(await handler.HandleAsync(new UpdateScimUserCommand(Tenant(context), userId, _ => data), context.RequestAborted).ConfigureAwait(false), context);
+        var result = await services.GetRequiredService<ICommandHandler<CreateScimUserCommand, ScimUserView>>()
+            .HandleAsync(new CreateScimUserCommand(Tenant(context), data), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess
+            ? Scim(StatusCodes.Status201Created, UserJson(result.Value, context), Location(context, "Users", result.Value.Id), result.Value.Version)
+            : Error(result.Error);
     }
 
-    private static async Task<IResult> PatchUserAsync(string id, HttpContext context, ICommandHandler<UpdateScimUserCommand, ScimUserView> handler)
+    private static async Task<ScimResult> ReplaceUserAsync(HttpContext context, IServiceProvider services, string id, JsonElement? body, IReadOnlyList<int>? ifMatch)
     {
         if (!Guid.TryParse(id, out var userId))
         {
             return NotFound();
         }
 
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !Has(body, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
+        if (body is not { } given || ParseUser(given) is not { } data)
+        {
+            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A user needs a userName.");
+        }
+
+        return UserResult(await services.GetRequiredService<ICommandHandler<UpdateScimUserCommand, ScimUserView>>()
+            .HandleAsync(new UpdateScimUserCommand(Tenant(context), userId, _ => data, ifMatch), context.RequestAborted).ConfigureAwait(false), context);
+    }
+
+    private static async Task<ScimResult> PatchUserAsync(HttpContext context, IServiceProvider services, string id, JsonElement? body, IReadOnlyList<int>? ifMatch)
+    {
+        if (!Guid.TryParse(id, out var userId))
+        {
+            return NotFound();
+        }
+
+        if (body is not { } given || !Has(given, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A PATCH needs Operations.");
         }
 
         var ops = operations.Clone();
-        return UserResult(await handler.HandleAsync(new UpdateScimUserCommand(Tenant(context), userId, current => ApplyUserPatch(current, ops)), context.RequestAborted).ConfigureAwait(false), context);
+        return UserResult(await services.GetRequiredService<ICommandHandler<UpdateScimUserCommand, ScimUserView>>()
+            .HandleAsync(new UpdateScimUserCommand(Tenant(context), userId, current => ApplyUserPatch(current, ops), ifMatch), context.RequestAborted).ConfigureAwait(false), context);
     }
+
+    private static async Task<ScimResult> DeleteUserAsync(HttpContext context, IServiceProvider services, string id, IReadOnlyList<int>? ifMatch) =>
+        !Guid.TryParse(id, out var userId)
+            ? NotFound()
+            : NoContent(await services.GetRequiredService<ICommandHandler<DeleteScimUserCommand>>()
+                .HandleAsync(new DeleteScimUserCommand(Tenant(context), userId, ifMatch), context.RequestAborted).ConfigureAwait(false));
 
     private static ScimUserData? ParseUser(JsonElement body)
     {
@@ -203,8 +236,8 @@ public static partial class ScimEndpoints
         };
     }
 
-    private static IResult UserResult(Result<ScimUserView> result, HttpContext context) =>
-        result.IsSuccess ? Scim(StatusCodes.Status200OK, UserJson(result.Value, context)) : Error(result.Error);
+    private static ScimResult UserResult(Result<ScimUserView> result, HttpContext context) =>
+        result.IsSuccess ? Scim(StatusCodes.Status200OK, UserJson(result.Value, context), version: result.Value.Version) : Error(result.Error);
 
     private static JsonObject UserJson(ScimUserView user, HttpContext context) => new()
     {
@@ -235,9 +268,21 @@ public static partial class ScimEndpoints
         return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, group => GroupJson(group, context, excludeMembers))) : Error(result.Error);
     }
 
-    private static async Task<IResult> CreateGroupAsync(HttpContext context, ICommandHandler<CreateScimGroupCommand, ScimGroupView> handler)
+    private static async Task<ScimResult> GetGroupAsync(HttpContext context, string id)
     {
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || Text(body, "displayName") is not { } displayName)
+        if (!Guid.TryParse(id, out var groupId))
+        {
+            return NotFound();
+        }
+
+        var result = await context.RequestServices.GetRequiredService<IQueryHandler<GetScimGroupQuery, ScimGroupView>>()
+            .HandleAsync(new GetScimGroupQuery(Tenant(context), groupId), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess ? NotModified(context, result.Value.Version) ?? GroupResult(result, context) : Error(result.Error);
+    }
+
+    private static async Task<ScimResult> CreateGroupAsync(HttpContext context, IServiceProvider services, JsonElement? given)
+    {
+        if (given is not { } body || Text(body, "displayName") is not { } displayName)
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A group needs a displayName.");
         }
@@ -247,35 +292,39 @@ public static partial class ScimEndpoints
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "Member values must be user ids.");
         }
 
-        var result = await handler.HandleAsync(new CreateScimGroupCommand(Tenant(context), displayName, Text(body, "externalId"), memberIds), context.RequestAborted).ConfigureAwait(false);
-        return result.IsSuccess ? Scim(StatusCodes.Status201Created, GroupJson(result.Value, context), Location(context, "Groups", result.Value.Id)) : Error(result.Error);
+        var result = await services.GetRequiredService<ICommandHandler<CreateScimGroupCommand, ScimGroupView>>()
+            .HandleAsync(new CreateScimGroupCommand(Tenant(context), displayName, Text(body, "externalId"), memberIds), context.RequestAborted).ConfigureAwait(false);
+        return result.IsSuccess
+            ? Scim(StatusCodes.Status201Created, GroupJson(result.Value, context), Location(context, "Groups", result.Value.Id), result.Value.Version)
+            : Error(result.Error);
     }
 
-    private static async Task<IResult> ReplaceGroupAsync(string id, HttpContext context, ICommandHandler<UpdateScimGroupCommand, ScimGroupView> handler)
+    private static async Task<ScimResult> ReplaceGroupAsync(HttpContext context, IServiceProvider services, string id, JsonElement? given, IReadOnlyList<int>? ifMatch)
     {
         if (!Guid.TryParse(id, out var groupId))
         {
             return NotFound();
         }
 
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || Text(body, "displayName") is not { } displayName
+        if (given is not { } body || Text(body, "displayName") is not { } displayName
             || !TryMembers(Has(body, "members", out var members) ? members : default, out var memberIds))
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A group needs a displayName and user ids as members.");
         }
 
         var change = new ScimGroupChange(displayName, Text(body, "externalId"), ReplaceMembers: memberIds);
-        return GroupResult(await handler.HandleAsync(new UpdateScimGroupCommand(Tenant(context), groupId, change), context.RequestAborted).ConfigureAwait(false), context);
+        return GroupResult(await services.GetRequiredService<ICommandHandler<UpdateScimGroupCommand, ScimGroupView>>()
+            .HandleAsync(new UpdateScimGroupCommand(Tenant(context), groupId, change, ifMatch), context.RequestAborted).ConfigureAwait(false), context);
     }
 
-    private static async Task<IResult> PatchGroupAsync(string id, HttpContext context, ICommandHandler<UpdateScimGroupCommand, ScimGroupView> handler)
+    private static async Task<ScimResult> PatchGroupAsync(HttpContext context, IServiceProvider services, string id, JsonElement? given, IReadOnlyList<int>? ifMatch)
     {
         if (!Guid.TryParse(id, out var groupId))
         {
             return NotFound();
         }
 
-        if (await BodyAsync(context).ConfigureAwait(false) is not { } body || !Has(body, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
+        if (given is not { } body || !Has(body, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
         {
             return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, "A PATCH needs Operations.");
         }
@@ -355,11 +404,18 @@ public static partial class ScimEndpoints
         }
 
         var change = new ScimGroupChange(displayName, externalId, replace, add.Count > 0 ? add : null, remove.Count > 0 ? remove : null);
-        return GroupResult(await handler.HandleAsync(new UpdateScimGroupCommand(Tenant(context), groupId, change), context.RequestAborted).ConfigureAwait(false), context);
+        return GroupResult(await services.GetRequiredService<ICommandHandler<UpdateScimGroupCommand, ScimGroupView>>()
+            .HandleAsync(new UpdateScimGroupCommand(Tenant(context), groupId, change, ifMatch), context.RequestAborted).ConfigureAwait(false), context);
     }
 
-    private static IResult GroupResult(Result<ScimGroupView> result, HttpContext context) =>
-        result.IsSuccess ? Scim(StatusCodes.Status200OK, GroupJson(result.Value, context)) : Error(result.Error);
+    private static async Task<ScimResult> DeleteGroupAsync(HttpContext context, IServiceProvider services, string id, IReadOnlyList<int>? ifMatch) =>
+        !Guid.TryParse(id, out var groupId)
+            ? NotFound()
+            : NoContent(await services.GetRequiredService<ICommandHandler<DeleteScimGroupCommand>>()
+                .HandleAsync(new DeleteScimGroupCommand(Tenant(context), groupId, ifMatch), context.RequestAborted).ConfigureAwait(false));
+
+    private static ScimResult GroupResult(Result<ScimGroupView> result, HttpContext context) =>
+        result.IsSuccess ? Scim(StatusCodes.Status200OK, GroupJson(result.Value, context), version: result.Value.Version) : Error(result.Error);
 
     private static JsonObject GroupJson(ScimGroupView group, HttpContext context, bool excludeMembers = false)
     {
@@ -403,6 +459,309 @@ public static partial class ScimEndpoints
         }
 
         return true;
+    }
+
+    // ---- Bulk ----------------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Bulk (RFC 7644 §3.7): up to <see cref="MaxBulkOperations"/> operations in order, each in its own unit of work, so one
+    /// failure leaves the others as they are. <c>bulkId:{id}</c> in a path or a value refers to a resource an earlier
+    /// operation of the same request created. <c>failOnErrors</c> stops after that many errors; <c>version</c> works as
+    /// <c>If-Match</c>.
+    /// </summary>
+    private static async Task<IResult> BulkAsync(HttpContext context, IServiceScopeFactory scopes, ILoggerFactory loggers)
+    {
+        if (context.Request.ContentLength > MaxBulkPayloadBytes)
+        {
+            return Error(StatusCodes.Status413PayloadTooLarge, null, $"A bulk request is at most {MaxBulkPayloadBytes} bytes.");
+        }
+
+        JsonElement request;
+        try
+        {
+            if (await LimitedBodyAsync(context, MaxBulkPayloadBytes).ConfigureAwait(false) is not { } body)
+            {
+                return Error(StatusCodes.Status413PayloadTooLarge, null, $"A bulk request is at most {MaxBulkPayloadBytes} bytes.");
+            }
+
+            request = body;
+        }
+        catch (JsonException)
+        {
+            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidSyntax, "The request is not JSON.");
+        }
+
+        if (request.ValueKind != JsonValueKind.Object || !Has(request, "schemas", out var schemas) || schemas.ValueKind != JsonValueKind.Array
+            || !schemas.EnumerateArray().Any(schema => schema.ValueKind == JsonValueKind.String && schema.GetString() == BulkRequestSchema)
+            || !Has(request, "Operations", out var operations) || operations.ValueKind != JsonValueKind.Array)
+        {
+            return Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidSyntax, "A bulk request needs the BulkRequest schema and Operations.");
+        }
+
+        if (operations.GetArrayLength() > MaxBulkOperations)
+        {
+            return Error(StatusCodes.Status413PayloadTooLarge, null, $"A bulk request has at most {MaxBulkOperations} operations.");
+        }
+
+        var failOnErrors = Has(request, "failOnErrors", out var limit) && limit.ValueKind == JsonValueKind.Number && limit.TryGetInt32(out var errors) && errors > 0 ? errors : (int?)null;
+        var created = new Dictionary<string, (string Resource, string Id)>(StringComparer.Ordinal);
+        var results = new JsonArray();
+        var errorCount = 0;
+        var logger = loggers.CreateLogger("JeffOps.Authentication.Enterprise.Scim");
+
+        foreach (var operation in operations.EnumerateArray())
+        {
+            if (failOnErrors is { } stopAt && errorCount >= stopAt)
+            {
+                break;
+            }
+
+            var method = Text(operation, "method")?.ToUpperInvariant() ?? string.Empty;
+            var bulkId = Text(operation, "bulkId");
+            var outcome = await BulkOperationAsync(context, scopes, logger, operation, method, bulkId, created).ConfigureAwait(false);
+
+            var entry = new JsonObject { ["method"] = method, ["status"] = outcome.Result.Status.ToString(CultureInfo.InvariantCulture) };
+            if (bulkId is not null)
+            {
+                entry["bulkId"] = bulkId;
+            }
+
+            if (outcome.Location is not null)
+            {
+                entry["location"] = outcome.Location;
+            }
+
+            if (outcome.Result.Version is { } version)
+            {
+                entry["version"] = ETag(version);
+            }
+
+            if (outcome.Result.Status >= 400)
+            {
+                errorCount++;
+                entry["response"] = outcome.Result.Body?.DeepClone();
+            }
+
+            results.Add(entry);
+        }
+
+        return Scim(StatusCodes.Status200OK, new JsonObject { ["schemas"] = new JsonArray(BulkResponseSchema), ["Operations"] = results });
+    }
+
+    private static async Task<(ScimResult Result, string? Location)> BulkOperationAsync(
+        HttpContext context, IServiceScopeFactory scopes, ILogger logger, JsonElement operation, string method, string? bulkId, Dictionary<string, (string Resource, string Id)> created)
+    {
+        if (method == "POST" && (bulkId is null || created.ContainsKey(bulkId)))
+        {
+            return (Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, bulkId is null ? "A POST needs a bulkId." : $"bulkId '{bulkId}' is used twice."), null);
+        }
+
+        if (BulkPath(Text(operation, "path"), created) is not { } path)
+        {
+            return (Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidPath, "The path must be /Users or /Groups (for POST), or /Users/{id} or /Groups/{id}, with bulkIds of earlier operations only."), null);
+        }
+
+        JsonElement? data = null;
+        if (Has(operation, "data", out var given))
+        {
+            if (Resolve(JsonNode.Parse(given.GetRawText()), created) is not { } resolved)
+            {
+                return (Error(StatusCodes.Status409Conflict, ScimErrors.InvalidValue, "The data refers to a bulkId no earlier operation created."), null);
+            }
+
+            data = JsonSerializer.SerializeToElement(resolved);
+        }
+
+        var ifMatch = Text(operation, "version") is { } version ? Versions(version) : null;
+        ScimResult result;
+        try
+        {
+            // Each operation in its own scope: a failed one leaves nothing half-done for the next to save.
+            var scope = scopes.CreateAsyncScope();
+            await using (scope.ConfigureAwait(false))
+            {
+                var services = scope.ServiceProvider;
+                result = await ((method, path.Resource, path.Id) switch
+                {
+                    ("POST", "Users", null) => CreateUserAsync(context, services, data),
+                    ("POST", "Groups", null) => CreateGroupAsync(context, services, data),
+                    ("PUT", "Users", { } id) => ReplaceUserAsync(context, services, id, data, ifMatch),
+                    ("PUT", "Groups", { } id) => ReplaceGroupAsync(context, services, id, data, ifMatch),
+                    ("PATCH", "Users", { } id) => PatchUserAsync(context, services, id, data, ifMatch),
+                    ("PATCH", "Groups", { } id) => PatchGroupAsync(context, services, id, data, ifMatch),
+                    ("DELETE", "Users", { } id) => DeleteUserAsync(context, services, id, ifMatch),
+                    ("DELETE", "Groups", { } id) => DeleteGroupAsync(context, services, id, ifMatch),
+                    _ => Task.FromResult(Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidPath, $"'{method}' isn't supported on '{Text(operation, "path")}'.")),
+                }).ConfigureAwait(false);
+            }
+        }
+#pragma warning disable CA1031 // One operation's failure is reported in its result; the others still run.
+        catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning restore CA1031
+        {
+            LogBulkOperationFailed(logger, exception, method, Text(operation, "path"));
+            result = Error(StatusCodes.Status500InternalServerError, null, "The operation failed.");
+        }
+
+        if (method == "POST" && result.Status == StatusCodes.Status201Created && result.Body?["id"]?.GetValue<string>() is { } createdId)
+        {
+            created[bulkId!] = (path.Resource, createdId);
+        }
+
+        var location = result.Location
+            ?? (path.Id is { } existing && result.Status < 400 ? $"{context.Request.Scheme}://{context.Request.Host}{context.Request.PathBase}/{Root}/{path.Resource}/{existing}" : null);
+        return (result, location);
+    }
+
+    /// <summary>The resource and id a bulk path names, with a <c>bulkId:</c> id resolved; null when it isn't a supported path.</summary>
+    private static (string Resource, string? Id)? BulkPath(string? path, Dictionary<string, (string Resource, string Id)> created)
+    {
+        var parts = (path ?? string.Empty).Trim('/').Split('/');
+        var resource = parts[0] switch
+        {
+            var users when users.Equals("Users", StringComparison.OrdinalIgnoreCase) => "Users",
+            var groups when groups.Equals("Groups", StringComparison.OrdinalIgnoreCase) => "Groups",
+            _ => null,
+        };
+        if (resource is null || parts.Length > 2)
+        {
+            return null;
+        }
+
+        if (parts.Length == 1)
+        {
+            return (resource, null);
+        }
+
+        if (parts[1].StartsWith("bulkId:", StringComparison.Ordinal))
+        {
+            return created.TryGetValue(parts[1]["bulkId:".Length..], out var target) && target.Resource == resource ? (resource, target.Id) : null;
+        }
+
+        return (resource, parts[1]);
+    }
+
+    /// <summary>Replaces <c>bulkId:{id}</c> strings with the ids of resources created earlier; null when one isn't known.</summary>
+    private static JsonNode? Resolve(JsonNode? node, Dictionary<string, (string Resource, string Id)> created)
+    {
+        switch (node)
+        {
+            case JsonValue value when value.TryGetValue<string>(out var text) && text.StartsWith("bulkId:", StringComparison.Ordinal):
+                return created.TryGetValue(text["bulkId:".Length..], out var target) ? JsonValue.Create(target.Id) : null;
+            case JsonObject obj:
+                foreach (var (key, value) in obj.ToList())
+                {
+                    if (value is null)
+                    {
+                        continue;
+                    }
+
+                    if (Resolve(value, created) is not { } resolved)
+                    {
+                        return null;
+                    }
+
+                    if (!ReferenceEquals(resolved, value))
+                    {
+                        obj[key] = resolved;
+                    }
+                }
+
+                return obj;
+            case JsonArray array:
+                for (var index = 0; index < array.Count; index++)
+                {
+                    if (array[index] is { } item)
+                    {
+                        if (Resolve(item, created) is not { } resolved)
+                        {
+                            return null;
+                        }
+
+                        if (!ReferenceEquals(resolved, item))
+                        {
+                            array[index] = resolved;
+                        }
+                    }
+                }
+
+                return array;
+            default:
+                return node;
+        }
+    }
+
+    private static async Task<JsonElement?> LimitedBodyAsync(HttpContext context, int maxBytes)
+    {
+        using var buffer = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        int read;
+        while ((read = await context.Request.Body.ReadAsync(chunk, context.RequestAborted).ConfigureAwait(false)) > 0)
+        {
+            if (buffer.Length + read > maxBytes)
+            {
+                return null;
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        using var document = JsonDocument.Parse(buffer.ToArray());
+        return document.RootElement.Clone();
+    }
+
+    [LoggerMessage(EventId = 8701, Level = LogLevel.Error, Message = "A SCIM bulk operation ({Method} {Path}) failed.")]
+    private static partial void LogBulkOperationFailed(ILogger logger, Exception exception, string method, string? path);
+
+    // ---- ETags ---------------------------------------------------------------------------------------------------------
+
+    private static string ETag(int version) => $"W/\"{version.ToString(CultureInfo.InvariantCulture)}\"";
+
+    /// <summary>The versions <c>If-Match</c> allows; null when there is no precondition or it is <c>*</c>.</summary>
+    private static IReadOnlyList<int>? IfMatch(HttpContext context) => Versions(context.Request.Headers.IfMatch.ToString());
+
+    /// <summary>
+    /// The versions in a list of entity tags (weak or strong, as both name the same version here); null for none or <c>*</c>.
+    /// Tags that aren't this server's leave the list empty, so they match nothing.
+    /// </summary>
+    private static IReadOnlyList<int>? Versions(string? header)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            return null;
+        }
+
+        var versions = new List<int>();
+        foreach (var tag in header.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (tag == "*")
+            {
+                return null;
+            }
+
+            var quoted = tag.StartsWith("W/", StringComparison.Ordinal) ? tag[2..] : tag;
+            if (quoted.Length > 2 && quoted[0] == '"' && quoted[^1] == '"'
+                && int.TryParse(quoted[1..^1], NumberStyles.None, CultureInfo.InvariantCulture, out var version))
+            {
+                versions.Add(version);
+            }
+        }
+
+        return versions;
+    }
+
+    /// <summary>304 when <c>If-None-Match</c> names the current version (or is <c>*</c>); null to send the resource.</summary>
+    private static ScimResult? NotModified(HttpContext context, int version)
+    {
+        var header = context.Request.Headers.IfNoneMatch.ToString();
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            return null;
+        }
+
+        return header.Trim() == "*" || Versions(header) is { } versions && versions.Contains(version)
+            ? new ScimResult(StatusCodes.Status304NotModified, null, null, version)
+            : null;
     }
 
     // ---- Protocol helpers ----------------------------------------------------------------------------------------------
@@ -497,22 +856,24 @@ public static partial class ScimEndpoints
         return Text(primary.ValueKind == JsonValueKind.Object ? primary : all.FirstOrDefault(), "value");
     }
 
-    private static IResult Scim(int status, JsonObject body, string? location = null) => new ScimResult(status, body, location);
+    private static ScimResult Scim(int status, JsonObject body, string? location = null, int? version = null) => new(status, body, location, version);
 
-    private static IResult NoContent(Result result) => result.IsSuccess ? TypedResults.NoContent() : Error(result.Error);
+    private static ScimResult NoContent(Result result) => result.IsSuccess ? new ScimResult(StatusCodes.Status204NoContent, null, null, null) : Error(result.Error);
 
-    private static IResult NotFound() => Error(StatusCodes.Status404NotFound, ScimErrors.NotFound, "No such resource.");
+    private static ScimResult NotFound() => Error(StatusCodes.Status404NotFound, ScimErrors.NotFound, "No such resource.");
 
-    private static IResult Error(Error error) => error.Type switch
+    private static ScimResult Error(Error error) => error.Type switch
     {
         ErrorType.NotFound => Error(StatusCodes.Status404NotFound, null, error.Message),
+        ErrorType.Conflict when error.Code == ScimErrors.PreconditionFailed => Error(StatusCodes.Status412PreconditionFailed, null, error.Message),
+        ErrorType.Conflict when error.Code == ScimErrors.ConcurrentChange => Error(StatusCodes.Status409Conflict, null, error.Message),
         ErrorType.Conflict => Error(StatusCodes.Status409Conflict, ScimErrors.Uniqueness, error.Message),
         ErrorType.Unavailable => Error(StatusCodes.Status503ServiceUnavailable, null, error.Message),
         ErrorType.Validation => Error(StatusCodes.Status400BadRequest, ScimErrors.InvalidValue, string.Join(" ", error.Failures.Select(failure => failure.Message))),
         _ => Error(StatusCodes.Status400BadRequest, error.Code, error.Message),
     };
 
-    internal static IResult Error(int status, string? scimType, string detail)
+    internal static ScimResult Error(int status, string? scimType, string detail)
     {
         var body = new JsonObject
         {
@@ -525,18 +886,18 @@ public static partial class ScimEndpoints
             body["scimType"] = scimType;
         }
 
-        return new ScimResult(status, body, null);
+        return new ScimResult(status, body, null, null);
     }
 
     private static JsonObject ServiceProviderConfig() => new()
     {
         ["schemas"] = new JsonArray("urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"),
         ["patch"] = new JsonObject { ["supported"] = true },
-        ["bulk"] = new JsonObject { ["supported"] = false, ["maxOperations"] = 0, ["maxPayloadSize"] = 0 },
+        ["bulk"] = new JsonObject { ["supported"] = true, ["maxOperations"] = MaxBulkOperations, ["maxPayloadSize"] = MaxBulkPayloadBytes },
         ["filter"] = new JsonObject { ["supported"] = true, ["maxResults"] = 200 },
         ["changePassword"] = new JsonObject { ["supported"] = false },
         ["sort"] = new JsonObject { ["supported"] = false },
-        ["etag"] = new JsonObject { ["supported"] = false },
+        ["etag"] = new JsonObject { ["supported"] = true },
         ["authenticationSchemes"] = new JsonArray(new JsonObject
         {
             ["type"] = "oauthbearertoken",
@@ -583,20 +944,36 @@ public static partial class ScimEndpoints
         }
     }
 
-    /// <summary>Writes a SCIM body with the <c>application/scim+json</c> media type.</summary>
-    private sealed class ScimResult(int status, JsonObject body, string? location) : IResult
+    /// <summary>A SCIM answer: the body (with the <c>application/scim+json</c> media type), and the resource's ETag when it has one.</summary>
+    internal sealed class ScimResult(int status, JsonObject? body, string? location, int? version) : IResult
     {
+        public int Status { get; } = status;
+
+        public JsonObject? Body { get; } = body;
+
+        public string? Location { get; } = location;
+
+        public int? Version { get; } = version;
+
         public async Task ExecuteAsync(HttpContext httpContext)
         {
             ArgumentNullException.ThrowIfNull(httpContext);
-            httpContext.Response.StatusCode = status;
-            httpContext.Response.ContentType = ContentType;
-            if (location is not null)
+            httpContext.Response.StatusCode = Status;
+            if (Location is not null)
             {
-                httpContext.Response.Headers.Location = location;
+                httpContext.Response.Headers.Location = Location;
             }
 
-            await httpContext.Response.WriteAsync(body.ToJsonString(), httpContext.RequestAborted).ConfigureAwait(false);
+            if (Version is { } current)
+            {
+                httpContext.Response.Headers.ETag = ETag(current);
+            }
+
+            if (Body is not null)
+            {
+                httpContext.Response.ContentType = ContentType;
+                await httpContext.Response.WriteAsync(Body.ToJsonString(), httpContext.RequestAborted).ConfigureAwait(false);
+            }
         }
     }
 }

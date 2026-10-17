@@ -196,10 +196,151 @@ public sealed class ScimTests : IAsyncDisposable
 
             var body = JsonSerializer.Serialize(RandomJson(random, 3, jo));
             await ShouldNotFailAsync(random.Next(2) == 0 ? HttpMethod.Post : HttpMethod.Put, random.Next(2) == 0 ? "Users" + (random.Next(2) == 0 ? $"/{jo}" : "") : "Groups" + (random.Next(2) == 0 ? $"/{group}" : ""), body, body);
+
+            // Bulk: neither the request nor any operation in it fails with a server error.
+            string[] methods = ["POST", "PUT", "PATCH", "DELETE", "GET", "post", ""];
+            string[] paths = ["/Users", $"/Users/{jo}", "/Groups", $"/Groups/{group}", $"/Groups/bulkId:b{round - 1}", "/Users/bulkId:", "/Bulk", "Users/x/y", ""];
+            var bulk = JsonSerializer.Serialize(new
+            {
+                schemas = new[] { "urn:ietf:params:scim:api:messages:2.0:BulkRequest" },
+                failOnErrors = random.Next(-1, 3),
+                Operations = new[]
+                {
+                    new Dictionary<string, object?> { ["method"] = methods[random.Next(methods.Length)], ["path"] = paths[random.Next(paths.Length)], ["bulkId"] = $"b{round}", ["data"] = RandomJson(random, 3, jo) },
+                    new Dictionary<string, object?> { ["method"] = methods[random.Next(methods.Length)], ["path"] = paths[random.Next(paths.Length)], ["version"] = RandomJson(random, 0, jo), ["data"] = RandomPatch(random, jo) },
+                },
+            });
+            var bulkResponse = await ScimAsync(HttpMethod.Post, "Bulk", bulk);
+            ((int)bulkResponse.StatusCode).ShouldBeLessThan(500, bulk);
+            if (bulkResponse.StatusCode == HttpStatusCode.OK)
+            {
+                foreach (var operation in (await JsonAsync(bulkResponse)).GetProperty("Operations").EnumerateArray())
+                {
+                    int.Parse(operation.GetProperty("status").GetString()!, System.Globalization.CultureInfo.InvariantCulture).ShouldBeLessThan(500, bulk);
+                }
+            }
         }
 
         // The user and group are still readable afterwards: nothing corrupted them.
         (await ScimAsync(HttpMethod.Get, $"Groups/{group}")).StatusCode.ShouldBeOneOf(HttpStatusCode.OK, HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Long_names_are_refused_or_cut_to_what_the_store_keeps()
+    {
+        await StartAsync();
+        var longGiven = new string('a', 201);
+        (await ScimAsync(HttpMethod.Post, "Users", $$"""{"userName":"long@contoso.com","name":{"givenName":"{{longGiven}}"},"emails":[{"value":"long@contoso.com"}]}"""))
+            .StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        // A display name SCIM allows, longer than an account's: the account keeps the first 200 characters (not half a pair).
+        var display = string.Concat(Enumerable.Repeat("\U0001F600", 128));
+        var created = await JsonAsync(await ScimAsync(HttpMethod.Post, "Users", $$"""{"userName":"wide@contoso.com","displayName":"{{display}}","emails":[{"value":"wide@contoso.com"}]}"""));
+        var account = await AccountAsync(Guid.Parse(created.GetProperty("id").GetString()!));
+        account.DisplayName.Length.ShouldBe(200);
+        char.IsHighSurrogate(account.DisplayName[^1]).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task ETags_guard_changes_and_answer_conditional_reads()
+    {
+        await StartAsync();
+        var created = await ScimAsync(HttpMethod.Post, "Users", """{"userName":"jo@contoso.com","emails":[{"value":"jo@contoso.com"}]}""");
+        var id = (await JsonAsync(created)).GetProperty("id").GetString();
+        var etag = created.Headers.ETag.ShouldNotBeNull().ToString();
+        etag.ShouldStartWith("W/\"");
+
+        (await ScimAsync(HttpMethod.Get, $"Users/{id}", ifNoneMatch: etag)).StatusCode.ShouldBe(HttpStatusCode.NotModified);
+        (await ScimAsync(HttpMethod.Get, $"Users/{id}", ifNoneMatch: "W/\"999\"")).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // A change made against an old version is refused, and changes nothing.
+        var stale = await ScimAsync(HttpMethod.Put, $"Users/{id}", """{"userName":"jo@contoso.com","displayName":"Stale","emails":[{"value":"jo@contoso.com"}]}""", ifMatch: "W/\"999\"");
+        stale.StatusCode.ShouldBe(HttpStatusCode.PreconditionFailed);
+        var unchanged = await JsonAsync(await ScimAsync(HttpMethod.Get, $"Users/{id}"));
+        (unchanged.TryGetProperty("displayName", out var name) && name.ValueKind == JsonValueKind.String ? name.GetString() : null).ShouldNotBe("Stale");
+
+        var patched = await ScimAsync(HttpMethod.Patch, $"Users/{id}", """{"Operations":[{"op":"replace","path":"displayName","value":"Jo"}]}""", ifMatch: etag);
+        patched.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var next = patched.Headers.ETag.ShouldNotBeNull().ToString();
+        next.ShouldNotBe(etag);
+        (await JsonAsync(patched)).GetProperty("meta").GetProperty("version").GetString().ShouldBe(next);
+
+        (await ScimAsync(HttpMethod.Delete, $"Users/{id}", ifMatch: etag)).StatusCode.ShouldBe(HttpStatusCode.PreconditionFailed);
+        (await ScimAsync(HttpMethod.Delete, $"Users/{id}", ifMatch: "*")).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+
+        var group = await ScimAsync(HttpMethod.Post, "Groups", """{"displayName":"Engineers"}""");
+        var groupId = (await JsonAsync(group)).GetProperty("id").GetString();
+        (await ScimAsync(HttpMethod.Patch, $"Groups/{groupId}", """{"Operations":[{"op":"replace","path":"displayName","value":"Eng"}]}""", ifMatch: "W/\"999\""))
+            .StatusCode.ShouldBe(HttpStatusCode.PreconditionFailed);
+        (await ScimAsync(HttpMethod.Patch, $"Groups/{groupId}", """{"Operations":[{"op":"replace","path":"displayName","value":"Eng"}]}""", ifMatch: group.Headers.ETag!.ToString()))
+            .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var config = await JsonAsync(await ScimAsync(HttpMethod.Get, "ServiceProviderConfig"));
+        config.GetProperty("etag").GetProperty("supported").GetBoolean().ShouldBeTrue();
+        config.GetProperty("bulk").GetProperty("supported").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Bulk_creates_users_and_a_group_that_refers_to_them()
+    {
+        await StartAsync();
+
+        var response = await ScimAsync(HttpMethod.Post, "Bulk", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],"Operations":[
+              {"method":"POST","path":"/Users","bulkId":"ada","data":{"userName":"ada@contoso.com","emails":[{"value":"ada@contoso.com"}]}},
+              {"method":"POST","path":"/Users","bulkId":"bob","data":{"userName":"bob@contoso.com","emails":[{"value":"bob@contoso.com"}]}},
+              {"method":"POST","path":"/Groups","bulkId":"eng","data":{"displayName":"Engineers","members":[{"value":"bulkId:ada"},{"value":"bulkId:bob"}]}},
+              {"method":"PATCH","path":"/Groups/bulkId:eng","data":{"Operations":[{"op":"remove","path":"members","value":[{"value":"bulkId:bob"}]}]}}
+            ]}
+            """);
+
+        var body = await JsonAsync(response);
+        body.GetProperty("schemas")[0].GetString().ShouldBe("urn:ietf:params:scim:api:messages:2.0:BulkResponse");
+        var results = body.GetProperty("Operations").EnumerateArray().ToList();
+        results.Select(result => result.GetProperty("status").GetString()).ShouldBe(["201", "201", "201", "200"]);
+        results.ShouldAllBe(result => result.GetProperty("location").GetString()!.Contains("/scim/v2/"));
+        results.ShouldAllBe(result => result.GetProperty("version").GetString()!.StartsWith("W/"));
+
+        var ada = results[0].GetProperty("location").GetString()!.Split('/')[^1];
+        var groupId = results[2].GetProperty("location").GetString()!.Split('/')[^1];
+        var group = await JsonAsync(await ScimAsync(HttpMethod.Get, $"Groups/{groupId}"));
+        group.GetProperty("members").EnumerateArray().Select(member => member.GetProperty("value").GetString()).ShouldBe([ada]);
+    }
+
+    [Fact]
+    public async Task Bulk_reports_each_failure_and_stops_after_fail_on_errors()
+    {
+        await StartAsync();
+        await UserIdAsync("taken@contoso.com");
+
+        var response = await ScimAsync(HttpMethod.Post, "Bulk", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],"failOnErrors":2,"Operations":[
+              {"method":"POST","path":"/Users","bulkId":"a","data":{"displayName":"no userName"}},
+              {"method":"POST","path":"/Groups","bulkId":"g","data":{"displayName":"Ghosts","members":[{"value":"bulkId:nobody"}]}},
+              {"method":"POST","path":"/Users","bulkId":"c","data":{"userName":"late@contoso.com","emails":[{"value":"late@contoso.com"}]}}
+            ]}
+            """);
+
+        var results = (await JsonAsync(response)).GetProperty("Operations").EnumerateArray().ToList();
+        results.Select(result => result.GetProperty("status").GetString()).ShouldBe(["400", "409"]);
+        results.ShouldAllBe(result => result.GetProperty("response").GetProperty("detail").GetString()!.Length > 0);
+        (await JsonAsync(await ScimAsync(HttpMethod.Get, "Users?filter=" + Uri.EscapeDataString("userName eq \"late@contoso.com\"")))).GetProperty("totalResults").GetInt32()
+            .ShouldBe(0, "operations after the error limit don't run");
+
+        // Without a limit every operation runs; a duplicate is reported, the rest still succeed.
+        var all = await ScimAsync(HttpMethod.Post, "Bulk", """
+            {"schemas":["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],"Operations":[
+              {"method":"POST","path":"/Users","bulkId":"t","data":{"userName":"taken@contoso.com","emails":[{"value":"taken@contoso.com"}]}},
+              {"method":"POST","path":"/Users","bulkId":"n","data":{"userName":"new@contoso.com","emails":[{"value":"new@contoso.com"}]}},
+              {"method":"DELETE","path":"/Users/not-an-id"}
+            ]}
+            """);
+        (await JsonAsync(all)).GetProperty("Operations").EnumerateArray().Select(result => result.GetProperty("status").GetString()).ShouldBe(["409", "201", "404"]);
+
+        (await ScimAsync(HttpMethod.Post, "Bulk", """{"Operations":[]}""")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        var tooMany = string.Join(',', Enumerable.Range(0, ScimEndpoints.MaxBulkOperations + 1).Select(_ => $$"""{"method":"DELETE","path":"/Users/{{Guid.NewGuid()}}"}"""));
+        (await ScimAsync(HttpMethod.Post, "Bulk", $$"""{"schemas":["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],"Operations":[{{tooMany}}]}"""))
+            .StatusCode.ShouldBe(HttpStatusCode.RequestEntityTooLarge);
     }
 
     private async Task ShouldNotFailAsync(HttpMethod method, string path, string? body, string input)
@@ -344,10 +485,20 @@ public sealed class ScimTests : IAsyncDisposable
         return (await _host.SignInAsync(account.Id)).AccessToken!;
     }
 
-    private async Task<HttpResponseMessage> ScimAsync(HttpMethod method, string path, string? body = null)
+    private async Task<HttpResponseMessage> ScimAsync(HttpMethod method, string path, string? body = null, string? ifMatch = null, string? ifNoneMatch = null)
     {
         using var request = new HttpRequestMessage(method, $"scim/v2/{path}");
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _token);
+        if (ifMatch is not null)
+        {
+            request.Headers.TryAddWithoutValidation("If-Match", ifMatch);
+        }
+
+        if (ifNoneMatch is not null)
+        {
+            request.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
+        }
+
         if (body is not null)
         {
             request.Content = new StringContent(body, Encoding.UTF8, "application/scim+json");

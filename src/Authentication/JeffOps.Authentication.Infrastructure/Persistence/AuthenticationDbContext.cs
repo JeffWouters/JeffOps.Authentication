@@ -47,7 +47,7 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
             account.HasKey(entity => entity.Id);
             account.Property(entity => entity.Id).ValueGeneratedNever();
             account.Property(entity => entity.Email).HasMaxLength(320).IsRequired();
-            account.Property(entity => entity.DisplayName).HasMaxLength(200).IsRequired();
+            account.Property(entity => entity.DisplayName).HasMaxLength(Account.MaxDisplayNameLength).IsRequired();
             account.Property(entity => entity.Status).HasConversion<string>().HasMaxLength(20);
             account.HasIndex(entity => entity.Email);
             account.Ignore(entity => entity.DomainEvents);

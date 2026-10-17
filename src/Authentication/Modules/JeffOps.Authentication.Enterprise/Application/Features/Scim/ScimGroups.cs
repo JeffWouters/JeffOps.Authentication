@@ -77,7 +77,8 @@ public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUse
 /// <summary>The changes a PUT or PATCH makes to a group. Null leaves an attribute alone.</summary>
 public sealed record ScimGroupChange(string? DisplayName = null, string? ExternalId = null, IReadOnlyList<Guid>? ReplaceMembers = null, IReadOnlyList<Guid>? AddMembers = null, IReadOnlyList<Guid>? RemoveMembers = null);
 
-public sealed record UpdateScimGroupCommand(Guid TenantId, Guid GroupId, ScimGroupChange Change);
+/// <summary>Changes a group; <paramref name="IfMatch"/>: the versions the caller allows (<c>If-Match</c>), null for any.</summary>
+public sealed record UpdateScimGroupCommand(Guid TenantId, Guid GroupId, ScimGroupChange Change, IReadOnlyList<int>? IfMatch = null);
 
 public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork, TimeProvider time)
     : ICommandHandler<UpdateScimGroupCommand, ScimGroupView>
@@ -92,6 +93,11 @@ public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUse
         if (group is null)
         {
             return Error.NotFound(ScimErrors.NotFound, "No such group.");
+        }
+
+        if (ScimVersions.Check(command.IfMatch, group.Version) is { } changed)
+        {
+            return changed;
         }
 
         var incoming = (change.ReplaceMembers ?? []).Concat(change.AddMembers ?? []);
@@ -134,14 +140,18 @@ public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUse
             group.RemoveMembers(remove, now);
         }
 
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return ScimVersions.Overtaken(command.IfMatch);
+        }
+
         var after = group.MemberIds.ToHashSet();
         await provisioning.PublishMembershipAsync(group, [.. after.Except(before)], [.. before.Except(after)], cancellationToken).ConfigureAwait(false);
         return group.ToView();
     }
 }
 
-public sealed record DeleteScimGroupCommand(Guid TenantId, Guid GroupId);
+public sealed record DeleteScimGroupCommand(Guid TenantId, Guid GroupId, IReadOnlyList<int>? IfMatch = null);
 
 public sealed class DeleteScimGroupHandler(IScimGroupRepository groups, IEnterpriseUnitOfWork unitOfWork, IEventPublisher events, TimeProvider time) : ICommandHandler<DeleteScimGroupCommand>
 {
@@ -154,9 +164,18 @@ public sealed class DeleteScimGroupHandler(IScimGroupRepository groups, IEnterpr
             return Error.NotFound(ScimErrors.NotFound, "No such group.");
         }
 
+        if (ScimVersions.Check(command.IfMatch, group.Version) is { } changed)
+        {
+            return changed;
+        }
+
         var members = group.MemberIds;
         groups.Remove(group);
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return ScimVersions.Overtaken(command.IfMatch);
+        }
+
         await events.PublishAsync(new GroupDeletedEvent(group.TenantId, group.Id, members) { OccurredAt = time.GetUtcNow() }, cancellationToken).ConfigureAwait(false);
         return Result.Success();
     }

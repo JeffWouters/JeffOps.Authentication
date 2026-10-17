@@ -96,6 +96,9 @@ public interface ISsoPolicyRepository
 public interface IEnterpriseUnitOfWork
 {
     Task SaveChangesAsync(CancellationToken cancellationToken);
+
+    /// <summary>Saves, or answers false (saving nothing) when another request changed a versioned resource meanwhile.</summary>
+    Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>Reads TXT records. The default uses DNS over HTTPS.</summary>

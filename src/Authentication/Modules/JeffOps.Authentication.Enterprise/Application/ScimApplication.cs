@@ -65,6 +65,29 @@ public static class ScimErrors
     public const string NoTarget = "noTarget";
     public const string NotFound = "notFound";
     public const string Unavailable = "unavailable";
+    public const string InvalidSyntax = "invalidSyntax";
+    public const string InvalidPath = "invalidPath";
+
+    /// <summary>Not a SCIM <c>scimType</c>: the resource's version isn't one <c>If-Match</c> named (412).</summary>
+    public const string PreconditionFailed = "precondition_failed";
+
+    /// <summary>Not a SCIM <c>scimType</c>: another request changed the resource meanwhile (409).</summary>
+    public const string ConcurrentChange = "concurrent_change";
+}
+
+/// <summary>Resource versions as SCIM ETags carry them (RFC 7644 §3.14).</summary>
+public static class ScimVersions
+{
+    /// <summary>
+    /// Null when <paramref name="ifMatch"/> allows <paramref name="version"/>: no precondition (null), or a list that names it.
+    /// </summary>
+    public static Error? Check(IReadOnlyList<int>? ifMatch, int version) =>
+        ifMatch is null || ifMatch.Contains(version) ? null : Error.Conflict(ScimErrors.PreconditionFailed, "The resource has changed since the version If-Match names.");
+
+    /// <summary>The error for a save another request overtook: a failed precondition when the caller gave one.</summary>
+    public static Error Overtaken(IReadOnlyList<int>? ifMatch) => ifMatch is null
+        ? Error.Conflict(ScimErrors.ConcurrentChange, "The resource changed while this request ran; read it and try again.")
+        : Error.Conflict(ScimErrors.PreconditionFailed, "The resource has changed since the version If-Match names.");
 }
 
 /// <summary>The attributes of a provisioned user the token server keeps.</summary>
