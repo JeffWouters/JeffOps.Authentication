@@ -3,6 +3,23 @@ using JeffOps.Authorization.Domain.Permissions;
 
 namespace JeffOps.Authorization.Application.Abstractions;
 
+/// <summary>
+/// Read-only views of the store for decisions and escalation checks: nothing is tracked for saving, and a user's roles are
+/// read in one query rather than one per assignment.
+/// </summary>
+public interface IAuthorizationReads
+{
+    /// <summary>The user's assignments in the tenant: direct ones and those through the groups they are in.</summary>
+    Task<IReadOnlyList<Domain.Assignments.RoleAssignment>> AssignmentsOfAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken);
+
+    /// <summary>The permission codes of the roles in <paramref name="roleIds"/>, or of every role when null.</summary>
+    Task<IReadOnlyDictionary<Guid, string[]>> RolePermissionsAsync(IReadOnlyCollection<Guid>? roleIds, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<StoredPolicy>> PoliciesAsync(CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<Scope>> ScopesAsync(CancellationToken cancellationToken);
+}
+
 public interface IRoleRepository
 {
     Task<Role?> FindAsync(Guid roleId, CancellationToken cancellationToken);

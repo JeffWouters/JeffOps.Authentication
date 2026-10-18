@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <Compile Include="..\Shared\TestDatabase.cs" Link="Shared\TestDatabase.cs" />
+    <Compile Include="..\JeffOps.Authentication.Server.Tests\Performance\QueryCounter.cs" Link="Shared\QueryCounter.cs" />
   </ItemGroup>
 
 </Project>

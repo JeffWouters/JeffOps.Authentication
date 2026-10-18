@@ -55,6 +55,7 @@ public static class AuthorizationManagementServiceCollectionExtensions
         services.AddJeffOpsAuthorizationApplication();
 
         services.TryAddScoped<IRoleRepository, RoleRepository>();
+        services.TryAddScoped<IAuthorizationReads, AuthorizationReads>();
         services.TryAddScoped<IAssignmentRepository, AssignmentRepository>();
         services.TryAddScoped<IRoleChangeRepository, RoleChangeRepository>();
         services.TryAddScoped<IApprovalSettingRepository, ApprovalSettingRepository>();

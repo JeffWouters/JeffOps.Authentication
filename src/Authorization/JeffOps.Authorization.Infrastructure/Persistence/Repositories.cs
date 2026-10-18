@@ -5,6 +5,41 @@ using Microsoft.EntityFrameworkCore;
 
 namespace JeffOps.Authorization.Infrastructure.Persistence;
 
+/// <summary>The store read for decisions and escalation checks, without tracking.</summary>
+internal sealed class AuthorizationReads(AuthorizationDbContext db) : IAuthorizationReads
+{
+    public async Task<IReadOnlyList<Domain.Assignments.RoleAssignment>> AssignmentsOfAsync(Guid userId, Guid tenantId, CancellationToken cancellationToken)
+    {
+        var direct = await db.Assignments.AsNoTracking()
+            .Where(assignment => assignment.UserId == userId && assignment.TenantId == tenantId)
+            .Select(assignment => new Domain.Assignments.RoleAssignment(assignment.RoleId, assignment.ScopeKey, assignment.ScopeInstanceId, assignment.ExpiresAt))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var viaGroups = await db.GroupAssignments.AsNoTracking()
+            .Where(assignment => assignment.TenantId == tenantId
+                && db.GroupMembers.Any(member => member.TenantId == tenantId && member.GroupId == assignment.GroupId && member.UserId == userId))
+            .Select(assignment => new Domain.Assignments.RoleAssignment(assignment.RoleId, assignment.ScopeKey, assignment.ScopeInstanceId, assignment.ExpiresAt))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return [.. direct, .. viaGroups];
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, string[]>> RolePermissionsAsync(IReadOnlyCollection<Guid>? roleIds, CancellationToken cancellationToken)
+    {
+        var query = db.Roles.AsNoTracking();
+        if (roleIds is not null)
+        {
+            query = query.Where(role => roleIds.Contains(role.Id));
+        }
+
+        return (await query.ToListAsync(cancellationToken).ConfigureAwait(false)).ToDictionary(role => role.Id, role => role.PermissionCodes().ToArray());
+    }
+
+    public async Task<IReadOnlyList<StoredPolicy>> PoliciesAsync(CancellationToken cancellationToken) =>
+        await db.Policies.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<Scope>> ScopesAsync(CancellationToken cancellationToken) =>
+        await db.Scopes.AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false);
+}
+
 internal sealed class RoleRepository(AuthorizationDbContext db) : IRoleRepository
 {
     public Task<Role?> FindAsync(Guid roleId, CancellationToken cancellationToken) =>
