@@ -42,7 +42,6 @@ internal static class ProtocolEndpoints
     private static async Task<IResult> AuthorizeAsync(
         HttpContext context,
         ICommandHandler<StartSessionCommand, IssuedIdentity> startSession,
-        IOpenIddictScopeManager scopeManager,
         ClaimNames names,
         IOptions<TokenServerOptions> options,
         TimeProvider time)
@@ -110,7 +109,7 @@ internal static class ProtocolEndpoints
 
         // dpop_jkt (RFC 9449 section 10): the code is bound to the client's key and redeemable only with a proof of it.
         var issued = Dpop.RequestedBinding(request) is { } requestedKey ? Dpop.Bind(result.Value, requestedKey) : result.Value;
-        return await TokenIssuance.SignInAsync(issued, names, scopeManager, time, context.RequestAborted).ConfigureAwait(false);
+        return TokenIssuance.SignIn(issued, names, options.Value, time);
     }
 
     private static async Task<IResult> TokenAsync(
@@ -118,7 +117,6 @@ internal static class ProtocolEndpoints
         ICommandHandler<ClientCredentialsCommand, IssuedIdentity> clientCredentials,
         ICommandHandler<RefreshSessionCommand, IssuedIdentity> refreshSession,
         ICommandHandler<ExchangePatCommand, IssuedIdentity> exchangePat,
-        IOpenIddictScopeManager scopeManager,
         ClaimNames names,
         IOptions<TokenServerOptions> options,
         TimeProvider time)
@@ -183,7 +181,7 @@ internal static class ProtocolEndpoints
         }
 
         var issued = dpop.Value is { } jkt ? Dpop.Bind(result.Value, jkt) : result.Value;
-        return await TokenIssuance.SignInAsync(issued, names, scopeManager, time, cancellationToken).ConfigureAwait(false);
+        return TokenIssuance.SignIn(issued, names, options.Value, time);
     }
 
     /// <summary>
@@ -195,7 +193,6 @@ internal static class ProtocolEndpoints
         HttpContext context,
         ICommandHandler<StartSessionCommand, IssuedIdentity> startSession,
         IOpenIddictApplicationManager applications,
-        IOpenIddictScopeManager scopeManager,
         Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery,
         ClaimNames names,
         IOptions<TokenServerOptions> options,
@@ -249,8 +246,8 @@ internal static class ProtocolEndpoints
             return Results.Redirect($"{Page}?error={Uri.EscapeDataString(session.Error.Code)}");
         }
 
-        return await TokenIssuance.SignInAsync(session.Value, names, scopeManager, time, context.RequestAborted,
-            new AuthenticationProperties { RedirectUri = $"{Page}?result=approved" }).ConfigureAwait(false);
+        return TokenIssuance.SignIn(session.Value, names, options.Value, time,
+            new AuthenticationProperties { RedirectUri = $"{Page}?result=approved" });
     }
 
     private static async Task<IResult> UserInfoAsync(

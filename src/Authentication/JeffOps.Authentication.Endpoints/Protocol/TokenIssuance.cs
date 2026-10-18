@@ -17,12 +17,16 @@ internal static class TokenIssuance
     /// <summary>The extra response parameter carrying the refusal's stable code (for example <c>mfa_required</c>).</summary>
     public const string CodeParameter = "code";
 
-    public static async Task<IResult> SignInAsync(
+    /// <summary>
+    /// Signs <paramref name="issued"/> in with OpenIddict. The token's resources (audiences) come from
+    /// <see cref="Application.TokenServerOptions.ApiScopes"/>, the configuration the scope store is seeded from at startup, so no
+    /// request reads the scope store for them.
+    /// </summary>
+    public static IResult SignIn(
         IssuedIdentity issued,
         ClaimNames names,
-        IOpenIddictScopeManager scopeManager,
+        Application.TokenServerOptions options,
         TimeProvider time,
-        CancellationToken cancellationToken,
         AuthenticationProperties? properties = null)
     {
         var scopes = issued.AllowRefresh
@@ -32,12 +36,10 @@ internal static class TokenIssuance
         var identity = new ClaimsIdentity(issued.Claims, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme, names.Name, "role");
         identity.SetScopes(scopes);
 
-        var resources = new List<string>();
-        await foreach (var resource in scopeManager.ListResourcesAsync(scopes, cancellationToken).ConfigureAwait(false))
-        {
-            resources.Add(resource);
-        }
-
+        var resources = scopes
+            .SelectMany(scope => options.ApiScopes.TryGetValue(scope, out var audiences) ? audiences : [])
+            .Where(audience => !string.IsNullOrWhiteSpace(audience))
+            .Distinct(StringComparer.Ordinal);
         identity.SetResources(resources);
         identity.SetDestinations(claim => DestinationsOf(claim, names, scopes));
 

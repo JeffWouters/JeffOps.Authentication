@@ -560,6 +560,7 @@ Upstream dependency failure → `server_error` (5xx), **not** `invalid_grant`, s
 - Clients are OpenIddict applications stored in the DB, seeded from configuration (`AuthServer:Clients[]`).
 - Each client declares: type (public / confidential), allowed grants, redirect URIs, audiences, permissions (for `client_credentials`), PKCE required, DPoP required (roadmap), token lifetimes override.
 - Seeder refuses well-known dev secrets outside Development (kept from source `ClientSeeder`).
+- **Reads (as built):** a token request reads its client from a snapshot at most 60 seconds old (`ClientSnapshots`, in `CachedApplicationStore`, OpenIddict's application store with one override), attached to the request's DbContext as an unchanged copy, so no request shares an entity and nothing is read; writes through the store drop the snapshot at once, and a change another instance makes is seen within the minute. A token's resources come from `ApiScopes`, the configuration the scope store is seeded from, rather than from the scope store per request.
 - Confidential client auth: `client_secret_basic` today; `private_key_jwt` (RFC 7523) is the recommended target and removes shared secrets.
 - **Providers per client** (`Clients[].Providers`): the upstream providers a client's users sign in through, plus `local`. Empty
   means any. One deployment can then serve several products that each have their own app registration, and so their own

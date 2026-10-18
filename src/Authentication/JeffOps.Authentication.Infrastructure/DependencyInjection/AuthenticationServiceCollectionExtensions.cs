@@ -81,11 +81,18 @@ public static class AuthenticationServiceCollectionExtensions
         // One-time values (DPoP proofs, SAML assertions) are remembered in the database, so they count once across instances.
         services.TryAddSingleton<Abstractions.Replay.IReplayCache, DatabaseReplayCache>();
         services.TryAddSingleton<DatabaseKeyStore>();
+        services.TryAddSingleton<ClientSnapshots>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());
         services.AddHostedService<KeyRotationService>();
 
         services.AddOpenIddict()
-            .AddCore(core => core.UseEntityFrameworkCore().UseDbContext<AuthenticationDbContext>())
+            .AddCore(core =>
+            {
+                core.UseEntityFrameworkCore().UseDbContext<AuthenticationDbContext>();
+
+                // Clients come from configuration: each request reads its client from a minute-old snapshot, not the database.
+                core.ReplaceApplicationStore<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication, CachedApplicationStore>(ServiceLifetime.Scoped);
+            })
             .AddServer(server =>
             {
                 server.SetAuthorizationEndpointUris("connect/authorize")
