@@ -50,15 +50,7 @@ internal sealed class DatabaseReplayCache(IServiceScopeFactory scopes, TimeProvi
             await db.ReplayEntries.Where(entry => entry.ExpiresAtUnixMs <= now).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        // A key whose entry has expired is taken over; a live one is a replay.
-        if (await db.ReplayEntries
-                .Where(entry => entry.Key == key && entry.ExpiresAtUnixMs <= now)
-                .ExecuteUpdateAsync(set => set.SetProperty(entry => entry.ExpiresAtUnixMs, expires), cancellationToken)
-                .ConfigureAwait(false) == 1)
-        {
-            return true;
-        }
-
+        // The common case, a value not seen before, is one insert; the primary key makes it atomic across instances.
         db.ReplayEntries.Add(new ReplayEntry(key, expires));
         try
         {
@@ -67,7 +59,21 @@ internal sealed class DatabaseReplayCache(IServiceScopeFactory scopes, TimeProvi
         }
         catch (DbUpdateException)
         {
-            // The key exists (a replay), or the database refused the write: either way, don't accept the value.
+            db.ChangeTracker.Clear();
+        }
+
+        // The key is there: a replay, unless its entry has expired, when it is taken over. The update matches one row at most,
+        // so of two requests taking over the same expired key, one wins.
+        try
+        {
+            return await db.ReplayEntries
+                .Where(entry => entry.Key == key && entry.ExpiresAtUnixMs <= now)
+                .ExecuteUpdateAsync(set => set.SetProperty(entry => entry.ExpiresAtUnixMs, expires), cancellationToken)
+                .ConfigureAwait(false) == 1;
+        }
+        catch (System.Data.Common.DbException)
+        {
+            // The database refused the write: don't accept the value.
             return false;
         }
     }
