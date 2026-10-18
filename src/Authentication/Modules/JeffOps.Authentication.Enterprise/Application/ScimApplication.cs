@@ -64,6 +64,9 @@ public interface IScimGroupRepository
 
     Task<IReadOnlyList<ScimGroup>> ListForMemberAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken);
 
+    /// <summary>Which groups each of <paramref name="accountIds"/> is in, with the groups' names; members aren't loaded.</summary>
+    Task<IReadOnlyList<(Guid AccountId, Guid GroupId, string DisplayName)>> ListMembershipsAsync(Guid tenantId, IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken);
+
     void Add(ScimGroup group);
 
     void Remove(ScimGroup group);
@@ -293,10 +296,48 @@ public sealed class ScimProvisioning(
     public async Task<ScimUserView> ViewAsync(ScimUser user, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(user);
-        var email = (await accounts.FindAsync(user.AccountId, cancellationToken).ConfigureAwait(false))?.Email ?? user.UserName;
-        var memberOf = await groups.ListForMemberAsync(user.TenantId, user.AccountId, cancellationToken).ConfigureAwait(false);
-        return new ScimUserView(user.AccountId, user.UserName, user.ExternalId, user.GivenName, user.FamilyName, user.DisplayName, email, user.Active,
-            user.Created, user.LastModified, user.Version, [.. memberOf.Select(group => (group.Id, group.DisplayName))]);
+        return (await ViewsAsync([user], cancellationToken).ConfigureAwait(false))[0];
+    }
+
+    /// <summary>
+    /// The SCIM views of <paramref name="page"/>, in order, with two reads however many users there are: their emails, and
+    /// the groups they are in (names only; the groups' members aren't loaded).
+    /// </summary>
+    public async Task<IReadOnlyList<ScimUserView>> ViewsAsync(IReadOnlyList<ScimUser> page, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (page.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = page.Select(user => user.AccountId).ToList();
+        var emails = await accounts.FindEmailsAsync(ids, cancellationToken).ConfigureAwait(false);
+        var memberships = (await groups.ListMembershipsAsync(page[0].TenantId, ids, cancellationToken).ConfigureAwait(false))
+            .ToLookup(membership => membership.AccountId, membership => (membership.GroupId, membership.DisplayName));
+        return [.. page.Select(user => View(user, emails.TryGetValue(user.AccountId, out var email) ? email : user.UserName, [.. memberships[user.AccountId]]))];
+    }
+
+    /// <summary>
+    /// The view of a user just provisioned: in no group of the tenant yet (members must be provisioned first), with the
+    /// account's email, which is the provisioned address (a linked account matched on it).
+    /// </summary>
+    public static ScimUserView NewView(ScimUser user, ScimUserData data)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentNullException.ThrowIfNull(data);
+        return View(user, EmailOf(data) is { } email ? Account.NormalizeEmail(email) : user.UserName, []);
+    }
+
+    private static ScimUserView View(ScimUser user, string email, IReadOnlyList<(Guid Id, string DisplayName)> memberOf) =>
+        new(user.AccountId, user.UserName, user.ExternalId, user.GivenName, user.FamilyName, user.DisplayName, email, user.Active,
+            user.Created, user.LastModified, user.Version, memberOf);
+
+    /// <summary>The account's email, or the userName when the account is gone.</summary>
+    public async Task<string> EmailAsync(ScimUser user, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        return (await accounts.FindEmailsAsync([user.AccountId], cancellationToken).ConfigureAwait(false)).TryGetValue(user.AccountId, out var email) ? email : user.UserName;
     }
 
     /// <summary>

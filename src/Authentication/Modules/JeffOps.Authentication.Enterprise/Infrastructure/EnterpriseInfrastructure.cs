@@ -363,6 +363,22 @@ internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRe
         return (page, total);
     }
 
+    public async Task<IReadOnlyList<(Guid AccountId, Guid GroupId, string DisplayName)>> ListMembershipsAsync(
+        Guid tenantId, IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(accountIds);
+        if (accountIds.Count == 0)
+        {
+            return [];
+        }
+
+        var rows = await db.ScimGroups
+            .Where(group => group.TenantId == tenantId)
+            .SelectMany(group => group.Members.Where(member => accountIds.Contains(member.AccountId)), (group, member) => new { member.AccountId, group.Id, group.DisplayName })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return [.. rows.OrderBy(row => row.DisplayName, StringComparer.OrdinalIgnoreCase).Select(row => (row.AccountId, row.Id, row.DisplayName))];
+    }
+
     public async Task<IReadOnlyList<ScimGroup>> ListForMemberAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken) =>
         await db.ScimGroups.Where(group => group.TenantId == tenantId && group.Members.Any(member => member.AccountId == accountId)).ToListAsync(cancellationToken).ConfigureAwait(false);
 

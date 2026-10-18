@@ -13,6 +13,9 @@ public interface IAccountRepository
 
     Task<Account?> FindByExternalLoginAsync(ExternalLoginKey login, CancellationToken cancellationToken);
 
+    /// <summary>The emails of the accounts among <paramref name="accountIds"/> that exist, in one read (no accounts loaded).</summary>
+    Task<IReadOnlyDictionary<Guid, string>> FindEmailsAsync(IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken);
+
     void Add(Account account);
 }
 

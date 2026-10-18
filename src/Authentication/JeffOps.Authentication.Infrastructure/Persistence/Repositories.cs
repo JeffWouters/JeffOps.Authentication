@@ -32,6 +32,16 @@ internal sealed class AccountRepository(AuthenticationDbContext db) : IAccountRe
         return accountId is { } id ? await FindAsync(id, cancellationToken).ConfigureAwait(false) : null;
     }
 
+    public async Task<IReadOnlyDictionary<Guid, string>> FindEmailsAsync(IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(accountIds);
+        return accountIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await db.Accounts.Where(account => accountIds.Contains(account.Id))
+                .Select(account => new { account.Id, account.Email })
+                .ToDictionaryAsync(account => account.Id, account => account.Email, cancellationToken).ConfigureAwait(false);
+    }
+
     public void Add(Account account) => db.Accounts.Add(account);
 }
 

@@ -48,7 +48,7 @@ public sealed class CreateScimUserHandler(ScimProvisioning provisioning, IEnterp
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return await provisioning.ViewAsync(created.Value, cancellationToken).ConfigureAwait(false);
+        return ScimProvisioning.NewView(created.Value, command.Data);
     }
 }
 
@@ -76,8 +76,8 @@ public sealed class UpdateScimUserHandler(IScimUserRepository users, ScimProvisi
             return changed;
         }
 
-        var current = await provisioning.ViewAsync(user, cancellationToken).ConfigureAwait(false);
-        var next = command.Change(new ScimUserData(user.UserName, user.ExternalId, user.GivenName, user.FamilyName, user.DisplayName, current.Email, user.Active));
+        var currentEmail = await provisioning.EmailAsync(user, cancellationToken).ConfigureAwait(false);
+        var next = command.Change(new ScimUserData(user.UserName, user.ExternalId, user.GivenName, user.FamilyName, user.DisplayName, currentEmail, user.Active));
         if (next.IsFailure)
         {
             return next.Error;
@@ -170,12 +170,6 @@ public sealed class ListScimUsersHandler(IScimUserRepository users, ScimProvisio
 
         var (page, total) = await users.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200),
             query.Sort is { } requested ? requested with { Attribute = ScimSort.Canonical(requested.Attribute, ScimSort.Users)! } : null, cancellationToken).ConfigureAwait(false);
-        var views = new List<ScimUserView>(page.Count);
-        foreach (var user in page)
-        {
-            views.Add(await provisioning.ViewAsync(user, cancellationToken).ConfigureAwait(false));
-        }
-
-        return new ScimPage<ScimUserView>(views, total, Math.Max(query.StartIndex, 1));
+        return new ScimPage<ScimUserView>(await provisioning.ViewsAsync(page, cancellationToken).ConfigureAwait(false), total, Math.Max(query.StartIndex, 1));
     }
 }

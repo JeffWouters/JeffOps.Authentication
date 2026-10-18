@@ -55,12 +55,6 @@ public sealed class SearchScimHandler(IScimUserRepository users, IScimGroupRepos
         var (userPage, userTotal) = await users.ListAsync(query.TenantId, userFilter, skip, take, userSort, cancellationToken).ConfigureAwait(false);
         var (groupPage, groupTotal) = await groups.ListAsync(query.TenantId, groupFilter, Math.Max(0, skip - userTotal), take - userPage.Count, groupSort, cancellationToken).ConfigureAwait(false);
 
-        var userViews = new List<ScimUserView>(userPage.Count);
-        foreach (var user in userPage)
-        {
-            userViews.Add(await provisioning.ViewAsync(user, cancellationToken).ConfigureAwait(false));
-        }
-
-        return new ScimSearchPage(userViews, [.. groupPage.Select(group => group.ToView())], userTotal + groupTotal, startIndex);
+        return new ScimSearchPage(await provisioning.ViewsAsync(userPage, cancellationToken).ConfigureAwait(false), [.. groupPage.Select(group => group.ToView())], userTotal + groupTotal, startIndex);
     }
 }
