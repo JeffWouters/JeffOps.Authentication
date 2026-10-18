@@ -208,7 +208,7 @@ public static partial class SamlEndpoints
 
         var scheme = saml.TokenServer.Value.SignInScheme;
         // Remember where the session came from, so signing out here can sign out at the provider too (single logout).
-        var principal = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, saml.Time.GetUtcNow(), names, scheme);
+        var principal = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, saml.Time.GetUtcNow(), names, scheme, provider);
         var session = (ClaimsIdentity)principal.Identity!;
         session.AddClaim(new Claim(SamlSignOut.ProviderClaim, provider));
         session.AddClaim(new Claim(SamlSignOut.NameIdClaim, assertion.Subject.NameId.Value));

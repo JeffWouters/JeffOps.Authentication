@@ -3,6 +3,7 @@ using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application;
+using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Application.Sessions;
 using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.LocalAccounts.Application;
@@ -351,7 +352,7 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         var options = context.RequestServices.GetRequiredService<IOptions<TokenServerOptions>>().Value;
         var names = context.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default;
         var now = context.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
-        var principal = SignInPrincipal.Create(result.AccountId!.Value, new AuthenticationStrength(result.Methods ?? []), now, names, options.SignInScheme);
+        var principal = SignInPrincipal.Create(result.AccountId!.Value, new AuthenticationStrength(result.Methods ?? []), now, names, options.SignInScheme, ClientProviders.Local);
         await context.SignInAsync(options.SignInScheme, principal).ConfigureAwait(false);
     }
 

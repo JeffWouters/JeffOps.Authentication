@@ -21,6 +21,8 @@ First public preview (`0.1.0-alpha`).
 - **Clients**: JWT validation (with DPoP) for resource services, service tokens, a backend-for-frontend with YARP.
 - **Entitlements**: `RequireEntitlement` endpoint convention answering 402.
 - **Testing**: an in-memory test token issuer and fakes for consumers' tests.
+- **Providers per client** (`Clients[].Providers`): each product signs in through its own app registration at the provider
+  (its own consent screen); the login page names the client and offers only its providers. Entra `Scopes` is configurable.
 
 ### Security
 

@@ -40,10 +40,13 @@ internal static class FederationEndpoints
         IEnumerable<IExternalIdentityMapper> mappers,
         IHomeRealmDirectory realms,
         IOptions<FederationOptions> options,
+        IOptions<TokenServerOptions> tokenServer,
         HttpContext context)
     {
-        var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name).ToList();
         var local = LocalOrRoot(returnUrl);
+        var client = ClientProviders.ForReturnUrl(tokenServer.Value, local);
+        var known = mappers.SelectMany(mapper => mapper.Providers).Select(provider => provider.Name)
+            .Where(provider => ClientProviders.Allows(client, provider)).ToList();
 
         return await HomeRealm.DiscoverAsync(email, idp, options.Value, known, realms, context.RequestAborted).ConfigureAwait(false) is { } provider
             ? Results.Redirect($"/signin/{Uri.EscapeDataString(provider)}?returnUrl={Uri.EscapeDataString(local)}&login_hint={Uri.EscapeDataString(email ?? string.Empty)}")
@@ -55,13 +58,20 @@ internal static class FederationEndpoints
         string? returnUrl,
         string? login_hint,
         IEnumerable<IExternalIdentityMapper> mappers,
-        IEnumerable<IExternalProviderChallenge> challenges)
+        IEnumerable<IExternalProviderChallenge> challenges,
+        IOptions<TokenServerOptions> tokenServer)
     {
         // Providers tenants registered aren't listed; their own sign-in endpoint checks they exist and may still be used.
         if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal))
             && !(TenantProviderNames.IsTenantProvider(provider) && challenges.Any(challenge => challenge.Handles(provider))))
         {
             return TypedResults.NotFound();
+        }
+
+        // Not one of the client's providers: the authorize endpoint would refuse the sign-in anyway, so don't send the user there.
+        if (!ClientProviders.Allows(ClientProviders.ForReturnUrl(tokenServer.Value, LocalOrRoot(returnUrl)), provider))
+        {
+            return BackToLogin(LocalOrRoot(returnUrl), "provider_not_allowed");
         }
 
         if (challenges.FirstOrDefault(challenge => challenge.Handles(provider)) is { } other)
@@ -122,7 +132,7 @@ internal static class FederationEndpoints
         var signInScheme = options.Value.SignInScheme;
         await context.SignInAsync(
             signInScheme,
-            SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, signInScheme)).ConfigureAwait(false);
+            SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, signInScheme, provider)).ConfigureAwait(false);
 
         return Results.Redirect(returnUrl);
     }

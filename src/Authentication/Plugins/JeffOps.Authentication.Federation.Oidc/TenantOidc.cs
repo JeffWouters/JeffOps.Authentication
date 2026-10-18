@@ -273,7 +273,7 @@ public static partial class TenantOidcEndpoints
         // (by its session, or by the user) can find this session.
         var scheme = tokenServer.Value.SignInScheme;
         var now = time.GetUtcNow();
-        var principal = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, now, names, scheme);
+        var principal = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, now, names, scheme, provider);
         var session = (System.Security.Claims.ClaimsIdentity)principal.Identity!;
         session.AddClaim(new System.Security.Claims.Claim(ProviderClaim, provider));
         session.AddClaim(new System.Security.Claims.Claim(IdTokenClaim, rawIdToken));

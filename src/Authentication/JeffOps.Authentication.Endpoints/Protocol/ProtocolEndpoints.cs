@@ -1,6 +1,7 @@
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Features.Accounts;
+using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Application.Features.Grants.ClientCredentials;
 using JeffOps.Authentication.Application.Features.Grants.ExchangePat;
 using JeffOps.Authentication.Application.Features.Sessions.EndSession;
@@ -53,9 +54,13 @@ internal static class ProtocolEndpoints
         var signedIn = await context.AuthenticateAsync(signInScheme).ConfigureAwait(false);
         var signedInAt = SignInPrincipal.SignedInAt(signedIn.Principal, names);
 
+        // A client limited to some providers (its own app registration and consent screen at each) gets only sign-ins that came
+        // through one of them: a session from another product's registration signs in again here.
+        var client = ClientProviders.Find(options.Value, request.ClientId);
         var mustSignIn = !signedIn.Succeeded
             || request.HasPromptValue(PromptValues.Login)
-            || (request.MaxAge is { } maxAge && signedInAt is { } at && time.GetUtcNow() - at > TimeSpan.FromSeconds(maxAge));
+            || (request.MaxAge is { } maxAge && signedInAt is { } at && time.GetUtcNow() - at > TimeSpan.FromSeconds(maxAge))
+            || !ClientProviders.Allows(client, SignInPrincipal.ProviderOf(signedIn.Principal));
 
         IResult SignInAgain()
         {

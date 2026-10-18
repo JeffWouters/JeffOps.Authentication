@@ -1,6 +1,8 @@
+using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Federation;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.UI.Components.Pages;
 
@@ -26,6 +28,7 @@ public sealed partial class Login
         ["email_not_verified"] = "Confirm your email address first: use the link we sent you.",
         ["signin_expired"] = "That took too long. Sign in again.",
         ["sso_required"] = "Your organization requires signing in with its identity provider.",
+        ["provider_not_allowed"] = "Sign in with one of the options below for this application.",
     };
 
     /// <summary>
@@ -47,7 +50,14 @@ public sealed partial class Login
     [CascadingParameter]
     public HttpContext? HttpContext { get; set; }
 
+    /// <summary>The token server's options, for the client a sign-in is for.</summary>
+    [Inject]
+    public required IOptions<TokenServerOptions> TokenServer { get; set; }
+
     private IReadOnlyList<ExternalProviderInfo> Providers { get; set; } = [];
+
+    /// <summary>The name of the application the user signs in to, when the sign-in is for a client that has one.</summary>
+    private string? ClientName { get; set; }
 
     private string? ErrorMessage { get; set; }
 
@@ -72,8 +82,15 @@ public sealed partial class Login
         ApplySecurityHeaders(HttpContext);
 
         SafeReturnUrl = IsLocal(ReturnUrl) ? ReturnUrl! : "/";
-        Providers = [.. Mappers.SelectMany(mapper => mapper.Providers).DistinctBy(provider => provider.Name)];
-        PasswordAction = SignInMethods.FirstOrDefault(method => method is { Name: "password", Enabled: true })?.FormAction;
+
+        // Only what the client accepts (its Providers), so a product's users see that product's sign-in options.
+        var client = ClientProviders.ForReturnUrl(TokenServer.Value, SafeReturnUrl);
+        ClientName = string.IsNullOrWhiteSpace(client?.DisplayName) ? null : client.DisplayName;
+        Providers = [.. Mappers.SelectMany(mapper => mapper.Providers).DistinctBy(provider => provider.Name)
+            .Where(provider => ClientProviders.Allows(client, provider.Name))];
+        PasswordAction = ClientProviders.Allows(client, ClientProviders.Local)
+            ? SignInMethods.FirstOrDefault(method => method is { Name: "password", Enabled: true })?.FormAction
+            : null;
         ErrorMessage = Error is null ? null : Messages.GetValueOrDefault(Error, "Signing in didn't work. Try again.");
     }
 

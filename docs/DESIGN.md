@@ -561,6 +561,19 @@ Upstream dependency failure → `server_error` (5xx), **not** `invalid_grant`, s
 - Each client declares: type (public / confidential), allowed grants, redirect URIs, audiences, permissions (for `client_credentials`), PKCE required, DPoP required (roadmap), token lifetimes override.
 - Seeder refuses well-known dev secrets outside Development (kept from source `ClientSeeder`).
 - Confidential client auth: `client_secret_basic` today; `private_key_jwt` (RFC 7523) is the recommended target and removes shared secrets.
+- **Providers per client** (`Clients[].Providers`): the upstream providers a client's users sign in through, plus `local`. Empty
+  means any. One deployment can then serve several products that each have their own app registration, and so their own
+  name on the provider's consent screen: `time` signs in through `entra-time`, `tickets` through `entra-tickets`. Accounts
+  still link on `(issuer, subject)`, and Entra's `oid` is the same for a user across registrations, so the person stays one
+  account.
+  - The sign-in cookie records its provider (`jeffops:idp`; cookie only, never in tokens).
+  - The authorize endpoint treats a sign-in from a provider the client doesn't list like `prompt=login`: the user signs in
+    again (`login_required` with `prompt=none`). A sign-in made before providers were recorded counts as unlisted.
+  - The login page offers only the client's providers and names the client ("to continue to …"); home realm discovery
+    and `signin/{provider}` skip providers the client doesn't list.
+  - Providers that tenants registered themselves (§8.4) are always allowed: a tenant's SSO choice applies to every product.
+  - The client is read from the return URL's authorization request (`client_id`, which pushed requests repeat). The device
+    flow isn't limited: its verification page doesn't know the client until the code is entered.
 
 ---
 

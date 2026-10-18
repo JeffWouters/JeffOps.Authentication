@@ -11,7 +11,13 @@ namespace JeffOps.Authentication.Application.Sessions;
 /// </summary>
 public static class SignInPrincipal
 {
-    public static ClaimsPrincipal Create(Guid accountId, AuthenticationStrength strength, DateTimeOffset signedInAt, ClaimNames names, string authenticationType)
+    /// <summary>
+    /// The provider the user signed in through (a provider name, or <c>local</c>). Kept in the sign-in cookie only, never in
+    /// tokens: the authorize endpoint checks it against the client's <c>Providers</c>.
+    /// </summary>
+    public const string ProviderClaim = "jeffops:idp";
+
+    public static ClaimsPrincipal Create(Guid accountId, AuthenticationStrength strength, DateTimeOffset signedInAt, ClaimNames names, string authenticationType, string? provider = null)
     {
         ArgumentNullException.ThrowIfNull(strength);
         ArgumentNullException.ThrowIfNull(names);
@@ -25,6 +31,10 @@ public static class SignInPrincipal
             new(names.SessionId, Guid.NewGuid().ToString("N")),
         };
         claims.AddRange(strength.Methods.Select(method => new Claim(names.AuthenticationMethods, method)));
+        if (!string.IsNullOrEmpty(provider))
+        {
+            claims.Add(new Claim(ProviderClaim, provider));
+        }
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, authenticationType, names.Name, "role"));
     }
@@ -35,6 +45,9 @@ public static class SignInPrincipal
         ArgumentNullException.ThrowIfNull(names);
         return principal?.FindFirst(names.SessionId)?.Value is { Length: > 0 and <= 64 } sessionId ? sessionId : null;
     }
+
+    /// <summary>The provider a sign-in came through, or null for one made before sign-ins recorded it.</summary>
+    public static string? ProviderOf(ClaimsPrincipal? principal) => principal?.FindFirst(ProviderClaim)?.Value;
 
     public static DateTimeOffset? SignedInAt(ClaimsPrincipal? principal, ClaimNames names)
     {

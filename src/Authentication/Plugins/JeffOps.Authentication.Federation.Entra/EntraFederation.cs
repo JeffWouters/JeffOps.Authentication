@@ -28,6 +28,13 @@ public sealed class EntraOptions
     /// personal Microsoft accounts), <c>consumers</c>, or one tenant id for a single-tenant deployment.
     /// </summary>
     public string Tenant { get; set; } = "organizations";
+
+    /// <summary>
+    /// Scopes to request besides <c>openid</c>. Default (null or empty): <c>email</c> and <c>profile</c>. Use <c>profile</c> alone
+    /// with an app registration that tenants consented to without <c>email</c>, so reusing it asks no one for consent again; the
+    /// account's email then comes from <c>preferred_username</c>.
+    /// </summary>
+    public IList<string>? Scopes { get; set; }
 }
 
 /// <summary>Registers Microsoft Entra ID as an external identity provider.</summary>
@@ -61,7 +68,7 @@ public static class EntraFederationExtensions
                 .SetClientId(options.ClientId)
                 .SetTenant(options.Tenant)
                 .SetRedirectUri(OidcFederationExtensions.CallbackPathPrefix + name)
-                .AddScopes(Scopes.Email, Scopes.Profile);
+                .AddScopes(options.Scopes is { Count: > 0 } scopes ? [.. scopes] : [Scopes.Email, Scopes.Profile]);
 
             if (!string.IsNullOrEmpty(options.ClientSecret))
             {

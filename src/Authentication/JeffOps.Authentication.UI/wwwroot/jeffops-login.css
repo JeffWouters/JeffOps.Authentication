@@ -2,6 +2,7 @@
 body { margin: 0; font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; }
 .jo-login { width: min(24rem, 100% - 2rem); }
 .jo-login h1 { font-size: 1.5rem; }
+.jo-client { margin-top: -.5rem; opacity: .8; }
 .jo-discover { display: grid; gap: .5rem; }
 .jo-discover input, .jo-discover button, .jo-provider { font: inherit; padding: .6rem .8rem; border-radius: .4rem; }
 .jo-discover input { border: 1px solid #8884; }

@@ -189,6 +189,107 @@ public sealed class FederationTests
         response.Headers.GetValues("Content-Security-Policy").Single().ShouldContain("default-src 'none'");
     }
 
+    // Two products, each with its own registration at the provider: "time" signs in through "upstream", "tickets" through
+    // "tickets-idp" only (not configured here, so nothing can satisfy it).
+    private static Dictionary<string, string?> ProductClients() => new()
+    {
+        ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true",
+        ["JeffOps:TokenServer:Clients:3:ClientId"] = "time",
+        ["JeffOps:TokenServer:Clients:3:DisplayName"] = "JeffOps Time",
+        ["JeffOps:TokenServer:Clients:3:Kind"] = "Public",
+        ["JeffOps:TokenServer:Clients:3:GrantTypes:0"] = "authorization_code",
+        ["JeffOps:TokenServer:Clients:3:RedirectUris:0"] = "https://time.test/callback",
+        ["JeffOps:TokenServer:Clients:3:Scopes:0"] = "openid",
+        ["JeffOps:TokenServer:Clients:3:Providers:0"] = "upstream",
+        ["JeffOps:TokenServer:Clients:4:ClientId"] = "tickets",
+        ["JeffOps:TokenServer:Clients:4:DisplayName"] = "JeffOps Tickets",
+        ["JeffOps:TokenServer:Clients:4:Kind"] = "Public",
+        ["JeffOps:TokenServer:Clients:4:GrantTypes:0"] = "authorization_code",
+        ["JeffOps:TokenServer:Clients:4:RedirectUris:0"] = "https://tickets.test/callback",
+        ["JeffOps:TokenServer:Clients:4:Scopes:0"] = "openid",
+        ["JeffOps:TokenServer:Clients:4:Providers:0"] = "tickets-idp",
+    };
+
+    private static string AuthorizePath(string clientId, string redirectUri) =>
+        $"/connect/authorize?client_id={clientId}&response_type=code&redirect_uri={Uri.EscapeDataString(redirectUri)}" +
+        "&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGjSstw-cM&code_challenge_method=S256";
+
+    [Fact]
+    public async Task The_login_page_names_the_client_and_offers_only_its_providers()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, ProductClients());
+
+        async Task<string> LoginPageAsync(string returnUrl) =>
+            await (await downstream.Client.GetAsync(new Uri($"account/login?returnUrl={Uri.EscapeDataString(returnUrl)}", UriKind.Relative), TestContext.Current.CancellationToken))
+                .Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        var time = await LoginPageAsync(AuthorizePath("time", "https://time.test/callback"));
+        time.ShouldContain("to continue to JeffOps Time");
+        time.ShouldContain("Upstream IdP");
+
+        var tickets = await LoginPageAsync(AuthorizePath("tickets", "https://tickets.test/callback"));
+        tickets.ShouldContain("to continue to JeffOps Tickets");
+        tickets.ShouldNotContain("Upstream IdP");
+
+        var unlimited = await LoginPageAsync(AuthorizePath(TokenServerHost.BffClient, TokenServerHost.BffRedirect));
+        unlimited.ShouldContain("Upstream IdP");
+        unlimited.ShouldNotContain("to continue to");
+    }
+
+    [Fact]
+    public async Task A_sign_in_through_another_products_provider_must_sign_in_again()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, ProductClients());
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+        await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id);
+
+        // Time accepts the sign-in it came through …
+        var time = await browser.GetAsync(downstream, AuthorizePath("time", "https://time.test/callback"));
+        time.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        time.Headers.Location!.ToString().ShouldStartWith("https://time.test/callback?code=");
+
+        // … Tickets doesn't: the user signs in again, through Tickets' own provider.
+        var tickets = await browser.GetAsync(downstream, AuthorizePath("tickets", "https://tickets.test/callback"));
+        tickets.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        tickets.Headers.Location!.ToString().ShouldContain("/account/login");
+
+        // With prompt=none there is no one to ask: login_required.
+        var silent = await browser.GetAsync(downstream, AuthorizePath("tickets", "https://tickets.test/callback") + "&prompt=none&state=s");
+        silent.Headers.Location!.ToString().ShouldStartWith("https://tickets.test/callback?error=login_required");
+    }
+
+    [Fact]
+    public async Task A_provider_the_client_does_not_accept_is_neither_started_nor_discovered()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, ProductClients());
+        using var browser = new Browser(downstream);
+        var tickets = Uri.EscapeDataString(AuthorizePath("tickets", "https://tickets.test/callback"));
+
+        var challenge = await browser.GetAsync(downstream, $"signin/upstream?returnUrl={tickets}");
+        challenge.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        challenge.Headers.Location!.OriginalString.ShouldStartWith("/account/login?");
+        challenge.Headers.Location.OriginalString.ShouldContain("error=provider_not_allowed");
+
+        // upstream.example maps to "upstream", which Tickets doesn't accept: back to the login page instead.
+        var discovered = await browser.GetAsync(downstream, $"account/login/discover?email=lin@upstream.example&returnUrl={tickets}");
+        discovered.Headers.Location!.OriginalString.ShouldStartWith("/account/login?");
+    }
+
+    [Theory]
+    [InlineData("/connect/authorize?response_type=code&client_id=time&scope=openid", "time")]
+    [InlineData("/connect/authorize?client_id=a%20b", "a b")]
+    [InlineData("/base/connect/authorize?client_id=time", "time")]
+    [InlineData("/connect/authorize?scope=openid", null)]
+    [InlineData("/account/device?client_id=time", null)]
+    [InlineData("/", null)]
+    [InlineData(null, null)]
+    public void The_client_of_a_sign_in_comes_from_its_authorization_request(string? returnUrl, string? clientId) =>
+        ClientProviders.ClientIdOf(returnUrl).ShouldBe(clientId);
+
     private static async Task<(Uri Location, string Verifier)> AuthorizeWithBrowserAsync(TokenServerHost server, Browser browser)
     {
         var verifier = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');

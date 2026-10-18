@@ -126,6 +126,12 @@ migrations in your deployment pipeline, for example with `dotnet ef database upd
 | Tenants' own OpenID Connect providers (likewise) | `.AddOidcTenantProviders()` beside `.AddEnterprise()`, the same operator policy, and `app.MapJeffOpsTenantOidc()` |
 | Impersonation, lockbox, tenant switch | `.AddDelegation().AddSqlServerPersistence()` and `app.MapJeffOpsDelegation()` |
 
+**One deployment, several products.** Give each product its own app registration at the provider (its own name on the
+consent screen), add each as a provider (`.AddEntra("entra-time")`, `.AddEntra("entra-tickets")`), and list them per client:
+`"Providers": [ "entra-time" ]`. The login page then offers a client only its providers and names it, and a session from
+another product's registration signs in again. For an Entra registration tenants consented to without `email`, set
+`Providers:entra-time:Scopes` to `[ "profile" ]` so reusing it asks no one again.
+
 **Signing keys** live in the database by default, protected by the Data Protection key ring and rotated automatically.
 Use `.AddKeyVaultSigning()` (package `JeffOps.Authentication.KeyVault`) to sign with Azure Key Vault instead, or
 `.UseCertificateSigning()` for certificates you manage.

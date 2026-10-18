@@ -168,6 +168,14 @@ public sealed class ClientDefinition
     /// system, Kubernetes, a cloud) with this subject and audience is exchanged for this client's token, with no secret.
     /// </summary>
     public IList<FederatedCredential> FederatedCredentials { get; } = [];
+
+    /// <summary>
+    /// The identity providers this client's users sign in through, by provider name (for example <c>entra-time</c>), plus
+    /// <c>local</c> for local accounts. Empty: any. The login page offers only these, and the authorize endpoint asks a user whose
+    /// sign-in came from another provider to sign in again, so each product can have its own app registration (and consent
+    /// screen) at the provider. Providers tenants registered themselves (per-tenant SSO) are always allowed.
+    /// </summary>
+    public IList<string> Providers { get; } = [];
 }
 
 /// <summary>

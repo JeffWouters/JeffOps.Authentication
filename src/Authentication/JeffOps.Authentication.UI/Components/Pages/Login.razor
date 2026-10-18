@@ -6,6 +6,10 @@
 
 <main class="jo-login">
     <h1>Sign in</h1>
+    @if (ClientName is not null)
+    {
+        <p class="jo-client">to continue to @ClientName</p>
+    }
 
     @if (ErrorMessage is not null)
     {
