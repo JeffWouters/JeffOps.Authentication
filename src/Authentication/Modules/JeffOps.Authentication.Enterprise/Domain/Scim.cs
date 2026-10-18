@@ -82,6 +82,12 @@ public sealed class ScimUser
 
     public string UserName { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// <see cref="UserName"/> lower-cased (invariant): what SCIM's case-insensitive comparisons and the tenant's uniqueness use,
+    /// stored so the database can seek it in an index.
+    /// </summary>
+    public string NormalizedUserName { get; private set; } = string.Empty;
+
     public string? ExternalId { get; private set; }
 
     public string? GivenName { get; private set; }
@@ -113,6 +119,7 @@ public sealed class ScimUser
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userName);
         UserName = userName.Trim();
+        NormalizedUserName = Normalize(UserName);
         ExternalId = Clean(externalId);
         GivenName = Clean(givenName);
         FamilyName = Clean(familyName);
@@ -123,6 +130,13 @@ public sealed class ScimUser
     }
 
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>How SCIM's case-insensitive names are stored for comparison: trimmed and lower-cased (invariant).</summary>
+    public static string Normalize(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value.Trim().ToLowerInvariant();
+    }
 }
 
 /// <summary>A group a tenant's identity provider provisioned, with its members (account ids). Role assignments can target it.</summary>
@@ -148,6 +162,9 @@ public sealed class ScimGroup
 
     public string DisplayName { get; private set; } = string.Empty;
 
+    /// <summary><see cref="DisplayName"/> lower-cased (invariant), for case-insensitive lookups and the tenant's uniqueness.</summary>
+    public string NormalizedDisplayName { get; private set; } = string.Empty;
+
     public string? ExternalId { get; private set; }
 
     public DateTimeOffset Created { get; private set; }
@@ -171,6 +188,7 @@ public sealed class ScimGroup
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
         DisplayName = displayName.Trim();
+        NormalizedDisplayName = ScimUser.Normalize(DisplayName);
         ExternalId = string.IsNullOrWhiteSpace(externalId) ? null : externalId.Trim();
         Touch(now);
     }

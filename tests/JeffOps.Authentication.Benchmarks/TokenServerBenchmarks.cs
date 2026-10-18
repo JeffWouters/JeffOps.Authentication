@@ -91,7 +91,8 @@ public class TokenEndpointBenchmarks
 [MemoryDiagnoser]
 public class ScimEndpointBenchmarks
 {
-    private static readonly Guid Contoso = Guid.NewGuid();
+    internal static readonly Guid Tenant = Guid.NewGuid();
+    private static readonly Guid Contoso = Tenant;
     private BenchHost _host = null!;
     private string _scimToken = null!;
     private string _user = null!;
@@ -176,6 +177,10 @@ public class ScimEndpointBenchmarks
     [Benchmark]
     public Task<HttpResponseMessage> FilterUsers() => ScimAsync(HttpMethod.Get, "Users?filter=" + Uri.EscapeDataString("userName eq \"user7@contoso.com\""));
 
+    internal BenchHost Host => _host;
+
+    internal Task<HttpResponseMessage> SendAsync(HttpMethod method, string path) => ScimAsync(method, path);
+
     private async Task<HttpResponseMessage> ScimAsync(HttpMethod method, string path, string? body = null)
     {
         using var request = new HttpRequestMessage(method, $"scim/v2/{path}");
@@ -216,6 +221,48 @@ public class ScimEndpointBenchmarks
     }
 }
 
+/// <summary>
+/// SCIM lookups in a large tenant (20,000 provisioned users, written straight to the store): what an identity provider's
+/// <c>userName eq</c> check before every create costs.
+/// </summary>
+[MemoryDiagnoser]
+public class ScimLargeTenantBenchmarks
+{
+    private const int Users = 20_000;
+    private ScimEndpointBenchmarks _scim = null!;
+
+    [GlobalSetup]
+    public async Task SetupAsync()
+    {
+        _scim = new ScimEndpointBenchmarks();
+        await _scim.SetupAsync();
+        await using var scope = _scim.Host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<EnterpriseDbContext>();
+        var now = TimeProvider.System.GetUtcNow();
+        for (var batch = 0; batch < Users / 2_000; batch++)
+        {
+            for (var index = 0; index < 2_000; index++)
+            {
+                var user = Enterprise.Domain.ScimUser.Provision(ScimEndpointBenchmarks.Tenant, Guid.NewGuid(), createdAccount: false, now);
+                user.Update($"Bulk.User{(batch * 2_000) + index}@Contoso.com", null, null, null, null, active: true, now);
+                db.ScimUsers.Add(user);
+            }
+
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+        }
+    }
+
+    [GlobalCleanup]
+    public Task CleanupAsync() => _scim.CleanupAsync();
+
+    [Benchmark]
+    public Task<HttpResponseMessage> FindByUserName() => _scim.SendAsync(HttpMethod.Get, "Users?filter=" + Uri.EscapeDataString("userName eq \"bulk.user12345@contoso.com\""));
+
+    [Benchmark]
+    public Task<HttpResponseMessage> ListSortedByUserName() => _scim.SendAsync(HttpMethod.Get, "Users?sortBy=userName&count=20&startIndex=10000");
+}
+
 /// <summary>A token server in process, as the integration tests run it (tests/JeffOps.Authentication.Server.Tests/TokenServerHost.cs).</summary>
 internal sealed class BenchHost : IAsyncDisposable
 {
@@ -242,6 +289,8 @@ internal sealed class BenchHost : IAsyncDisposable
     public HttpClient Client { get; }
 
     public BenchTenants Tenants { get; }
+
+    public IServiceProvider Services => _app.Services;
 
     public static async Task<BenchHost> StartAsync(Action<WebApplicationBuilder>? configure = null, Action<WebApplication>? map = null)
     {

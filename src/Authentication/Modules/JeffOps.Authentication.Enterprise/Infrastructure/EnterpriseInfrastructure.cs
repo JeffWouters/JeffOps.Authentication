@@ -115,12 +115,13 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             user.ToTable("ScimUsers");
             user.HasKey(entity => new { entity.TenantId, entity.AccountId });
             user.Property(entity => entity.UserName).HasMaxLength(256).IsRequired();
+            user.Property(entity => entity.NormalizedUserName).HasMaxLength(256).IsRequired();
             user.Property(entity => entity.ExternalId).HasMaxLength(256);
             user.Property(entity => entity.GivenName).HasMaxLength(200);
             user.Property(entity => entity.FamilyName).HasMaxLength(200);
             user.Property(entity => entity.DisplayName).HasMaxLength(300);
             user.Property(entity => entity.Version).IsConcurrencyToken();
-            user.HasIndex(entity => new { entity.TenantId, entity.UserName }).IsUnique();
+            user.HasIndex(entity => new { entity.TenantId, entity.NormalizedUserName }).IsUnique();
             user.HasIndex(entity => new { entity.TenantId, entity.ExternalId });
         });
 
@@ -130,9 +131,10 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             group.HasKey(entity => entity.Id);
             group.Property(entity => entity.Id).ValueGeneratedNever();
             group.Property(entity => entity.DisplayName).HasMaxLength(256).IsRequired();
+            group.Property(entity => entity.NormalizedDisplayName).HasMaxLength(256).IsRequired();
             group.Property(entity => entity.ExternalId).HasMaxLength(256);
             group.Property(entity => entity.Version).IsConcurrencyToken();
-            group.HasIndex(entity => new { entity.TenantId, entity.DisplayName }).IsUnique();
+            group.HasIndex(entity => new { entity.TenantId, entity.NormalizedDisplayName }).IsUnique();
             group.Ignore(entity => entity.MemberIds);
             group.OwnsMany(entity => entity.Members, member =>
             {
@@ -307,8 +309,8 @@ internal sealed class ScimUserRepository(EnterpriseDbContext db) : IScimUserRepo
             ("meta.created", true) => query.OrderByDescending(user => user.Created),
             ("meta.lastModified", false) => query.OrderBy(user => user.LastModified),
             ("meta.lastModified", true) => query.OrderByDescending(user => user.LastModified),
-            (_, true) => query.OrderByDescending(user => user.UserName.ToLower()),
-            _ => query.OrderBy(user => user.UserName.ToLower()),
+            (_, true) => query.OrderByDescending(user => user.NormalizedUserName),
+            _ => query.OrderBy(user => user.NormalizedUserName),
         };
         var page = await ordered.ThenBy(user => user.AccountId).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
         return (page, total);
@@ -379,8 +381,8 @@ internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRe
             ("meta.created", true) => query.OrderByDescending(group => group.Created),
             ("meta.lastModified", false) => query.OrderBy(group => group.LastModified),
             ("meta.lastModified", true) => query.OrderByDescending(group => group.LastModified),
-            (_, true) => query.OrderByDescending(group => group.DisplayName.ToLower()),
-            _ => query.OrderBy(group => group.DisplayName.ToLower()),
+            (_, true) => query.OrderByDescending(group => group.NormalizedDisplayName),
+            _ => query.OrderBy(group => group.NormalizedDisplayName),
         }).ThenBy(group => group.Id);
 
     public async Task<IReadOnlyList<(Guid AccountId, Guid GroupId, string DisplayName)>> ListMembershipsAsync(

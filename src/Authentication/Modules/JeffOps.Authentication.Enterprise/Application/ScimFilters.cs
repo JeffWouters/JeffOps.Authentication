@@ -264,6 +264,9 @@ public static class ScimFilters
     private enum Kind
     {
         Text,
+
+        /// <summary>Case-insensitive text stored lower-cased: compared as it is, so an index on it can be used.</summary>
+        NormalizedText,
         CaseExactText,
         Boolean,
         Instant,
@@ -275,7 +278,7 @@ public static class ScimFilters
     private static Attribute? UserAttribute(string name) => name.ToLowerInvariant() switch
     {
         "id" => new(Kind.Id, user => Expression.Property(user, nameof(ScimUser.AccountId))),
-        "username" => new(Kind.Text, user => Expression.Property(user, nameof(ScimUser.UserName))),
+        "username" => new(Kind.NormalizedText, user => Expression.Property(user, nameof(ScimUser.NormalizedUserName))),
         "externalid" => new(Kind.CaseExactText, user => Expression.Property(user, nameof(ScimUser.ExternalId))),
         "displayname" => new(Kind.Text, user => Expression.Property(user, nameof(ScimUser.DisplayName))),
         "name.givenname" => new(Kind.Text, user => Expression.Property(user, nameof(ScimUser.GivenName))),
@@ -289,7 +292,7 @@ public static class ScimFilters
     private static Attribute? GroupAttribute(string name) => name.ToLowerInvariant() switch
     {
         "id" => new(Kind.Id, group => Expression.Property(group, nameof(ScimGroup.Id))),
-        "displayname" => new(Kind.Text, group => Expression.Property(group, nameof(ScimGroup.DisplayName))),
+        "displayname" => new(Kind.NormalizedText, group => Expression.Property(group, nameof(ScimGroup.NormalizedDisplayName))),
         "externalid" => new(Kind.CaseExactText, group => Expression.Property(group, nameof(ScimGroup.ExternalId))),
         "meta.created" => new(Kind.Instant, group => Expression.Property(group, nameof(ScimGroup.Created))),
         "meta.lastmodified" => new(Kind.Instant, group => Expression.Property(group, nameof(ScimGroup.LastModified))),
@@ -349,14 +352,14 @@ public static class ScimFilters
     {
         if (op == "pr")
         {
-            return kind is Kind.Text or Kind.CaseExactText
+            return kind is Kind.Text or Kind.NormalizedText or Kind.CaseExactText
                 ? Expression.AndAlso(Expression.NotEqual(value, Null), Expression.NotEqual(value, Parameter(string.Empty)))
                 : Expression.Constant(true);
         }
 
         switch (kind)
         {
-            case Kind.Text or Kind.CaseExactText:
+            case Kind.Text or Kind.NormalizedText or Kind.CaseExactText:
                 if (literal is null && op is "eq" or "ne")
                 {
                     return op == "eq" ? Expression.Equal(value, Null) : Expression.NotEqual(value, Null);
@@ -368,7 +371,12 @@ public static class ScimFilters
                 }
 
                 var compared = kind == Kind.Text ? Expression.Call(value, ToLower) : value;
-                var against = Parameter(kind == Kind.Text ? text.ToLowerInvariant() : text);
+                var against = Parameter(kind switch
+                {
+                    Kind.Text => text.ToLowerInvariant(),
+                    Kind.NormalizedText => ScimUser.Normalize(text),
+                    _ => text,
+                });
                 var present = Expression.NotEqual(value, Null);
                 return op switch
                 {

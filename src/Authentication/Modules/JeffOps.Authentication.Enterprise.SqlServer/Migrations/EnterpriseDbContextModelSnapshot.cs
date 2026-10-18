@@ -44,6 +44,11 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
                     b.Property<DateTimeOffset>("LastModified")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("NormalizedDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uniqueidentifier");
 
@@ -53,7 +58,7 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "DisplayName")
+                    b.HasIndex("TenantId", "NormalizedDisplayName")
                         .IsUnique();
 
                     b.ToTable("ScimGroups", "enterprise");
@@ -137,6 +142,11 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
                     b.Property<DateTimeOffset>("LastModified")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("NormalizedUserName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
                     b.Property<string>("UserName")
                         .IsRequired()
                         .HasMaxLength(256)
@@ -150,7 +160,7 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
 
                     b.HasIndex("TenantId", "ExternalId");
 
-                    b.HasIndex("TenantId", "UserName")
+                    b.HasIndex("TenantId", "NormalizedUserName")
                         .IsUnique();
 
                     b.ToTable("ScimUsers", "enterprise");
