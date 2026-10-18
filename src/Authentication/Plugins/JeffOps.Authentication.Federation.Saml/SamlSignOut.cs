@@ -42,7 +42,7 @@ internal sealed class SamlSignOut(IServiceScopeFactory scopes) : IExternalSignOu
         }
 
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, requestOrigin);
-        var request = new Saml2LogoutRequest(saml.Providers.Configuration(provider, entityId, saml.ReplayCache))
+        var request = new Saml2LogoutRequest(saml.Providers.Configuration(provider, entityId))
         {
             NameId = new Saml2NameIdentifier(nameId, signIn.FindFirst(NameIdFormatClaim)?.Value is { } format ? new Uri(format) : null),
             SessionIndex = signIn.FindFirst(SessionIndexClaim)?.Value,

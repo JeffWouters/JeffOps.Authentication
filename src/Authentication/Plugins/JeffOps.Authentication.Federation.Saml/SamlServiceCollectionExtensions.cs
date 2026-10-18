@@ -2,7 +2,6 @@ using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Application.Federation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.IdentityModel.Tokens;
 
 namespace JeffOps.Authentication.Federation.Saml;
 
@@ -61,7 +60,6 @@ public static class SamlServiceCollectionExtensions
         services.AddSingleton<SharedServicesMarker>();
         services.AddMemoryCache();
         services.AddDataProtection();
-        services.TryAddSingleton<ITokenReplayCache, SamlReplayCache>();
         services.TryAddSingleton<SamlMetadata>();
         services.TryAddSingleton<SamlMetadataClient>();
         services.AddHttpClient(SamlMetadataClient.HttpClientName);

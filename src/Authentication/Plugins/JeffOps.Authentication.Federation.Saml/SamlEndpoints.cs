@@ -19,7 +19,6 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.IdentityModel.Tokens.Saml2;
 
 namespace JeffOps.Authentication.Federation.Saml;
@@ -59,7 +58,7 @@ public static partial class SamlEndpoints
 
         var settings = saml.Providers.Settings(provider);
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
-        var request = new Saml2AuthnRequest(saml.Providers.Configuration(provider, entityId, saml.ReplayCache))
+        var request = new Saml2AuthnRequest(saml.Providers.Configuration(provider, entityId))
         {
             AssertionConsumerServiceUrl = new Uri(Origin(context), $"{Prefix}/{provider}/acs"),
             NameIdPolicy = new NameIdPolicy { AllowCreate = true },
@@ -130,7 +129,7 @@ public static partial class SamlEndpoints
             return BackToLogin(returnUrl, "provider_error");
         }
 
-        var response = new Saml2AuthnResponse(saml.Providers.Configuration(provider, entityId, saml.ReplayCache));
+        var response = new Saml2AuthnResponse(saml.Providers.Configuration(provider, entityId));
         try
         {
             var binding = new Saml2PostBinding();
@@ -161,8 +160,18 @@ public static partial class SamlEndpoints
             return BackToLogin(returnUrl, "provider_error");
         }
 
-        // The subject and authentication context come from the signed assertion; attributes may not pose as them.
+        // Once only, across every instance: a captured response can't be posted again.
         var assertion = response.Saml2SecurityToken!.Assertion;
+        var validUntil = assertion.Conditions?.NotOnOrAfter is { } notOnOrAfter
+            ? new DateTimeOffset(DateTime.SpecifyKind(notOnOrAfter, DateTimeKind.Utc))
+            : saml.Time.GetUtcNow().AddHours(1);
+        if (!await saml.Replay.TryAddAsync(ReplayKeys.For("saml", $"{assertion.Issuer.Value}|{assertion.Id.Value}"), validUntil, context.RequestAborted).ConfigureAwait(false))
+        {
+            LogRejected(logger, provider, "assertion seen before");
+            return BackToLogin(returnUrl, "provider_error");
+        }
+
+        // The subject and authentication context come from the signed assertion; attributes may not pose as them.
         var claims = new ClaimsIdentity(response.ClaimsIdentity.Claims.Where(claim => !ReservedClaimTypes.Contains(claim.Type)), "saml");
         claims.AddClaim(new Claim(Saml2ClaimTypes.NameId, assertion.Subject.NameId.Value));
         if (assertion.Subject.NameId.Format is { } format)
@@ -239,7 +248,7 @@ public static partial class SamlEndpoints
 
         var settings = saml.Providers.Settings(provider);
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
-        var configuration = saml.Providers.Configuration(provider, entityId, saml.ReplayCache);
+        var configuration = saml.Providers.Configuration(provider, entityId);
         var generic = await GenericRequestAsync(context).ConfigureAwait(false);
         Saml2Binding binding = HttpMethods.IsGet(context.Request.Method) ? new Saml2RedirectBinding() : new Saml2PostBinding();
 
@@ -559,7 +568,6 @@ internal sealed class SamlServices(
     SamlProviders providers,
     IOptionsMonitor<SamlProviderOptions> options,
     IOptions<TokenServerOptions> tokenServer,
-    ITokenReplayCache replayCache,
     IReplayCache replay,
     IDataProtectionProvider dataProtection,
     TimeProvider time)
@@ -569,8 +577,6 @@ internal sealed class SamlServices(
     public IOptionsMonitor<SamlProviderOptions> Options { get; } = options;
 
     public IOptions<TokenServerOptions> TokenServer { get; } = tokenServer;
-
-    public ITokenReplayCache ReplayCache { get; } = replayCache;
 
     public IReplayCache Replay { get; } = replay;
 

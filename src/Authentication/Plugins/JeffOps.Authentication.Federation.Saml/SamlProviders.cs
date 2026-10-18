@@ -3,7 +3,6 @@ using System.Security.Claims;
 using System.Security.Cryptography.X509Certificates;
 using ITfoxtec.Identity.Saml2;
 using ITfoxtec.Identity.Saml2.Claims;
-using JeffOps.Authentication.Abstractions.Replay;
 using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Domain.Accounts;
@@ -11,7 +10,6 @@ using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.SharedKernel.Results;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Tokens;
 
 namespace JeffOps.Authentication.Federation.Saml;
 
@@ -147,7 +145,11 @@ internal sealed class SamlProviders(
     }
 
     /// <summary>The ITfoxtec configuration of a provider, with this server as the relying party.</summary>
-    public Saml2Configuration Configuration(string provider, string serviceProviderEntityId, ITokenReplayCache replayCache)
+    /// <remarks>
+    /// Replays are refused by the assertion consumer, asynchronously, in the shared replay store (ITfoxtec's own hook is
+    /// synchronous and would block a thread on the database).
+    /// </remarks>
+    public Saml2Configuration Configuration(string provider, string serviceProviderEntityId)
     {
         var settings = Settings(provider);
         var configuration = new Saml2Configuration
@@ -158,8 +160,7 @@ internal sealed class SamlProviders(
             CertificateValidationMode = System.ServiceModel.Security.X509CertificateValidationMode.None,
             RevocationMode = X509RevocationMode.NoCheck,
             AudienceRestricted = true,
-            DetectReplayedTokens = true,
-            TokenReplayCache = replayCache,
+            DetectReplayedTokens = false,
         };
         configuration.AllowedAudienceUris.Add(serviceProviderEntityId);
         configuration.SingleLogoutDestination = SingleLogoutUrl(provider);
@@ -222,17 +223,3 @@ internal sealed class SamlProviders(
     }
 }
 
-/// <summary>
-/// Remembers seen assertions until they expire, so a captured SAML response can't be posted twice — in the token server's
-/// shared <see cref="IReplayCache"/>, so across every instance.
-/// </summary>
-/// <remarks>The token handler's replay hook is synchronous; the store's call completes on the calling thread.</remarks>
-internal sealed class SamlReplayCache(IReplayCache cache) : ITokenReplayCache
-{
-    public bool TryAdd(string securityToken, DateTime expiresOn) =>
-        cache.TryAddAsync(ReplayKeys.For("saml", securityToken), new DateTimeOffset(DateTime.SpecifyKind(expiresOn, DateTimeKind.Utc)), CancellationToken.None)
-            .AsTask().GetAwaiter().GetResult();
-
-    /// <summary>Always false: <see cref="TryAdd"/> is atomic and refuses a replay itself.</summary>
-    public bool TryFind(string securityToken) => false;
-}

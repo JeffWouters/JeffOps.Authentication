@@ -259,6 +259,22 @@ public sealed class SamlTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task An_assertion_is_accepted_once_even_with_the_browser_s_cookies()
+    {
+        await StartAsync();
+        using var browser = new Browser(_host);
+        using var thief = new Browser(_host);
+        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+        browser.CopyCookiesTo(thief);
+        var response = Response(requestId, acs, spEntityId, null, _idpCertificate);
+
+        (await PostResponseAsync(browser, response)).Headers.Location!.OriginalString.ShouldBe("/done");
+
+        // The same response with the same pending sign-in: the assertion was used.
+        (await PostResponseAsync(thief, response)).Headers.Location!.OriginalString.ShouldContain("error=provider_error");
+    }
+
+    [Fact]
     public async Task The_provider_gets_this_server_s_metadata()
     {
         await StartAsync();

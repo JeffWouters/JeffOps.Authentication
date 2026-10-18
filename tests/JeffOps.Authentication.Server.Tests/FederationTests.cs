@@ -259,6 +259,16 @@ internal sealed class Browser : IDisposable
 
     public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request) => _client.SendAsync(request, TestContext.Current.CancellationToken);
 
+    /// <summary>Gives <paramref name="other"/> this browser's cookies, as an attacker who stole them would hold them.</summary>
+    public void CopyCookiesTo(Browser other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        foreach (System.Net.Cookie cookie in _cookies.GetAllCookies())
+        {
+            other._cookies.Add(cookie);
+        }
+    }
+
     public void Dispose() => _client.Dispose();
 
     private sealed class CookieHandler(System.Net.CookieContainer cookies) : DelegatingHandler
