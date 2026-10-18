@@ -4,7 +4,7 @@ using JeffOps.Authentication.SharedKernel.Results;
 namespace JeffOps.Authentication.Enterprise.Application.Features.Scim;
 
 /// <summary>A search across users and groups (<c>POST /.search</c>, RFC 7644 §3.4.3), 1-based <paramref name="StartIndex"/>.</summary>
-public sealed record SearchScimQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count, ScimSort? Sort);
+public sealed record SearchScimQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count, ScimSort? Sort, bool IncludeMembers = true);
 
 /// <summary>One page of a search across resource types: users first, then groups.</summary>
 public sealed record ScimSearchPage(IReadOnlyList<ScimUserView> Users, IReadOnlyList<ScimGroupView> Groups, int TotalResults, int StartIndex);
@@ -53,8 +53,18 @@ public sealed class SearchScimHandler(IScimUserRepository users, IScimGroupRepos
         var skip = startIndex - 1;
         var take = Math.Clamp(query.Count, 0, 200);
         var (userPage, userTotal) = await users.ListAsync(query.TenantId, userFilter, skip, take, userSort, cancellationToken).ConfigureAwait(false);
-        var (groupPage, groupTotal) = await groups.ListAsync(query.TenantId, groupFilter, Math.Max(0, skip - userTotal), take - userPage.Count, groupSort, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<ScimGroupView> groupViews;
+        int groupTotal;
+        if (query.IncludeMembers)
+        {
+            var (groupPage, total) = await groups.ListAsync(query.TenantId, groupFilter, Math.Max(0, skip - userTotal), take - userPage.Count, groupSort, cancellationToken).ConfigureAwait(false);
+            (groupViews, groupTotal) = ([.. groupPage.Select(group => group.ToView())], total);
+        }
+        else
+        {
+            (groupViews, groupTotal) = await groups.ListWithoutMembersAsync(query.TenantId, groupFilter, Math.Max(0, skip - userTotal), take - userPage.Count, groupSort, cancellationToken).ConfigureAwait(false);
+        }
 
-        return new ScimSearchPage(await provisioning.ViewsAsync(userPage, cancellationToken).ConfigureAwait(false), [.. groupPage.Select(group => group.ToView())], userTotal + groupTotal, startIndex);
+        return new ScimSearchPage(await provisioning.ViewsAsync(userPage, cancellationToken).ConfigureAwait(false), groupViews, userTotal + groupTotal, startIndex);
     }
 }

@@ -145,6 +145,9 @@ public class ScimEndpointBenchmarks
             await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Group {{index}}","members":[{{members}}]}""");
         }
 
+        var everyone = string.Join(',', users.Select(id => $$"""{"value":"{{id}}"}"""));
+        await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Everyone","members":[{{everyone}}]}""");
+
         _user = users[0];
     }
 
@@ -161,6 +164,14 @@ public class ScimEndpointBenchmarks
 
     [Benchmark]
     public Task<HttpResponseMessage> GetUser() => ScimAsync(HttpMethod.Get, $"Users/{_user}");
+
+    /// <summary>Six groups, one with all 50 users.</summary>
+    [Benchmark]
+    public Task<HttpResponseMessage> ListGroups() => ScimAsync(HttpMethod.Get, "Groups");
+
+    /// <summary>What Entra asks for: the groups without their members.</summary>
+    [Benchmark]
+    public Task<HttpResponseMessage> ListGroupsExcludingMembers() => ScimAsync(HttpMethod.Get, "Groups?excludedAttributes=members");
 
     [Benchmark]
     public Task<HttpResponseMessage> FilterUsers() => ScimAsync(HttpMethod.Get, "Users?filter=" + Uri.EscapeDataString("userName eq \"user7@contoso.com\""));

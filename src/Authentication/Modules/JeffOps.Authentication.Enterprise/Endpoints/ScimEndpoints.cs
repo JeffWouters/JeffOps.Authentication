@@ -267,7 +267,7 @@ public static partial class ScimEndpoints
         }
 
         var result = await context.RequestServices.GetRequiredService<IQueryHandler<ListScimGroupsQuery, ScimPage<ScimGroupView>>>()
-            .HandleAsync(new ListScimGroupsQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort), context.RequestAborted).ConfigureAwait(false);
+            .HandleAsync(new ListScimGroupsQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort, !Excludes(request.Selection, "members")), context.RequestAborted).ConfigureAwait(false);
         return result.IsSuccess ? Scim(StatusCodes.Status200OK, ListResponse(result.Value, group => Project(GroupJson(group, context), request.Selection))) : Error(result.Error);
     }
 
@@ -294,7 +294,7 @@ public static partial class ScimEndpoints
         }
 
         var result = await context.RequestServices.GetRequiredService<IQueryHandler<SearchScimQuery, ScimSearchPage>>()
-            .HandleAsync(new SearchScimQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort), context.RequestAborted).ConfigureAwait(false);
+            .HandleAsync(new SearchScimQuery(Tenant(context), request.Filter, request.StartIndex, request.Count, request.Sort, !Excludes(request.Selection, "members")), context.RequestAborted).ConfigureAwait(false);
         if (result.IsFailure)
         {
             return Error(result.Error);
@@ -956,6 +956,13 @@ public static partial class ScimEndpoints
         var trimmed = raw.Trim();
         return trimmed.StartsWith("urn:", StringComparison.OrdinalIgnoreCase) ? trimmed[(trimmed.LastIndexOf(':') + 1)..] : trimmed;
     }
+
+    /// <summary>Whether the answer leaves <paramref name="attribute"/> out entirely, so it needn't be read.</summary>
+    private static bool Excludes(AttributeSelection? selection, string attribute) =>
+        selection is not null
+        && (selection.Include is { } include
+            ? !include.Any(path => path[0] == attribute)
+            : selection.Exclude.Any(path => path.Length == 1 && path[0] == attribute));
 
     /// <summary>The single-resource answer with only the attributes the request selects (POST, PUT, PATCH and GET alike).</summary>
     private static ScimResult Selected(HttpContext context, ScimResult result) =>

@@ -194,7 +194,8 @@ public sealed class GetScimGroupHandler(IScimGroupRepository groups) : IQueryHan
     }
 }
 
-public sealed record ListScimGroupsQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count, ScimSort? Sort = null);
+/// <summary>Lists groups; without <paramref name="IncludeMembers"/> (the answer excludes them) members aren't read.</summary>
+public sealed record ListScimGroupsQuery(Guid TenantId, ScimFilter? Filter, int StartIndex, int Count, ScimSort? Sort = null, bool IncludeMembers = true);
 
 public sealed class ListScimGroupsHandler(IScimGroupRepository groups) : IQueryHandler<ListScimGroupsQuery, ScimPage<ScimGroupView>>
 {
@@ -218,8 +219,16 @@ public sealed class ListScimGroupsHandler(IScimGroupRepository groups) : IQueryH
             return Error.Failure(ScimErrors.InvalidValue, $"Groups can be sorted by {string.Join(", ", ScimSort.Groups)}.");
         }
 
-        var (page, total) = await groups.ListAsync(query.TenantId, filter, Math.Max(query.StartIndex, 1) - 1, Math.Clamp(query.Count, 0, 200),
-            query.Sort is { } requested ? requested with { Attribute = ScimSort.Canonical(requested.Attribute, ScimSort.Groups)! } : null, cancellationToken).ConfigureAwait(false);
+        var skip = Math.Max(query.StartIndex, 1) - 1;
+        var take = Math.Clamp(query.Count, 0, 200);
+        var order = query.Sort is { } requested ? requested with { Attribute = ScimSort.Canonical(requested.Attribute, ScimSort.Groups)! } : null;
+        if (!query.IncludeMembers)
+        {
+            var (views, count) = await groups.ListWithoutMembersAsync(query.TenantId, filter, skip, take, order, cancellationToken).ConfigureAwait(false);
+            return new ScimPage<ScimGroupView>(views, count, Math.Max(query.StartIndex, 1));
+        }
+
+        var (page, total) = await groups.ListAsync(query.TenantId, filter, skip, take, order, cancellationToken).ConfigureAwait(false);
         return new ScimPage<ScimGroupView>([.. page.Select(group => group.ToView())], total, Math.Max(query.StartIndex, 1));
     }
 }

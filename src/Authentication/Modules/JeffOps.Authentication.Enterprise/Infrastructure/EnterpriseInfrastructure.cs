@@ -349,7 +349,30 @@ internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRe
         }
 
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
-        var ordered = (sort?.Attribute, sort?.Descending ?? false) switch
+        var page = await Ordered(query, sort).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
+        return (page, total);
+    }
+
+    public async Task<(IReadOnlyList<ScimGroupView> Page, int Total)> ListWithoutMembersAsync(
+        Guid tenantId, System.Linq.Expressions.Expression<Func<ScimGroup, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken)
+    {
+        var query = db.ScimGroups.Where(group => group.TenantId == tenantId);
+        if (filter is not null)
+        {
+            query = query.Where(filter);
+        }
+
+        var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+
+        // A projection: the members (an owned collection, loaded with every group otherwise) aren't read.
+        var page = await Ordered(query, sort).Skip(skip).Take(take)
+            .Select(group => new { group.Id, group.DisplayName, group.ExternalId, group.Created, group.LastModified, group.Version })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return ([.. page.Select(group => new ScimGroupView(group.Id, group.DisplayName, group.ExternalId, [], group.Created, group.LastModified, group.Version))], total);
+    }
+
+    private static IOrderedQueryable<ScimGroup> Ordered(IQueryable<ScimGroup> query, ScimSort? sort) =>
+        ((sort?.Attribute, sort?.Descending ?? false) switch
         {
             ("externalId", var descending) => ScimOrder.By(query, group => group.ExternalId == null, group => group.ExternalId!.ToLower(), descending),
             ("meta.created", false) => query.OrderBy(group => group.Created),
@@ -358,10 +381,7 @@ internal sealed class ScimGroupRepository(EnterpriseDbContext db) : IScimGroupRe
             ("meta.lastModified", true) => query.OrderByDescending(group => group.LastModified),
             (_, true) => query.OrderByDescending(group => group.DisplayName.ToLower()),
             _ => query.OrderBy(group => group.DisplayName.ToLower()),
-        };
-        var page = await ordered.ThenBy(group => group.Id).Skip(skip).Take(take).ToListAsync(cancellationToken).ConfigureAwait(false);
-        return (page, total);
-    }
+        }).ThenBy(group => group.Id);
 
     public async Task<IReadOnlyList<(Guid AccountId, Guid GroupId, string DisplayName)>> ListMembershipsAsync(
         Guid tenantId, IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken)

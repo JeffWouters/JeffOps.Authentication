@@ -62,6 +62,9 @@ public interface IScimGroupRepository
 
     Task<(IReadOnlyList<ScimGroup> Page, int Total)> ListAsync(Guid tenantId, System.Linq.Expressions.Expression<Func<ScimGroup, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken);
 
+    /// <summary>Like <see cref="ListAsync"/>, as views without members, which aren't read at all.</summary>
+    Task<(IReadOnlyList<ScimGroupView> Page, int Total)> ListWithoutMembersAsync(Guid tenantId, System.Linq.Expressions.Expression<Func<ScimGroup, bool>>? filter, int skip, int take, ScimSort? sort, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<ScimGroup>> ListForMemberAsync(Guid tenantId, Guid accountId, CancellationToken cancellationToken);
 
     /// <summary>Which groups each of <paramref name="accountIds"/> is in, with the groups' names; members aren't loaded.</summary>
