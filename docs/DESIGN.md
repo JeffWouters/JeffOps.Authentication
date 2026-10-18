@@ -1067,6 +1067,7 @@ These requirements differ from the origin implementation. They are listed here s
 - **Snapshot tests** (Verify): the OIDC discovery document, the JWKS shape (key ids and algorithms, never key material), ProblemDetails bodies per error code, the OpenAPI document per module, and token claim sets per grant type. Unintended protocol changes then show up as reviewable diffs.
 - **Breaking changes**: no public-API generator (decision of the maintainer). After 1.0, the SDK's own package validation (`EnablePackageValidation` with a baseline version) flags breaking changes at pack time; before that, public surface changes are reviewed in pull requests.
 - **Conformance**: run the OpenID Foundation conformance suite against the reference token server before 1.0.
+- **Performance** (as built): `tests/JeffOps.Authentication.Benchmarks` (BenchmarkDotNet, MIT) measures the hot paths in process: permission decisions, DPoP proof checks, SCIM filter translation, and the token server's protocol and SCIM endpoints end to end against a real database (`JEFFOPS_TEST_DATABASE=SqlServer` for SQL Server). `RoundTripProbe` in the server tests counts the database commands each request costs, with their SQL, across every module's DbContext; it runs only with `JEFFOPS_PROBE=1` (and alone: it counts the whole process) and writes its report to `JEFFOPS_PROBE_REPORT`.
 
 ---
 

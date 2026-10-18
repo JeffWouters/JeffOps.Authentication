@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- BenchmarkDotNet, not a test project: its own Main, no xUnit. Run: dotnet run -c Release, then pick a benchmark (or pass a filter). -->
+  <PropertyGroup>
+    <IsTestProject>false</IsTestProject>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- Benchmark classes are public by BenchmarkDotNet's rules; they aren't an API. -->
+    <NoWarn>$(NoWarn);CA1001;CA1515;CA1822;CA2007;CA5394;CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Remove="xunit.v3.mtp-v2" />
+    <PackageReference Remove="Shouldly" />
+    <Using Remove="Xunit" />
+    <Using Remove="Shouldly" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Infrastructure\JeffOps.Authentication.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Persistence.SqlServer\JeffOps.Authentication.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.UI\JeffOps.Authentication.UI.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Enterprise\JeffOps.Authentication.Enterprise.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Enterprise.SqlServer\JeffOps.Authentication.Enterprise.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.AspNetCore\JeffOps.Authorization.AspNetCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\TestDatabase.cs" Link="Shared\TestDatabase.cs" />
+  </ItemGroup>
+
+</Project>

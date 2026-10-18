@@ -68,6 +68,16 @@ public sealed class RepositoryHygieneTests
         ["https://dotnet.microsoft.com/en-us/dotnet_library_license.htm"] = "MIT (.NET library licence, relicensed MIT with .NET Core)",
     };
 
+    /// <summary>
+    /// Packages that ship their licence as a file instead of an expression; each file was read by hand. Pinned to the version
+    /// checked, so an upgrade is checked again. Only the benchmarks use these (BenchmarkDotNet's dependencies).
+    /// </summary>
+    private static readonly Dictionary<string, string> CheckedLicenceFiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["CommandLineParser/2.9.1"] = "MIT (License.md)",
+        ["Microsoft.DotNet.PlatformAbstractions/3.1.6"] = "MIT (LICENSE.TXT, .NET Foundation)",
+    };
+
     [Fact]
     public void Every_resolved_package_has_a_permissive_licence()
     {
@@ -105,7 +115,9 @@ public sealed class RepositoryHygieneTests
 
                 var allowed = license?.Attribute("type")?.Value == "expression"
                     ? license.Value.Split([" OR ", " or "], StringSplitOptions.TrimEntries).Any(PermissiveLicences.Contains)
-                    : licenseUrl is not null && CheckedLicenceUrls.ContainsKey(licenseUrl);
+                    : license?.Attribute("type")?.Value == "file"
+                        ? CheckedLicenceFiles.ContainsKey(library.Name)
+                        : licenseUrl is not null && CheckedLicenceUrls.ContainsKey(licenseUrl);
                 if (!allowed)
                 {
                     violations.Add($"{library.Name}: {license?.Value ?? licenseUrl ?? "no licence"}");

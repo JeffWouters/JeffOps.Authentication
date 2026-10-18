@@ -49,12 +49,13 @@
       Or '$(MSBuildProjectName)' == 'TokenServer'
       Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Architecture.Tests'
       Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Server.Tests'
-      Or '$(MSBuildProjectName)' == 'JeffOps.Authorization.Management.Tests'">
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authorization.Management.Tests'
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Benchmarks'">
     <PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime" ExcludeAssets="all" PrivateAssets="all" />
   </ItemGroup>
 
   <!-- The integration tests can run against SQL Server (tests/Shared/TestDatabase.cs): managed networking, as in the host. -->
-  <ItemGroup Condition="'$(MSBuildProjectName)' == 'JeffOps.Authentication.Server.Tests' Or '$(MSBuildProjectName)' == 'JeffOps.Authorization.Management.Tests'">
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'JeffOps.Authentication.Server.Tests' Or '$(MSBuildProjectName)' == 'JeffOps.Authorization.Management.Tests' Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Benchmarks'">
     <RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
   </ItemGroup>
 
