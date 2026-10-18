@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -35,6 +36,15 @@ public static class DpopProofValidator
 
     /// <summary>The longest <c>jti</c> accepted; replay caches hold every one for the proof's lifetime.</summary>
     public const int MaxJtiLength = 128;
+
+    /// <summary>
+    /// Imported public keys, by RFC 7638 thumbprint (which covers exactly the key material), so a client's key is turned into
+    /// a key object once rather than for every proof. Instances aren't shared between concurrent checks: each check rents
+    /// one and returns it. Bounded: at most <see cref="MaxCachedKeys"/> keys and <see cref="MaxInstancesPerKey"/> instances each.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, ConcurrentBag<AsymmetricAlgorithm>> ImportedKeys = new(StringComparer.Ordinal);
+    private const int MaxCachedKeys = 1024;
+    private const int MaxInstancesPerKey = 8;
 
     /// <summary>
     /// Validates <paramref name="proof"/> for a request of <paramref name="method"/> to <paramref name="uri"/> at
@@ -113,16 +123,15 @@ public static class DpopProofValidator
                 return (null, "The DPoP proof is not for this access token.");
             }
 
-            var signed = Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]);
-            if (!Verify(alg, jwk, signed, signature))
+            if (Thumbprint(jwk) is not { } jkt)
             {
-                return (null, "The DPoP proof's signature is invalid.");
+                return (null, "The DPoP proof's key is not supported.");
             }
 
-            var jkt = Thumbprint(jwk);
-            return jkt is null
-                ? (null, "The DPoP proof's key is not supported.")
-                : (new DpopProof(jkt, jti, issuedAt) { Nonce = Text(p, "nonce") }, null);
+            var signed = Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]);
+            return Verify(alg, jwk, jkt, signed, signature)
+                ? (new DpopProof(jkt, jti, issuedAt) { Nonce = Text(p, "nonce") }, null)
+                : (null, "The DPoP proof's signature is invalid.");
         }
     }
 
@@ -147,7 +156,7 @@ public static class DpopProofValidator
         return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
-    private static bool Verify(string alg, JsonElement jwk, byte[] data, byte[] signature)
+    private static bool Verify(string alg, JsonElement jwk, string thumbprint, byte[] data, byte[] signature)
     {
         try
         {
@@ -168,11 +177,11 @@ public static class DpopProofValidator
                         return false;
                     }
 
-                    using (var ecdsa = ECDsa.Create(new ECParameters { Curve = curve.Value, Q = new ECPoint { X = x, Y = y } }))
-                    {
-                        var hash = alg switch { "ES384" => HashAlgorithmName.SHA384, "ES512" => HashAlgorithmName.SHA512, _ => HashAlgorithmName.SHA256 };
-                        return ecdsa.VerifyData(data, signature, hash, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-                    }
+                    var ecdsa = Rent(thumbprint, () => ECDsa.Create(new ECParameters { Curve = curve.Value, Q = new ECPoint { X = x, Y = y } }));
+                    var hash = alg switch { "ES384" => HashAlgorithmName.SHA384, "ES512" => HashAlgorithmName.SHA512, _ => HashAlgorithmName.SHA256 };
+                    var valid = ecdsa.VerifyData(data, signature, hash, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+                    Return(thumbprint, ecdsa);
+                    return valid;
 
                 default:
                     if (Text(jwk, "kty") != "RSA" || !TryBase64Url(Text(jwk, "n"), out var n) || !TryBase64Url(Text(jwk, "e"), out var e)
@@ -181,16 +190,43 @@ public static class DpopProofValidator
                         return false;
                     }
 
-                    using (var rsa = RSA.Create(new RSAParameters { Modulus = n, Exponent = e }))
-                    {
-                        return rsa.VerifyData(data, signature, HashAlgorithmName.SHA256, alg == "PS256" ? RSASignaturePadding.Pss : RSASignaturePadding.Pkcs1);
-                    }
+                    var rsa = Rent(thumbprint, () => RSA.Create(new RSAParameters { Modulus = n, Exponent = e }));
+                    var verified = rsa.VerifyData(data, signature, HashAlgorithmName.SHA256, alg == "PS256" ? RSASignaturePadding.Pss : RSASignaturePadding.Pkcs1);
+                    Return(thumbprint, rsa);
+                    return verified;
             }
         }
         catch (Exception exception) when (exception is CryptographicException or PlatformNotSupportedException or ArgumentException)
         {
             // Not a valid key: the platform's crypto refuses it in several ways.
             return false;
+        }
+    }
+
+    /// <summary>An imported instance of the key with <paramref name="thumbprint"/>, or a new one from <paramref name="import"/>.</summary>
+    private static TKey Rent<TKey>(string thumbprint, Func<TKey> import)
+        where TKey : AsymmetricAlgorithm =>
+        ImportedKeys.TryGetValue(thumbprint, out var instances) && instances.TryTake(out var instance) && instance is TKey key ? key : import();
+
+    /// <summary>
+    /// Keeps <paramref name="key"/> for the next check of the same key. A failed check doesn't return it (the exception skips
+    /// this); a full cache starts over, leaving instances still in use to the garbage collector.
+    /// </summary>
+    private static void Return(string thumbprint, AsymmetricAlgorithm key)
+    {
+        if (ImportedKeys.Count >= MaxCachedKeys && !ImportedKeys.ContainsKey(thumbprint))
+        {
+            ImportedKeys.Clear();
+        }
+
+        var instances = ImportedKeys.GetOrAdd(thumbprint, static _ => []);
+        if (instances.Count < MaxInstancesPerKey)
+        {
+            instances.Add(key);
+        }
+        else
+        {
+            key.Dispose();
         }
     }
 

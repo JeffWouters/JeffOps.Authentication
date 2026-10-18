@@ -44,6 +44,24 @@ public sealed class DpopProofHardeningTests
     }
 
     [Fact]
+    public void A_key_seen_before_still_checks_every_signature()
+    {
+        // The validator keeps imported keys by thumbprint; a second proof with the same key must be checked in full.
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var other = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] Signer(byte[] data) => key.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+
+        Validate(Sign(EcHeader(key), Claims(), Signer)).Proof.ShouldNotBeNull();
+        Validate(Sign(EcHeader(key), Claims(), Signer)).Proof.ShouldNotBeNull("the cached key verifies again");
+        Validate(Sign(EcHeader(key), Claims(), data => other.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)))
+            .Error.ShouldBe("The DPoP proof's signature is invalid.", "signed by another key, claiming the cached one");
+        Validate(Sign(EcHeader(other), Claims(), Signer)).Error.ShouldBe("The DPoP proof's signature is invalid.", "another key never reuses the cached one");
+
+        // Concurrent checks of one key never share an instance.
+        Parallel.For(0, 200, _ => Validate(Sign(EcHeader(key), Claims(), Signer)).Proof.ShouldNotBeNull());
+    }
+
+    [Fact]
     public void The_curve_must_match_the_algorithm()
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
