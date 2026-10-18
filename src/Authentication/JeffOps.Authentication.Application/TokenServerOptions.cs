@@ -31,6 +31,12 @@ public sealed class TokenServerOptions
 
     public PatOptions Pat { get; } = new();
 
+    /// <summary>
+    /// How long a client's back-channel logout endpoint gets to answer before it is given up on (the session ends here
+    /// regardless). Clients are told at the same time, so ending a session takes at most this long. Default: 5 seconds.
+    /// </summary>
+    public TimeSpan BackchannelLogoutTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     /// <summary>The OAuth clients the server seeds and keeps in sync at startup.</summary>
     public IList<ClientDefinition> Clients { get; } = [];
 

@@ -50,39 +50,38 @@ internal sealed partial class BackchannelLogoutNotifier(
     /// One session ended (the user signed out here): clients drop that session. Its refresh tokens are refused by the
     /// refresh grant; the account's other sessions continue.
     /// </summary>
-    public async Task SessionEndedAsync(Guid accountId, string sessionId, CancellationToken cancellationToken)
-    {
-        foreach (var client in options.Value.Clients.Where(client => client.BackchannelLogoutUri is not null))
-        {
-            await NotifyAsync(client, accountId.ToString(), sessionId, cancellationToken).ConfigureAwait(false);
-        }
-    }
+    public Task SessionEndedAsync(Guid accountId, string sessionId, CancellationToken cancellationToken) =>
+        NotifyAllAsync(accountId.ToString(), sessionId, cancellationToken);
 
     private async Task EndSessionsAsync(Guid accountId, CancellationToken cancellationToken)
     {
         var subject = accountId.ToString();
         await tokens.RevokeBySubjectAsync(subject, cancellationToken).ConfigureAwait(false);
-
-        foreach (var client in options.Value.Clients.Where(client => client.BackchannelLogoutUri is not null))
-        {
-            await NotifyAsync(client, subject, sessionId: null, cancellationToken).ConfigureAwait(false);
-        }
+        await NotifyAllAsync(subject, sessionId: null, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Every client at once, each for at most <see cref="TokenServerOptions.BackchannelLogoutTimeout"/>.</summary>
+    private Task NotifyAllAsync(string subject, string? sessionId, CancellationToken cancellationToken) =>
+        Task.WhenAll(options.Value.Clients
+            .Where(client => client.BackchannelLogoutUri is not null)
+            .Select(client => NotifyAsync(client, subject, sessionId, cancellationToken)));
 
     private async Task NotifyAsync(ClientDefinition client, string subject, string? sessionId, CancellationToken cancellationToken)
     {
         try
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(options.Value.BackchannelLogoutTimeout);
             using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["logout_token"] = CreateLogoutToken(client.ClientId, subject, sessionId) });
             using var response = await httpClientFactory.CreateClient(HttpClientName)
-                .PostAsync(client.BackchannelLogoutUri, content, cancellationToken).ConfigureAwait(false);
+                .PostAsync(client.BackchannelLogoutUri, content, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 LogRefused(logger, client.ClientId, (int)response.StatusCode);
             }
         }
-#pragma warning disable CA1031 // One unreachable client must not stop the others; its tokens are revoked regardless.
-        catch (Exception exception) when (exception is not OperationCanceledException)
+#pragma warning disable CA1031 // One unreachable or slow client must not stop the others; its tokens are revoked regardless.
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
 #pragma warning restore CA1031
         {
             LogFailed(logger, exception, client.ClientId);
