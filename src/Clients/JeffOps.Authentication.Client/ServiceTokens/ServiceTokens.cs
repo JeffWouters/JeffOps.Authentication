@@ -44,8 +44,9 @@ public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, I
     public const string HttpClientName = "JeffOps.ServiceToken";
 
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private string? _token;
-    private DateTimeOffset _refreshAt = DateTimeOffset.MinValue;
+
+    // The token and when to replace it, published together: a reader never sees a new token with an old time or the reverse.
+    private volatile CachedToken? _cached;
 
     /// <summary>
     /// This service's access token, cached or newly acquired. Throws <see cref="HttpRequestException"/> when the token
@@ -53,17 +54,17 @@ public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, I
     /// </summary>
     public async Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
     {
-        if (_token is { } cached && time.GetUtcNow() < _refreshAt)
+        if (_cached is { } cached && time.GetUtcNow() < cached.RefreshAt)
         {
-            return cached;
+            return cached.Token;
         }
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_token is { } refreshed && time.GetUtcNow() < _refreshAt)
+            if (_cached is { } refreshed && time.GetUtcNow() < refreshed.RefreshAt)
             {
-                return refreshed;
+                return refreshed.Token;
             }
 
             var settings = options.Value;
@@ -96,9 +97,8 @@ public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, I
                 throw new InvalidOperationException("The token endpoint returned no access token.");
             }
 
-            _token = token.AccessToken;
-            _refreshAt = time.GetUtcNow().AddSeconds(token.ExpiresIn).Subtract(settings.RefreshBeforeExpiry);
-            return _token;
+            _cached = new CachedToken(token.AccessToken, time.GetUtcNow().AddSeconds(token.ExpiresIn).Subtract(settings.RefreshBeforeExpiry));
+            return token.AccessToken;
         }
         finally
         {
@@ -108,6 +108,8 @@ public sealed class ServiceTokenProvider(IHttpClientFactory httpClientFactory, I
 
     /// <inheritdoc />
     public void Dispose() => _gate.Dispose();
+
+    private sealed record CachedToken(string Token, DateTimeOffset RefreshAt);
 
     private sealed record TokenResponse(
         [property: JsonPropertyName("access_token")] string? AccessToken,
