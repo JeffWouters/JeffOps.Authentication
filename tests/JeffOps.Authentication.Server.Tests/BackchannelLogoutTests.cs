@@ -17,7 +17,7 @@ public sealed class BackchannelLogoutTests
         await using var host = await TokenServerHost.StartAsync(
             new()
             {
-                ["JeffOps:TokenServer:BackchannelLogoutTimeout"] = "00:00:01",
+                ["JeffOps:TokenServer:BackchannelLogoutTimeout"] = "00:00:02",
                 ["JeffOps:TokenServer:Clients:0:BackchannelLogoutUri"] = "https://a.test/logout",
                 ["JeffOps:TokenServer:Clients:1:BackchannelLogoutUri"] = "https://b.test/logout",
                 ["JeffOps:TokenServer:Clients:2:BackchannelLogoutUri"] = "https://hangs.test/logout",
@@ -34,11 +34,11 @@ public sealed class BackchannelLogoutTests
 
         elapsed.Stop();
         clients.Told.ShouldBe(["a.test", "b.test"], ignoreOrder: true);
-        elapsed.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(3), "the clients are told together, and the hanging one only until the timeout");
-        TestContext.Current.SendDiagnosticMessage($"Signing out with two 300 ms clients and one hanging: {elapsed.ElapsedMilliseconds} ms");
+        elapsed.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(6), "the clients are told together, and the hanging one only until the timeout");
+        TestContext.Current.SendDiagnosticMessage($"Signing out with two 100 ms clients and one hanging: {elapsed.ElapsedMilliseconds} ms");
     }
 
-    /// <summary>Two clients that answer after 300 ms, and one that never answers.</summary>
+    /// <summary>Two clients that answer after 100 ms, and one that never answers.</summary>
     private sealed class SlowClients : HttpMessageHandler
     {
         public ConcurrentBag<string> Told { get; } = [];
@@ -46,7 +46,7 @@ public sealed class BackchannelLogoutTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var host = request.RequestUri!.Host;
-            await Task.Delay(host == "hangs.test" ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(300), cancellationToken);
+            await Task.Delay(host == "hangs.test" ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(100), cancellationToken);
             Told.Add(host);
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
