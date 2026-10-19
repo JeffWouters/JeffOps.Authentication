@@ -19,7 +19,11 @@ public sealed class PermissionRequirement(string permission, string? scopeKey = 
     /// <summary>The scope the permission is checked at; null means <see cref="PermissionAuthorizationOptions.DefaultScopeKey"/>.</summary>
     public string? ScopeKey { get; } = scopeKey;
 
-    /// <summary>Name of the route value holding the targeted scope instance id.</summary>
+    /// <summary>
+    /// Name of the route value holding the targeted scope instance id. The id comes from the request, so on its own this is
+    /// not an object-level check: register an <see cref="Contracts.IScopeInstanceOwnership"/>, or have the handler check that
+    /// the object belongs to the caller's tenant.
+    /// </summary>
     public string? InstanceRouteValue { get; } = instanceRouteValue;
 }
 

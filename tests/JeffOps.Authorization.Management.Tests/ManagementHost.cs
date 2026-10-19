@@ -53,7 +53,7 @@ internal sealed class ManagementHost : IAsyncDisposable
 
     public IServiceProvider Services => _app.Services;
 
-    public static async Task<ManagementHost> StartAsync(Dictionary<string, string?>? overrides = null)
+    public static async Task<ManagementHost> StartAsync(Dictionary<string, string?>? overrides = null, Action<IServiceCollection>? services = null)
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
         var connectionString = TestDatabase.SqlServer
@@ -61,7 +61,7 @@ internal sealed class ManagementHost : IAsyncDisposable
             : TestDatabase.SqliteFile("authz");
         try
         {
-            return await StartAsync(connectionString, time, overrides);
+            return await StartAsync(connectionString, time, overrides, services);
         }
         catch
         {
@@ -70,7 +70,7 @@ internal sealed class ManagementHost : IAsyncDisposable
         }
     }
 
-    private static async Task<ManagementHost> StartAsync(string connectionString, FakeTimeProvider time, Dictionary<string, string?>? overrides)
+    private static async Task<ManagementHost> StartAsync(string connectionString, FakeTimeProvider time, Dictionary<string, string?>? overrides, Action<IServiceCollection>? services)
     {
 
         var builder = WebApplication.CreateSlimBuilder();
@@ -78,7 +78,7 @@ internal sealed class ManagementHost : IAsyncDisposable
         builder.Logging.ClearProviders();
         var settings = new Dictionary<string, string?>
         {
-            ["JeffOps:Authorization:Cache:SealingKey"] = "test-sealing-key",
+            ["JeffOps:Authorization:Cache:SealingKey"] = "test-sealing-key-of-at-least-32-bytes",
         };
         foreach (var (key, value) in overrides ?? [])
         {
@@ -104,6 +104,7 @@ internal sealed class ManagementHost : IAsyncDisposable
         }
         builder.Services.AddAuthentication(TestAuthentication.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, TestAuthentication>(TestAuthentication.SchemeName, _ => { });
+        services?.Invoke(builder.Services);
 
         var app = builder.Build();
         app.UseAuthentication();

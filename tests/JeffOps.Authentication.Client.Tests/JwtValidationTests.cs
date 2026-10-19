@@ -24,9 +24,12 @@ public sealed class JwtValidationTests
     private const string Issuer = "https://issuer.test";
     private static readonly RsaSecurityKey SigningKey = new(RSA.Create(2048)) { KeyId = "test-key" };
 
-    private static string Token(string? audience, params (string Type, string Value)[] claims) =>
+    private static string Token(string? audience, params (string Type, string Value)[] claims) => Token(audience, "at+jwt", claims);
+
+    private static string Token(string? audience, string type, params (string Type, string Value)[] claims) =>
         new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
+            TokenType = type,
             Issuer = Issuer,
             Audience = audience,
             Subject = new ClaimsIdentity(claims.Select(claim => new Claim(claim.Type, claim.Value))),
@@ -99,6 +102,19 @@ public sealed class JwtValidationTests
         await using var app = await StartAsync();
 
         (await GetAsync(app, "/me", Token(audience, ("sub", Guid.NewGuid().ToString())))).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    [Theory]
+    [InlineData("JWT")]
+    [InlineData("logout+jwt")]
+    public async Task Only_access_tokens_are_accepted_even_for_an_accepted_audience(string type)
+    {
+        await using var app = await StartAsync();
+
+        // An ID token for client svc-reports carries aud=svc-reports, an audience this service accepts.
+        var idToken = Token("svc-reports", type, ("sub", Guid.NewGuid().ToString()));
+
+        (await GetAsync(app, "/me", idToken)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
     }
 
     [Fact]

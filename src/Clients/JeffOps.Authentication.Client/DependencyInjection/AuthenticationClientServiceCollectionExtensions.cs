@@ -16,11 +16,15 @@ namespace JeffOps.Authentication.Client.DependencyInjection;
 /// <summary>Registers token validation, service tokens and access-context propagation in a resource service.</summary>
 public static class AuthenticationClientServiceCollectionExtensions
 {
+    /// <summary>The JWT <c>typ</c> of access tokens (RFC 9068), the only type accepted as a bearer credential.</summary>
+    public const string AccessTokenType = "at+jwt";
+
     /// <summary>
     /// Adds platform token validation to a resource service (docs/DESIGN.md §16):
     /// <list type="bullet">
     /// <item>JWT bearer against <see cref="AuthenticationClientOptions.Authority"/>, with audience validation always on,
-    /// HTTPS metadata outside Development, and raw claim names (no inbound mapping).</item>
+    /// HTTPS metadata outside Development, raw claim names (no inbound mapping), and only access tokens accepted
+    /// (<c>typ</c> <see cref="AccessTokenType"/>), so an ID token is never a bearer credential.</item>
     /// <item>A fallback policy requiring an authenticated user on every endpoint; opt out with <c>AllowAnonymous()</c>.</item>
     /// <item>DPoP (RFC 9449): proofs are checked for every DPoP-bound token (see <see cref="AuthenticationClientOptions.Dpop"/>).</item>
     /// <item><see cref="ICurrentUser"/> and <see cref="IAccessContextAccessor"/> for the current request.</item>
@@ -53,6 +57,9 @@ public static class AuthenticationClientServiceCollectionExtensions
                 jwt.MapInboundClaims = false;
                 jwt.TokenValidationParameters.ValidateAudience = true;
                 jwt.TokenValidationParameters.ValidAudiences = [.. settings.Audiences.Where(audience => !string.IsNullOrWhiteSpace(audience))];
+
+                // Access tokens only (RFC 9068): an ID token whose audience happens to match is not a bearer credential.
+                jwt.TokenValidationParameters.ValidTypes = [AccessTokenType, "application/" + AccessTokenType];
                 jwt.TokenValidationParameters.NameClaimType = names.Name;
                 jwt.TokenValidationParameters.RoleClaimType = "role";
             });

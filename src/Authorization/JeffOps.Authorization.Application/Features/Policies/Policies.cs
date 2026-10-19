@@ -117,16 +117,21 @@ public sealed class DeletePolicyHandler(IPolicyRepository policies, IUnitOfWork 
 }
 
 /// <summary>
-/// Dry-runs a decision against the stored policies and stated facts, without changing anything. The per-policy trace is
-/// returned only to platform administrators, since policies may reveal security posture.
+/// Dry-runs a decision against the stored policies and stated facts, without changing anything. Only for Root or holders of
+/// the policies-write permission, since answers reveal what the policies allow; the per-policy trace is for Root only.
 /// </summary>
 public sealed record SimulateDecisionQuery(ManagementCaller Caller, SimulateRequest Request);
 
-public sealed class SimulateDecisionHandler(IPolicyRepository policies) : IQueryHandler<SimulateDecisionQuery, SimulateResponse>
+public sealed class SimulateDecisionHandler(IPolicyRepository policies, ManagementGuard guard) : IQueryHandler<SimulateDecisionQuery, SimulateResponse>
 {
     public async Task<Result<SimulateResponse>> HandleAsync(SimulateDecisionQuery query, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
+        if (await guard.RequireInOwnTenantAsync(query.Caller, guard.Options.Permissions.PoliciesWrite, cancellationToken).ConfigureAwait(false) is { } refused)
+        {
+            return refused;
+        }
+
         var request = query.Request;
 
         var compiled = (await policies.ListAsync(cancellationToken).ConfigureAwait(false))

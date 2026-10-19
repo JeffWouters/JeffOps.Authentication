@@ -87,6 +87,7 @@ public sealed class DecisionCacheOptions
     /// <summary>
     /// The secret entries are sealed with. Replicas of one service must share it to share distributed-cache entries.
     /// When unset, a random per-process key is used: safe, but replicas then can't reuse each other's entries.
+    /// Outside Development it must be at least 32 bytes, or startup fails.
     /// </summary>
     public string? SealingKey { get; set; }
 

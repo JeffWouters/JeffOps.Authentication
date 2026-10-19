@@ -21,7 +21,7 @@ public sealed class TrustedProxyOptions
     /// <summary>Acknowledges that there really is no proxy in front of the service (required outside Development with 0 hops).</summary>
     public bool NoTrustedProxy { get; set; }
 
-    /// <summary>IP addresses of trusted proxies.</summary>
+    /// <summary>IP addresses of trusted proxies. With hops, this or <see cref="KnownNetworks"/> is required outside Development.</summary>
     public IList<string> KnownProxies { get; } = [];
 
     /// <summary>CIDR ranges of trusted proxies.</summary>
@@ -35,7 +35,9 @@ public static class ForwardedHeadersExtensions
     /// Configures forwarded-header handling from <see cref="TrustedProxyOptions"/>. Fails startup outside Development when
     /// no hop count is configured and <see cref="TrustedProxyOptions.NoTrustedProxy"/> isn't set: behind an ingress, every
     /// client would otherwise share the proxy's address and per-client rate limits collapse into one bucket, silently.
-    /// Invalid addresses also fail startup instead of trusting nothing, or everything.
+    /// Outside Development, trusted hops also need the proxies listed (<see cref="TrustedProxyOptions.KnownProxies"/> or
+    /// <see cref="TrustedProxyOptions.KnownNetworks"/>). Invalid addresses also fail startup instead of trusting nothing,
+    /// or everything.
     /// </summary>
     public static IServiceCollection AddJeffOpsForwardedHeaders(this IServiceCollection services, Microsoft.Extensions.Configuration.IConfiguration configuration)
     {
@@ -100,6 +102,14 @@ public static class ForwardedHeadersExtensions
                 failures.Add(
                     $"{TrustedProxyOptions.SectionName}:TrustedProxyHops must be > 0 outside Development. If no proxy is in front of " +
                     $"this service, set {TrustedProxyOptions.SectionName}:NoTrustedProxy=true to acknowledge.");
+            }
+
+            // With hops but no proxies listed, ASP.NET Core accepts forwarded headers from any peer.
+            if (options.TrustedProxyHops > 0 && options.KnownProxies.Count == 0 && options.KnownNetworks.Count == 0 && !environment.IsDevelopment())
+            {
+                failures.Add(
+                    $"{TrustedProxyOptions.SectionName}:KnownProxies or KnownNetworks must list the trusted proxies outside Development; " +
+                    "otherwise any client can set its own address and scheme.");
             }
 
             failures.AddRange(options.KnownProxies

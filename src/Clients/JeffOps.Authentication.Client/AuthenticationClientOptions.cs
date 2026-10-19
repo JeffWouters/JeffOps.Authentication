@@ -15,8 +15,9 @@ public sealed class AuthenticationClientOptions
     public string? Authority { get; set; }
 
     /// <summary>
-    /// Audiences this service accepts, for example the shared API audience and the service's own client id. A token for
-    /// any other audience is rejected. At least one is required.
+    /// Audiences this service accepts: resource names (what the token server's API scopes map to), for example the shared
+    /// API audience <c>api</c>. Prefer resource names over client ids, which ID tokens carry as their audience. A token for
+    /// any other audience is rejected, and only access tokens (<c>typ</c> <c>at+jwt</c>) are accepted. At least one is required.
     /// </summary>
     [MinLength(1)]
     public IList<string> Audiences { get; } = [];

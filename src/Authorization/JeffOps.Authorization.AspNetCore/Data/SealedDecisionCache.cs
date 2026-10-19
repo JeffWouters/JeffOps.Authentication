@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -11,21 +12,27 @@ namespace JeffOps.Authorization.AspNetCore.Data;
 
 /// <summary>
 /// A decision-cache value as stored: the JSON payload, the id of the key that sealed it, the time it stops being accepted,
-/// and an HMAC over the storage key, that time and the payload. Immutable, so the local cache hands back the same instance
-/// and a verified value is memoised per instance.
+/// the time it was sealed, and an HMAC over the storage key, those times and the payload. Immutable, so the local cache
+/// hands back the same instance and a verified value is memoised per instance.
 /// </summary>
 [ImmutableObject(true)]
-internal sealed record SealedCacheEntry(string Kid, string Payload, string Mac, long ExpiresAtUnixMs);
+internal sealed record SealedCacheEntry(string Kid, string Payload, string Mac, long ExpiresAtUnixMs, long SealedAtUnixMs = 0);
 
 /// <summary>
 /// Integrity protection for the authorization decision caches. A distributed cache is often shared by many workloads with
 /// one credential; plain JSON under predictable keys would let any of them plant "this user is an owner here". Each value is
-/// sealed with HMAC-SHA256 under this service's key and bound to its storage key and an expiry, so a forged entry, a
-/// genuine entry copied under another key, or a genuine entry replayed after revocation is rejected, evicted and re-read
-/// from the source.
+/// sealed with HMAC-SHA256 under this service's key and bound to its storage key and an expiry, so a forged entry or a
+/// genuine entry copied under another key is rejected, evicted and re-read from the source. A genuine entry put back after
+/// an invalidation event this process handled is rejected too (it was sealed before the invalidation); without invalidation
+/// events, a genuine entry stays acceptable until its lifetime plus <see cref="DecisionCacheOptions.MaxStale"/> ends.
 /// </summary>
 internal sealed partial class SealedDecisionCache
 {
+    /// <summary>The shortest sealing key accepted outside Development: 32 bytes, the HMAC-SHA256 block of entropy.</summary>
+    public const int MinimumSealingKeyBytes = 32;
+
+    private const int InvalidationsBeforePruning = 10_000;
+
     private readonly HybridCache _cache;
     private readonly ILogger<SealedDecisionCache> _logger;
     private readonly TimeProvider _time;
@@ -33,7 +40,9 @@ internal sealed partial class SealedDecisionCache
     private readonly string _kid;
     private readonly string _partition;
     private readonly TimeSpan _maxStale;
+    private readonly TimeSpan _horizon;
     private readonly ConditionalWeakTable<SealedCacheEntry, Opened> _opened = new();
+    private readonly ConcurrentDictionary<string, long> _invalidatedAt = new(StringComparer.Ordinal);
 
     public SealedDecisionCache(HybridCache cache, IOptions<PermissionAuthorizationOptions> options, ILogger<SealedDecisionCache> logger, TimeProvider time)
     {
@@ -45,6 +54,7 @@ internal sealed partial class SealedDecisionCache
         _time = time;
         _partition = string.IsNullOrWhiteSpace(settings.Partition) ? "default" : settings.Partition.Trim();
         _maxStale = settings.MaxStale > TimeSpan.Zero ? settings.MaxStale : TimeSpan.Zero;
+        _horizon = new[] { settings.Assignments, settings.RolePermissions, settings.Policies, settings.Scopes }.Max() + _maxStale;
 
         if (string.IsNullOrEmpty(settings.SealingKey))
         {
@@ -97,15 +107,44 @@ internal sealed partial class SealedDecisionCache
             : throw new InvalidOperationException("A freshly sealed decision-cache entry failed verification.");
     }
 
-    public ValueTask RemoveAsync(string key, CancellationToken cancellationToken) =>
-        _cache.RemoveAsync(StorageKey(key), cancellationToken);
+    /// <summary>
+    /// Evicts <paramref name="key"/>, and from now on refuses entries for it sealed before this moment, so an older genuine
+    /// entry put back into a shared cache isn't accepted again.
+    /// </summary>
+    public ValueTask RemoveAsync(string key, CancellationToken cancellationToken)
+    {
+        var storageKey = StorageKey(key);
+        var now = _time.GetUtcNow();
+        _invalidatedAt[storageKey] = now.ToUnixTimeMilliseconds();
+        if (_invalidatedAt.Count > InvalidationsBeforePruning)
+        {
+            // Past the horizon every entry sealed before the invalidation has expired anyway.
+            var forgetBefore = now.Subtract(_horizon).ToUnixTimeMilliseconds();
+            foreach (var (staleKey, at) in _invalidatedAt)
+            {
+                if (at < forgetBefore)
+                {
+                    _invalidatedAt.TryRemove(KeyValuePair.Create(staleKey, at));
+                }
+            }
+        }
+
+        return _cache.RemoveAsync(storageKey, cancellationToken);
+    }
 
     internal SealedCacheEntry Seal<T>(string storageKey, T value, TimeSpan lifetime)
     {
         var payload = JsonSerializer.Serialize(value);
-        var expiresAt = _time.GetUtcNow().Add(lifetime).Add(_maxStale).ToUnixTimeMilliseconds();
-        return new SealedCacheEntry(_kid, payload, Mac(storageKey, expiresAt, payload), expiresAt);
+        var now = _time.GetUtcNow();
+
+        // Never before this process's last invalidation of the key, even if the clock stepped back since.
+        var sealedAt = Math.Max(now.ToUnixTimeMilliseconds(), _invalidatedAt.GetValueOrDefault(storageKey));
+        var expiresAt = now.Add(lifetime).Add(_maxStale).ToUnixTimeMilliseconds();
+        return new SealedCacheEntry(_kid, payload, Mac(storageKey, expiresAt, sealedAt, payload), expiresAt, sealedAt);
     }
+
+    private bool SealedBeforeInvalidation(string storageKey, SealedCacheEntry entry) =>
+        _invalidatedAt.TryGetValue(storageKey, out var invalidatedAt) && entry.SealedAtUnixMs < invalidatedAt;
 
     private bool TryOpen<TStored, TResult>(string storageKey, SealedCacheEntry? entry, Func<TStored, TResult> project, out TResult value)
         where TResult : notnull
@@ -117,7 +156,7 @@ internal sealed partial class SealedDecisionCache
         }
 
         // Lifetime first, also for an instance already verified: a cache may keep handing back an expired instance.
-        if (_time.GetUtcNow().ToUnixTimeMilliseconds() > entry.ExpiresAtUnixMs)
+        if (_time.GetUtcNow().ToUnixTimeMilliseconds() > entry.ExpiresAtUnixMs || SealedBeforeInvalidation(storageKey, entry))
         {
             return false;
         }
@@ -130,7 +169,7 @@ internal sealed partial class SealedDecisionCache
 
         if (!string.Equals(entry.Kid, _kid, StringComparison.Ordinal)
             || !CryptographicOperations.FixedTimeEquals(
-                Encoding.ASCII.GetBytes(Mac(storageKey, entry.ExpiresAtUnixMs, entry.Payload)),
+                Encoding.ASCII.GetBytes(Mac(storageKey, entry.ExpiresAtUnixMs, entry.SealedAtUnixMs, entry.Payload)),
                 Encoding.ASCII.GetBytes(entry.Mac)))
         {
             return false;
@@ -171,14 +210,18 @@ internal sealed partial class SealedDecisionCache
         {
             LogExpiredEntry(_logger, storageKey);
         }
+        else if (SealedBeforeInvalidation(storageKey, entry))
+        {
+            LogInvalidatedEntry(_logger, storageKey);
+        }
         else
         {
             LogTamperedEntry(_logger, storageKey);
         }
     }
 
-    private string Mac(string storageKey, long expiresAtUnixMs, string payload) =>
-        Convert.ToBase64String(HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes($"{storageKey}\n{expiresAtUnixMs}\n{payload}")));
+    private string Mac(string storageKey, long expiresAtUnixMs, long sealedAtUnixMs, string payload) =>
+        Convert.ToBase64String(HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes($"{storageKey}\n{expiresAtUnixMs}\n{sealedAtUnixMs}\n{payload}")));
 
     [LoggerMessage(EventId = 7101, Level = LogLevel.Warning,
         Message = "No decision-cache sealing key is configured; using a random per-process key. Replicas will not share distributed-cache entries. Set JeffOps:Authorization:Cache:SealingKey.")]
@@ -194,6 +237,10 @@ internal sealed partial class SealedDecisionCache
     [LoggerMessage(EventId = 7104, Level = LogLevel.Warning,
         Message = "Decision cache entry {StorageKey} failed its integrity check (possible tampering); re-reading the source.")]
     private static partial void LogTamperedEntry(ILogger logger, string storageKey);
+
+    [LoggerMessage(EventId = 7105, Level = LogLevel.Warning,
+        Message = "Decision cache entry {StorageKey} was sealed before an invalidation (possible replay); re-reading the source.")]
+    private static partial void LogInvalidatedEntry(ILogger logger, string storageKey);
 
     private sealed record Opened(string StorageKey, object Value);
 }

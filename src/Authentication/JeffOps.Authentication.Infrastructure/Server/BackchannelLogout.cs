@@ -109,9 +109,9 @@ internal sealed partial class BackchannelLogoutNotifier(
         });
     }
 
-    [LoggerMessage(EventId = 8501, Level = LogLevel.Warning, Message = "Client {ClientId} refused a back-channel logout ({Status}).")]
+    [LoggerMessage(EventId = 8821, Level = LogLevel.Warning, Message = "Client {ClientId} refused a back-channel logout ({Status}).")]
     private static partial void LogRefused(ILogger logger, string clientId, int status);
 
-    [LoggerMessage(EventId = 8502, Level = LogLevel.Warning, Message = "Sending a back-channel logout to client {ClientId} failed.")]
+    [LoggerMessage(EventId = 8822, Level = LogLevel.Warning, Message = "Sending a back-channel logout to client {ClientId} failed.")]
     private static partial void LogFailed(ILogger logger, Exception exception, string clientId);
 }

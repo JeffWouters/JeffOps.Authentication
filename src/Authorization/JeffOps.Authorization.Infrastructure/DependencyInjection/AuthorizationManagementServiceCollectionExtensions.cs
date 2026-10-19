@@ -143,17 +143,44 @@ internal sealed partial class ExpiredAssignmentSweeper(IServiceProvider services
     private static partial void LogFailed(ILogger logger, Exception exception);
 }
 
+/// <summary>The default audit sink of authorization management: writes audit records, with their details, to the log.</summary>
 internal sealed partial class LoggingAuditSink(ILogger<LoggingAuditSink> logger) : IAuditSink
 {
     public Task WriteAsync(AuditRecord record, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(record);
-        Log(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId);
+
+        var details = FormatDetails(record.Details);
+        if (record.Severity == AuditSeverity.Warning)
+        {
+            LogWarning(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId, details);
+        }
+        else
+        {
+            Log(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId, details);
+        }
+
         return Task.CompletedTask;
     }
 
-    [LoggerMessage(EventId = 7211, Level = LogLevel.Information, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}")]
-    private static partial void Log(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId);
+    /// <summary><c>key=value</c> pairs in key order, with control characters blanked so a detail can't forge a log line.</summary>
+    internal static string FormatDetails(IReadOnlyDictionary<string, string?> details) =>
+        string.Join(", ", details.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{Clean(pair.Key)}={Clean(pair.Value)}"));
+
+    private static string Clean(string? value) =>
+        value is null ? string.Empty : string.Create(value.Length, value, static (span, text) =>
+        {
+            for (var i = 0; i < text.Length; i++)
+            {
+                span[i] = char.IsControl(text[i]) ? ' ' : text[i];
+            }
+        });
+
+    [LoggerMessage(EventId = 7211, Level = LogLevel.Information, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}: {Details}")]
+    private static partial void Log(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId, string details);
+
+    [LoggerMessage(EventId = 7213, Level = LogLevel.Warning, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}: {Details}")]
+    private static partial void LogWarning(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId, string details);
 }
 
 /// <summary>

@@ -48,6 +48,12 @@ public sealed class BffOptions
     public string CsrfHeaderName { get; set; } = "X-JeffOps-Csrf";
 
     /// <summary>
+    /// Origins (for example <c>https://app.example.com</c>) allowed to open a WebSocket with the session cookie, besides the
+    /// BFF's own origin. A browser can't add the CSRF header to a WebSocket handshake, so its <c>Origin</c> is checked instead.
+    /// </summary>
+    public IList<string> WebSocketOrigins { get; } = [];
+
+    /// <summary>
     /// Token-mediating mode ("OAuth 2.0 for Browser-Based Applications", token-mediating backend): <c>GET /bff/token</c>
     /// hands the browser app the session's short-lived access token (refreshed here when needed), for calling APIs directly.
     /// The refresh token never leaves the BFF. Off by default: proxying through the BFF keeps every token out of the browser,

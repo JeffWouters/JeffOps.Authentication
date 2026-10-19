@@ -3,6 +3,7 @@ using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authorization.AspNetCore.Data;
+using JeffOps.Authorization.Contracts;
 using JeffOps.Authorization.Domain.Assignments;
 using JeffOps.Authorization.Domain.Decisions;
 using JeffOps.Authorization.Domain.Permissions;
@@ -14,14 +15,16 @@ namespace JeffOps.Authorization.AspNetCore.Evaluation;
 /// <summary>
 /// Gathers the facts of one request — claims, route rules, cached role and policy data — and runs the
 /// <see cref="AuthorizationPipeline"/>. The single evaluation path behind both the endpoint policy handler and
-/// <see cref="IAuthorizer"/>, so they can't disagree.
+/// <see cref="IAuthorizer"/>, so they can't disagree. With an <see cref="IScopeInstanceOwnership"/>, a role grants nothing on
+/// a scope instance of another tenant.
 /// </summary>
 internal sealed class AuthorizationEvaluator(
     IAuthorizationData data,
     AuthorizationPipeline pipeline,
     ClaimNames names,
     IOptions<PermissionAuthorizationOptions> options,
-    TimeProvider time)
+    TimeProvider time,
+    IScopeInstanceOwnership? ownership = null)
 {
     private static readonly IReadOnlyDictionary<string, JsonElement> NoAttributes = new Dictionary<string, JsonElement>();
 
@@ -42,16 +45,15 @@ internal sealed class AuthorizationEvaluator(
         var hasRoleGrant = false;
         if (!isRoot && access.UserId is { } userId && access.EffectiveTenantId is { } tenantId)
         {
+            var scopeKey = request.ScopeKey ?? options.Value.DefaultScopeKey;
             var assignments = await data.GetAssignmentsAsync(userId, tenantId, cancellationToken).ConfigureAwait(false);
-            if (assignments.Count > 0)
+            if (assignments.Count > 0
+                && (ownership is null || request.ScopeInstanceId is not { } instance
+                    || await ownership.TenantOfAsync(scopeKey, instance, cancellationToken).ConfigureAwait(false) == tenantId))
             {
                 var roles = await data.GetRolePermissionsAsync(cancellationToken).ConfigureAwait(false);
                 var scopes = await data.GetScopesAsync(cancellationToken).ConfigureAwait(false);
-                hasRoleGrant = RoleBasedAccess.Grants(
-                    assignments, roles, scopes, action,
-                    request.ScopeKey ?? options.Value.DefaultScopeKey,
-                    request.ScopeInstanceId,
-                    now);
+                hasRoleGrant = RoleBasedAccess.Grants(assignments, roles, scopes, action, scopeKey, request.ScopeInstanceId, now);
             }
         }
 

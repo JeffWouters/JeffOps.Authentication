@@ -28,7 +28,9 @@ public static class AuthorizationEndpointConventionBuilderExtensions
     /// <summary>
     /// Requires <paramref name="permission"/>, checked at <paramref name="scopeKey"/> (default: the configured default scope).
     /// With <paramref name="instanceRouteValue"/>, the scope instance is read from that route value, so instance-bound role
-    /// assignments apply (docs/DESIGN.md §17, I2).
+    /// assignments apply (docs/DESIGN.md §17, I2). The instance id comes from the request: unless an
+    /// <see cref="Contracts.IScopeInstanceOwnership"/> is registered, the handler must check that the object belongs to the
+    /// caller's tenant.
     /// </summary>
     public static TBuilder RequirePermission<TBuilder>(this TBuilder builder, string permission, string? scopeKey = null, string? instanceRouteValue = null)
         where TBuilder : IEndpointConventionBuilder

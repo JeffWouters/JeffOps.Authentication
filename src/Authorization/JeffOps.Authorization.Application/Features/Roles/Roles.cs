@@ -55,13 +55,17 @@ public sealed class ListRolesHandler(IRoleRepository roles, ManagementGuard guar
 
 // ---- CreateRole --------------------------------------------------------------------------------------------------------
 
-/// <summary>Creates a custom role in the caller's tenant (or a global role, Root only).</summary>
+/// <summary>
+/// Creates a custom role in the caller's tenant (or a global role, Root only). When four-eyes applies, the role is created
+/// empty and each permission waits for a second approver, as if added one by one.
+/// </summary>
 public sealed record CreateRoleCommand(ManagementCaller Caller, CreateRoleRequest Request);
 
 public sealed class CreateRoleHandler(
     IRoleRepository roles,
     IUnitOfWork unitOfWork,
     ManagementGuard guard,
+    IRoleChangeRepository changes,
     HeldPermissions held,
     PermissionCatalog catalog,
     ManagementAudit audit,
@@ -114,15 +118,30 @@ public sealed class CreateRoleHandler(
             }
         }
 
-        var role = Role.Create(request.Name, tenant, time.GetUtcNow(), minScopeKey: request.MinScopeKey, complianceControls: request.ComplianceControls);
+        var now = time.GetUtcNow();
+        var role = Role.Create(request.Name, tenant, now, minScopeKey: request.MinScopeKey, complianceControls: request.ComplianceControls);
+        var queue = permissions.Count > 0 && !caller.IsRoot && await guard.ApprovalRequiredAsync(tenant, cancellationToken).ConfigureAwait(false);
         foreach (var permission in permissions)
         {
-            role.AddPermission(permission);
+            if (queue)
+            {
+                changes.Add(RoleChangeRequest.PermissionChange(RoleChangeKind.AddPermission, role.Id, permission, tenant, caller.UserId ?? Guid.Empty, now));
+            }
+            else
+            {
+                role.AddPermission(permission);
+            }
         }
 
         roles.Add(role);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await audit.WriteAsync("role.created", "role", role.Id.ToString(), caller, tenant, cancellationToken).ConfigureAwait(false);
+        if (queue)
+        {
+            await audit.WriteAsync("role.change.requested", "role", role.Id.ToString(), caller, tenant, cancellationToken,
+                details: new Dictionary<string, string?> { ["permissions"] = string.Join(' ', permissions) }).ConfigureAwait(false);
+        }
+
         return role.ToDto();
     }
 }

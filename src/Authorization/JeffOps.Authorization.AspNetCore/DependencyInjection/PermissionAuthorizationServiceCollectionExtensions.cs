@@ -1,3 +1,4 @@
+using System.Text;
 using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Abstractions.Messaging;
@@ -11,6 +12,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authorization.AspNetCore.DependencyInjection;
@@ -51,7 +53,9 @@ public static class PermissionAuthorizationServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddOptions<PermissionAuthorizationOptions>()
-            .Bind(configuration.GetSection(PermissionAuthorizationOptions.SectionName));
+            .Bind(configuration.GetSection(PermissionAuthorizationOptions.SectionName))
+            .ValidateOnStart();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<PermissionAuthorizationOptions>, PermissionAuthorizationOptionsValidator>());
 
         services.TryAddSingleton(ClaimNames.Default);
         services.TryAddSingleton(TimeProvider.System);
@@ -104,4 +108,17 @@ public static class PermissionAuthorizationServiceCollectionExtensions
 
     private static AuthorizationCacheInvalidator Invalidator(IServiceProvider provider) =>
         provider.GetRequiredService<AuthorizationCacheInvalidator>();
+
+    /// <summary>Outside Development, a configured sealing key must be long enough to resist guessing.</summary>
+    private sealed class PermissionAuthorizationOptionsValidator(IHostEnvironment environment) : IValidateOptions<PermissionAuthorizationOptions>
+    {
+        public ValidateOptionsResult Validate(string? name, PermissionAuthorizationOptions options) =>
+            options.Cache.SealingKey is { Length: > 0 } key
+            && Encoding.UTF8.GetByteCount(key) < SealedDecisionCache.MinimumSealingKeyBytes
+            && !environment.IsDevelopment()
+                ? ValidateOptionsResult.Fail(
+                    $"{PermissionAuthorizationOptions.SectionName}:Cache:SealingKey must be at least {SealedDecisionCache.MinimumSealingKeyBytes} bytes outside Development. " +
+                    "Use a random secret, or leave it unset for a random per-process key.")
+                : ValidateOptionsResult.Success;
+    }
 }

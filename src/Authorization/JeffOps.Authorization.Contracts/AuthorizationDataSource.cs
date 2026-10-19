@@ -42,3 +42,19 @@ public interface IPermissionRegistry
     Task RegisterAsync(RegisterPermissionsRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Optional host port: which tenant owns a scope instance (a workspace, a project). Scope instance ids are the host's own
+/// ids, so the library can't tell on its own. When registered, an instance-bound permission check and an instance-bound
+/// assignment only apply to instances of the caller's tenant; without it, handlers must check that the object belongs to
+/// the caller's tenant themselves.
+/// </summary>
+public interface IScopeInstanceOwnership
+{
+    /// <summary>Finds the tenant that owns a scope instance.</summary>
+    /// <param name="scopeKey">The scope the instance belongs to, for example <c>workspace</c>.</param>
+    /// <param name="instanceId">The instance id.</param>
+    /// <param name="cancellationToken">Cancels the lookup.</param>
+    /// <returns>The owning tenant; null when the instance is unknown (treated as not owned by anyone).</returns>
+    Task<Guid?> TenantOfAsync(string scopeKey, Guid instanceId, CancellationToken cancellationToken);
+}
+

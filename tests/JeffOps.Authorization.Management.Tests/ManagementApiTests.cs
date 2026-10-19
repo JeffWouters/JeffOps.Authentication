@@ -128,6 +128,69 @@ public sealed class ManagementApiTests
     }
 
     [Fact]
+    public async Task A_new_roles_permissions_wait_for_a_second_approver_too()
+    {
+        await using var host = await StartAsync();
+        await AssignAsync(host, RootUser(), Alice, TenantAdmin);
+        await AssignAsync(host, RootUser(), Bob, TenantAdmin);
+
+        var created = await host.SendAsync(User(Alice), HttpMethod.Post, ManagementRoutes.Roles, new CreateRoleRequest("Readers", ["billing.invoices.read"]));
+        created.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var role = await host.ReadAsync<RoleDto>(created);
+        role.Permissions.ShouldBeEmpty();
+        (await RolePermissionsAsync(host, role.Id)).ShouldBeEmpty();
+
+        var pending = (await host.ReadAsync<List<RoleChangeRequestDto>>(await host.GetAsync(User(Bob), ManagementRoutes.RoleChanges)))
+            .ShouldHaveSingleItem();
+        pending.RoleId.ShouldBe(role.Id);
+        pending.Permission.ShouldBe("billing.invoices.read");
+
+        (await host.SendAsync(User(Bob), HttpMethod.Post, $"{ManagementRoutes.RoleChanges}/{pending.Id}/approve", new DecideRoleChangeRequest("ok")))
+            .StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await RolePermissionsAsync(host, role.Id)).ShouldBe(["billing.invoices.read"]);
+    }
+
+    [Fact]
+    public async Task Simulation_the_catalog_and_scopes_need_a_management_permission()
+    {
+        await using var host = await StartAsync();
+        await AssignAsync(host, RootUser(), Alice, TenantAdmin);
+        var simulate = new SimulateRequest("billing.invoices.write", HasRoleGrant: true);
+
+        (await CodeOf(await host.SendAsync(User(Carol), HttpMethod.Post, $"{ManagementRoutes.Policies}/simulate", simulate))).ShouldBe("missing_permission");
+        (await CodeOf(await host.GetAsync(User(Carol), ManagementRoutes.Catalog))).ShouldBe("missing_permission");
+        (await CodeOf(await host.GetAsync(User(Carol), ManagementRoutes.Scopes))).ShouldBe("missing_permission");
+
+        // Reading roles opens the catalog and scopes; simulating needs the policy permission (or Root).
+        (await host.GetAsync(User(Alice), ManagementRoutes.Catalog)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await host.GetAsync(User(Alice), ManagementRoutes.Scopes)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await CodeOf(await host.SendAsync(User(Alice), HttpMethod.Post, $"{ManagementRoutes.Policies}/simulate", simulate))).ShouldBe("missing_permission");
+        (await host.SendAsync(RootUser(), HttpMethod.Post, $"{ManagementRoutes.Policies}/simulate", simulate)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task With_an_ownership_port_another_tenants_instance_cannot_be_assigned()
+    {
+        var ours = Guid.NewGuid();
+        var theirs = Guid.NewGuid();
+        var ownership = new FakeOwnership { [ours] = TenantA, [theirs] = TenantB };
+        await using var host = await StartAsync(services: services => services.AddSingleton<IScopeInstanceOwnership>(ownership));
+        var roleId = await RoleIdAsync(host, TenantAdmin);
+
+        var foreign = await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Assignments, new AssignRoleRequest(Carol, roleId, TenantA, "workspace", theirs));
+        (await CodeOf(foreign)).ShouldBe("invalid_scope");
+
+        var own = await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Assignments, new AssignRoleRequest(Carol, roleId, TenantA, "workspace", ours));
+        own.StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    private sealed class FakeOwnership : Dictionary<Guid, Guid>, IScopeInstanceOwnership
+    {
+        public Task<Guid?> TenantOfAsync(string scopeKey, Guid instanceId, CancellationToken cancellationToken) =>
+            Task.FromResult(TryGetValue(instanceId, out var tenant) ? tenant : (Guid?)null);
+    }
+
+    [Fact]
     public async Task Turning_off_approval_is_itself_approval_gated()
     {
         await using var host = await StartAsync();

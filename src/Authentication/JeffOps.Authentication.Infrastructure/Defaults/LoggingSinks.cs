@@ -5,30 +5,47 @@ using Microsoft.Extensions.Logging;
 
 namespace JeffOps.Authentication.Infrastructure.Defaults;
 
-/// <summary>The default <see cref="IAuditSink"/>: writes audit records to the log. Replace with the host's audit store.</summary>
+/// <summary>
+/// The default <see cref="IAuditSink"/>: writes audit records, with their details, to the log. Replace with the host's audit
+/// store.
+/// </summary>
 internal sealed partial class LoggingAuditSink(ILogger<LoggingAuditSink> logger) : IAuditSink
 {
     public Task WriteAsync(AuditRecord record, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(record);
 
+        var details = FormatDetails(record.Details);
         if (record.Severity == AuditSeverity.Warning)
         {
-            LogWarning(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId);
+            LogWarning(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId, details);
         }
         else
         {
-            LogInformation(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId);
+            LogInformation(logger, record.Action, record.TargetType, record.TargetId, record.ActorId, record.TenantId, details);
         }
 
         return Task.CompletedTask;
     }
 
-    [LoggerMessage(EventId = 8301, Level = LogLevel.Information, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}")]
-    private static partial void LogInformation(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId);
+    /// <summary><c>key=value</c> pairs in key order, with control characters blanked so a detail can't forge a log line.</summary>
+    internal static string FormatDetails(IReadOnlyDictionary<string, string?> details) =>
+        string.Join(", ", details.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair => $"{Clean(pair.Key)}={Clean(pair.Value)}"));
 
-    [LoggerMessage(EventId = 8302, Level = LogLevel.Warning, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}")]
-    private static partial void LogWarning(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId);
+    private static string Clean(string? value) =>
+        value is null ? string.Empty : string.Create(value.Length, value, static (span, text) =>
+        {
+            for (var i = 0; i < text.Length; i++)
+            {
+                span[i] = char.IsControl(text[i]) ? ' ' : text[i];
+            }
+        });
+
+    [LoggerMessage(EventId = 8301, Level = LogLevel.Information, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}: {Details}")]
+    private static partial void LogInformation(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId, string details);
+
+    [LoggerMessage(EventId = 8302, Level = LogLevel.Warning, Message = "Audit {Action} on {TargetType} {TargetId} by {ActorId} in {TenantId}: {Details}")]
+    private static partial void LogWarning(ILogger logger, string action, string targetType, string targetId, Guid? actorId, Guid? tenantId, string details);
 }
 
 /// <summary>

@@ -51,16 +51,16 @@ internal sealed class TestApp : IAsyncDisposable
         {
             ["JeffOps:Authorization:SensitivePermissions:0"] = "policy.write",
             ["JeffOps:Authorization:ImpersonationRefusedPermissions:0"] = "roles.assignments.write",
-            ["JeffOps:Authorization:Cache:SealingKey"] = "test-sealing-key",
+            ["JeffOps:Authorization:Cache:SealingKey"] = "test-sealing-key-of-at-least-32-bytes",
         });
 
         data ??= new FakeDataSource();
         builder.Services.AddSingleton(data);
-        services?.Invoke(builder.Services);
         builder.Services.AddJeffOpsPermissionAuthorization(builder.Configuration);
         builder.Services.AddTransient<IAuthorizationDataSource>(provider => provider.GetRequiredService<FakeDataSource>());
         builder.Services.AddAuthentication(TestAuthentication.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, TestAuthentication>(TestAuthentication.SchemeName, _ => { });
+        services?.Invoke(builder.Services);
 
         var app = builder.Build();
         app.UseAuthentication();

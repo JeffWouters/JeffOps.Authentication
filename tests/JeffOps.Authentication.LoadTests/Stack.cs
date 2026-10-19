@@ -330,6 +330,7 @@ internal sealed class Stack : IAsyncDisposable
             ["JeffOps:Bff:Scopes:2"] = "api",
         });
         builder.Services.AddJeffOpsBff(builder.Configuration);
+        builder.Services.AddTestBffState();
         RouteHttpClients(builder.Services);
         builder.Services.AddReverseProxy()
             .LoadFromMemory(

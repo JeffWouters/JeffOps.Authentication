@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="JeffOps.Authentication.Bff.Tests" />
+    <InternalsVisibleTo Include="JeffOps.Authentication.Bff.Yarp" />
   </ItemGroup>
 
   <ItemGroup>

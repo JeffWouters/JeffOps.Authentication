@@ -5,6 +5,7 @@ using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Bff;
 using JeffOps.Authentication.Bff.Yarp;
 using JeffOps.Authentication.Client.DependencyInjection;
+using JeffOps.Authentication.Tests.Shared;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -128,6 +129,7 @@ public sealed partial class BffTests
         }
 
         bffBuilder.Services.AddJeffOpsBff(bffBuilder.Configuration);
+        bffBuilder.Services.AddTestBffState();
         bffBuilder.Services.PostConfigureAll<HttpClientFactoryOptions>(options =>
             options.HttpMessageHandlerBuilderActions.Add(handler => handler.PrimaryHandler = routes.Clone()));
         bffBuilder.Services.AddReverseProxy()
@@ -318,7 +320,9 @@ public sealed partial class BffTests
         var response = await stack.Browser.SendAsync(logout, TestContext.Current.CancellationToken);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
 
-        body.GetProperty("endSessionUrl").GetString().ShouldStartWith("https://localhost/connect/endsession?id_token_hint=");
+        // The ID token stays in the BFF: JavaScript reads this answer.
+        var endSessionUrl = body.GetProperty("endSessionUrl").GetString();
+        endSessionUrl.ShouldBe("https://localhost/connect/endsession?client_id=spa-bff");
         (await stack.Browser.GetAsync(new Uri("bff/me", UriKind.Relative), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
     }
 
@@ -347,6 +351,82 @@ public sealed partial class BffTests
         await Task.Delay(TimeSpan.FromMilliseconds(5500), TestContext.Current.CancellationToken); // past the 5 s local cache
 
         (await stack.Browser.GetAsync(new Uri("bff/me", UriKind.Relative), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task A_websocket_handshake_with_the_session_cookie_must_come_from_an_allowed_origin()
+    {
+        await using var stack = await StartAsync();
+        await SignInAsync(stack);
+
+        async Task<HttpResponseMessage> HandshakeAsync(HttpClient client, string? origin)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "api/whoami");
+            request.Headers.Connection.Add("Upgrade");
+            request.Headers.Upgrade.Add(new System.Net.Http.Headers.ProductHeaderValue("websocket"));
+            if (origin is not null)
+            {
+                request.Headers.Add("Origin", origin);
+            }
+
+            return await client.SendAsync(request, TestContext.Current.CancellationToken);
+        }
+
+        var crossSite = await HandshakeAsync(stack.Browser, "https://evil.test");
+        crossSite.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await crossSite.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("code").GetString().ShouldBe("websocket_origin_not_allowed");
+        (await HandshakeAsync(stack.Browser, null)).StatusCode.ShouldBe(HttpStatusCode.Forbidden, "a browser always sends Origin on a WebSocket handshake");
+
+        (await HandshakeAsync(stack.Browser, "https://bff.test")).StatusCode.ShouldNotBe(HttpStatusCode.Forbidden, "the BFF's own origin");
+        using var anonymous = new HttpClient(stack.Routes.Clone()) { BaseAddress = new Uri("https://bff.test/") };
+        (await HandshakeAsync(anonymous, "https://evil.test")).StatusCode.ShouldNotBe(HttpStatusCode.Forbidden, "without the cookie nothing is at stake");
+    }
+
+    [Theory]
+    [InlineData("Testing", false, false)]
+    [InlineData("Testing", true, true)]
+    [InlineData("Development", false, true)]
+    public async Task Outside_development_the_bff_needs_a_shared_cache_and_a_protected_key_ring(string environment, bool durable, bool starts)
+    {
+        foreach (var patExchangeOnly in new[] { false, true })
+        {
+            var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { EnvironmentName = environment });
+            builder.WebHost.UseTestServer();
+            builder.Logging.ClearProviders();
+            builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["JeffOps:Bff:Authority"] = "https://localhost/",
+                ["JeffOps:Bff:ClientId"] = "spa-bff",
+                ["JeffOps:Bff:ClientSecret"] = BffSecret,
+                ["JeffOps:PatExchange:TokenEndpoint"] = "https://localhost/connect/token",
+                ["JeffOps:PatExchange:ClientId"] = "gateway",
+                ["JeffOps:PatExchange:ClientSecret"] = BffSecret,
+            });
+            if (patExchangeOnly)
+            {
+                builder.Services.AddJeffOpsPatExchange(builder.Configuration);
+            }
+            else
+            {
+                builder.Services.AddJeffOpsBff(builder.Configuration);
+            }
+
+            if (durable)
+            {
+                builder.Services.AddTestBffState();
+            }
+
+            await using var app = builder.Build();
+            if (starts)
+            {
+                await app.StartAsync(TestContext.Current.CancellationToken);
+            }
+            else
+            {
+                (await Should.ThrowAsync<InvalidOperationException>(() => app.StartAsync(TestContext.Current.CancellationToken)))
+                    .Message.ShouldContain("distributed cache");
+            }
+        }
     }
 
     [Fact]

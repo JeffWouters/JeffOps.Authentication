@@ -1,6 +1,7 @@
 using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.SharedKernel.Results;
 using JeffOps.Authorization.Application.Abstractions;
+using JeffOps.Authorization.Contracts;
 using JeffOps.Authorization.Domain.Management;
 using JeffOps.Authorization.Domain.Permissions;
 using Microsoft.Extensions.Options;
@@ -14,9 +15,25 @@ namespace JeffOps.Authorization.Application.Management;
 public sealed class ManagementGuard(
     HeldPermissions held,
     IApprovalSettingRepository settings,
-    IOptions<ManagementOptions> options)
+    IOptions<ManagementOptions> options,
+    IScopeInstanceOwnership? ownership = null)
 {
     public ManagementOptions Options => options.Value;
+
+    /// <summary>
+    /// Fails when the host's <see cref="IScopeInstanceOwnership"/> says <paramref name="instanceId"/> isn't an instance of
+    /// <paramref name="tenantId"/>. Without one registered, the host vouches for the instance ids it passes.
+    /// </summary>
+    public async Task<Error?> InstanceOutsideTenantAsync(Guid tenantId, string scopeKey, Guid? instanceId, CancellationToken cancellationToken)
+    {
+        if (ownership is null || instanceId is not { } instance
+            || await ownership.TenantOfAsync(scopeKey, instance, cancellationToken).ConfigureAwait(false) == tenantId)
+        {
+            return null;
+        }
+
+        return Error.Failure(ManagementErrors.InvalidScope, $"No '{scopeKey}' {instance} in this tenant.");
+    }
 
     /// <summary>Fails unless <paramref name="caller"/> holds <paramref name="permission"/> in <paramref name="tenantId"/>.</summary>
     public async Task<Error?> RequireAsync(ManagementCaller caller, Guid tenantId, string permission, CancellationToken cancellationToken, string scopeKey = "tenant", Guid? instanceId = null)
@@ -37,6 +54,21 @@ public sealed class ManagementGuard(
         return Permission.GrantsAny(holds, permission)
             ? null
             : Error.Forbidden(ManagementErrors.MissingPermission, $"You don't hold {permission} in this tenant.");
+    }
+
+    /// <summary>Fails unless <paramref name="caller"/> is Root or holds <paramref name="permission"/> in the tenant their session acts in.</summary>
+    public async Task<Error?> RequireInOwnTenantAsync(ManagementCaller caller, string permission, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+
+        if (caller.IsRoot)
+        {
+            return null;
+        }
+
+        return caller.EffectiveTenantId is { } tenant
+            ? await RequireAsync(caller, tenant, permission, cancellationToken).ConfigureAwait(false)
+            : Error.Forbidden(ManagementErrors.NotYourTenant, "Your session acts in no tenant.");
     }
 
     /// <summary>Whether role changes in <paramref name="tenantId"/> need four-eyes approval (tenant ?? global ?? required).</summary>

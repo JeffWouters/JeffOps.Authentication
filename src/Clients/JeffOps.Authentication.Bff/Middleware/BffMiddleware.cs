@@ -47,11 +47,15 @@ public static class BffCookie
 /// CSRF protection: a state-changing request that carries the session cookie, or targets <c>/bff/*</c>, must send the CSRF
 /// header. A cross-site form or image can't add custom headers, and a cross-site fetch that adds one needs a CORS preflight
 /// the BFF doesn't grant (docs/DESIGN.md §16). The back-channel logout endpoint is exempt: the token server calls it, not a
-/// browser.
+/// browser. A WebSocket handshake can't carry the header, so one with the session cookie must come from the BFF's own origin
+/// or one of <see cref="BffOptions.WebSocketOrigins"/>.
 /// </summary>
 public sealed class CsrfMiddleware(RequestDelegate next, IOptions<BffOptions> options)
 {
-    /// <summary>Answers 403 with problem details to a state-changing request missing the CSRF header; otherwise calls the next middleware.</summary>
+    /// <summary>
+    /// Answers 403 with problem details to a state-changing request missing the CSRF header, or to a cookie-authenticated
+    /// WebSocket handshake from another origin; otherwise calls the next middleware.
+    /// </summary>
     public async Task InvokeAsync(HttpContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -61,6 +65,15 @@ public sealed class CsrfMiddleware(RequestDelegate next, IOptions<BffOptions> op
         var stateChanging = !(HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method) || HttpMethods.IsOptions(request.Method) || HttpMethods.IsTrace(request.Method));
         var cookieAuthenticated = request.Cookies.ContainsKey(BffCookie.Name(request, settings));
         var bffEndpoint = request.Path.StartsWithSegments("/bff") && !request.Path.StartsWithSegments(BffPaths.BackchannelLogout);
+
+        if (cookieAuthenticated && IsWebSocketHandshake(request) && !OriginAllowed(request, settings))
+        {
+            await TypedResults.Problem(
+                detail: "WebSocket connections with the session cookie must come from an allowed origin.",
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "websocket_origin_not_allowed" }).ExecuteAsync(context).ConfigureAwait(false);
+            return;
+        }
 
         if (stateChanging && (cookieAuthenticated || bffEndpoint) && !request.Headers.ContainsKey(settings.CsrfHeaderName))
         {
@@ -73,6 +86,26 @@ public sealed class CsrfMiddleware(RequestDelegate next, IOptions<BffOptions> op
 
         await next(context).ConfigureAwait(false);
     }
+
+    private static bool IsWebSocketHandshake(HttpRequest request) =>
+        request.Headers.Upgrade.Any(value => value is not null && value.Contains("websocket", StringComparison.OrdinalIgnoreCase))
+        || string.Equals(request.HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpExtendedConnectFeature>()?.Protocol, "websocket", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The BFF's own origin, or a configured one. A handshake without an <c>Origin</c> header isn't from a browser page we serve.</summary>
+    private static bool OriginAllowed(HttpRequest request, BffOptions settings)
+    {
+        var origin = request.Headers.Origin.ToString();
+        if (string.IsNullOrEmpty(origin) || !Uri.TryCreate(origin, UriKind.Absolute, out var parsed))
+        {
+            return false;
+        }
+
+        return SameOrigin(parsed, $"{request.Scheme}://{request.Host}") || settings.WebSocketOrigins.Any(allowed => SameOrigin(parsed, allowed));
+    }
+
+    private static bool SameOrigin(Uri origin, string other) =>
+        Uri.TryCreate(other, UriKind.Absolute, out var parsed)
+        && string.Equals(origin.GetLeftPart(UriPartial.Authority), parsed.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>

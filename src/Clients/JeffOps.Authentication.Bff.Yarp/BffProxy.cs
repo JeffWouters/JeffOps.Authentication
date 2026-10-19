@@ -41,7 +41,8 @@ public static class BffProxyExtensions
 
     /// <summary>
     /// Exchanges personal access tokens at the edge (docs/DESIGN.md §9): a request with <c>Authorization: Bearer pat_…</c>
-    /// reaches backends with a short-lived JWT instead. Options bind from <see cref="PatExchangeOptions.SectionName"/>.
+    /// reaches backends with a short-lived JWT instead. Like the BFF, it needs a shared distributed cache and a persisted,
+    /// encrypted key ring outside Development. Options bind from <see cref="PatExchangeOptions.SectionName"/>.
     /// </summary>
     public static IServiceCollection AddJeffOpsPatExchange(this IServiceCollection services, IConfiguration configuration)
     {
@@ -55,6 +56,7 @@ public static class BffProxyExtensions
         services.AddDistributedMemoryCache();
         services.AddMemoryCache();
         services.AddDataProtection();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.Extensions.Hosting.IHostedService, Sessions.StateStorageCheck>());
         services.AddHttpClient(PatExchanger.HttpClientName);
         services.TryAddSingleton<PatExchanger>();
         return services;
@@ -224,7 +226,7 @@ public sealed partial class PatExchanger(
         }
     }
 
-    [LoggerMessage(EventId = 9121, Level = LogLevel.Warning, Message = "Exchanging a personal access token failed: the token server is unreachable.")]
+    [LoggerMessage(EventId = 9141, Level = LogLevel.Warning, Message = "Exchanging a personal access token failed: the token server is unreachable.")]
     private static partial void LogUnavailable(ILogger logger, Exception exception);
 
     private sealed record TokenResponse(

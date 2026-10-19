@@ -11,7 +11,7 @@ namespace JeffOps.Authentication.Bff.Sessions;
 /// <param name="Subject">The user (<c>sub</c>); for a derived session, the user of the own session it belongs to.</param>
 /// <param name="AccessToken">The current access token.</param>
 /// <param name="RefreshToken">The current refresh token.</param>
-/// <param name="IdentityToken">The ID token, kept for the end-session request.</param>
+/// <param name="IdentityToken">The ID token, kept server-side to match back-channel logouts by its <c>sid</c>; never sent to the browser.</param>
 /// <param name="AccessExpiresAt">When the access token expires.</param>
 /// <param name="SessionEndsAt">The session's absolute deadline, fixed at sign-in.</param>
 public sealed record BffSession(

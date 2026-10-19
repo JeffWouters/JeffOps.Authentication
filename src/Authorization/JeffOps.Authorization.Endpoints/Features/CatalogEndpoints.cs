@@ -41,7 +41,7 @@ internal static class CatalogEndpoints
 
         var scopes = root.MapGroup(ManagementRoutes.Scopes).WithTags("Scopes");
         scopes.MapGet("/", async (IQueryHandler<ListScopesQuery, IReadOnlyList<ScopeDto>> handler, HttpContext context) =>
-            (await handler.HandleAsync(new ListScopesQuery(), context.RequestAborted).ConfigureAwait(false)).ToHttpResult())
+            (await handler.HandleAsync(new ListScopesQuery(context.Caller()), context.RequestAborted).ConfigureAwait(false)).ToHttpResult())
             .WithName("ListScopes");
 
         scopes.MapPost("/", async (UpsertScopeRequest request, ICommandHandler<UpsertScopeCommand, ScopeDto> handler, HttpContext context) =>
@@ -60,7 +60,7 @@ internal static class CatalogEndpoints
             .WithName("DeleteScope");
 
         root.MapGet(ManagementRoutes.Catalog, async (IQueryHandler<GetCatalogQuery, IReadOnlyList<CatalogEntryDto>> handler, HttpContext context) =>
-            (await handler.HandleAsync(new GetCatalogQuery(), context.RequestAborted).ConfigureAwait(false)).ToHttpResult())
+            (await handler.HandleAsync(new GetCatalogQuery(context.Caller()), context.RequestAborted).ConfigureAwait(false)).ToHttpResult())
             .WithTags("Permissions")
             .WithName("GetPermissionCatalog");
     }

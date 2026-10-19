@@ -44,6 +44,7 @@
   <ItemGroup>
     <Compile Include="..\Shared\TestDatabase.cs" Link="Shared\TestDatabase.cs" />
     <Compile Include="..\Shared\TestKeyRing.cs" Link="Shared\TestKeyRing.cs" />
+    <Compile Include="..\Shared\TestBffState.cs" Link="Shared\TestBffState.cs" />
   </ItemGroup>
 
 </Project>

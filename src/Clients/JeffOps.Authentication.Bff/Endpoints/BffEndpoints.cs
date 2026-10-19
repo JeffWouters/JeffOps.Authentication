@@ -95,7 +95,9 @@ internal static partial class BffEndpoints
 
     /// <summary>
     /// Ends the session (revoking its refresh token) and answers where the browser should go to end the session at the token
-    /// server too: <c>{ "endSessionUrl": … }</c>. A POST with the CSRF header, so another site can't sign the user out.
+    /// server too: <c>{ "endSessionUrl": … }</c>. A POST with the CSRF header, so another site can't sign the user out. The
+    /// URL names this client, not its ID token: tokens never reach JavaScript, and the token server ends the session its own
+    /// sign-in cookie names.
     /// </summary>
     private static async Task<IResult> LogoutAsync(
         HttpContext context,
@@ -107,11 +109,9 @@ internal static partial class BffEndpoints
     {
         var cookie = BffCookie.Name(context.Request, options.Value);
         var actingCookie = BffCookie.ActingName(context.Request, options.Value);
-        string? idToken = null;
         if (context.Request.Cookies.TryGetValue(cookie, out var id) && !string.IsNullOrEmpty(id))
         {
             var own = await store.GetAsync(id, context.RequestAborted).ConfigureAwait(false);
-            idToken = own?.IdentityToken;
 
             // End an impersonation first, while the own session's token can still tell the token server.
             if (context.Request.Cookies.TryGetValue(actingCookie, out var actingId) && !string.IsNullOrEmpty(actingId))
@@ -131,12 +131,7 @@ internal static partial class BffEndpoints
         context.Response.Cookies.Delete(cookie, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
         context.Response.Cookies.Delete(actingCookie, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
 
-        var endSession = new Uri(options.Value.Authority!, "connect/endsession").AbsoluteUri;
-        if (idToken is not null)
-        {
-            endSession += "?id_token_hint=" + Uri.EscapeDataString(idToken);
-        }
-
+        var endSession = new Uri(options.Value.Authority!, "connect/endsession").AbsoluteUri + "?client_id=" + Uri.EscapeDataString(options.Value.ClientId!);
         return TypedResults.Ok(new { endSessionUrl = endSession });
     }
 

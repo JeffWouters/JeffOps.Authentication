@@ -13,12 +13,21 @@ internal static class ScopeMapping
     public static ScopeDto ToDto(this Scope scope) => new(scope.Id, scope.Name, scope.Description, scope.ParentKey, scope.IsBuiltIn);
 }
 
-public sealed record ListScopesQuery;
+/// <summary>The scope hierarchy, for those who may read roles.</summary>
+public sealed record ListScopesQuery(ManagementCaller Caller);
 
-public sealed class ListScopesHandler(IScopeRepository scopes) : IQueryHandler<ListScopesQuery, IReadOnlyList<ScopeDto>>
+public sealed class ListScopesHandler(IScopeRepository scopes, ManagementGuard guard) : IQueryHandler<ListScopesQuery, IReadOnlyList<ScopeDto>>
 {
-    public async Task<Result<IReadOnlyList<ScopeDto>>> HandleAsync(ListScopesQuery query, CancellationToken cancellationToken) =>
-        (await scopes.ListAsync(cancellationToken).ConfigureAwait(false)).Select(scope => scope.ToDto()).ToList();
+    public async Task<Result<IReadOnlyList<ScopeDto>>> HandleAsync(ListScopesQuery query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (await guard.RequireInOwnTenantAsync(query.Caller, guard.Options.Permissions.RolesRead, cancellationToken).ConfigureAwait(false) is { } refused)
+        {
+            return refused;
+        }
+
+        return (await scopes.ListAsync(cancellationToken).ConfigureAwait(false)).Select(scope => scope.ToDto()).ToList();
+    }
 }
 
 /// <summary>Creates or updates a scope (platform administrators). Refuses cycles and changes to built-in scopes.</summary>

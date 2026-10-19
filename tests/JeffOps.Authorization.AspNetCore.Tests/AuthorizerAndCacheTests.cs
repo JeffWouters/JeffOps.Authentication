@@ -7,8 +7,14 @@ using JeffOps.Authorization.Domain.Decisions;
 using JeffOps.Authorization.Domain.Policies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using JeffOps.Authorization.AspNetCore.DependencyInjection;
 using Microsoft.Extensions.Caching.Hybrid;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Internal;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 
 namespace JeffOps.Authorization.AspNetCore.Tests;
 
@@ -145,6 +151,62 @@ public sealed class DecisionCacheTests
             cancellationToken: TestContext.Current.CancellationToken);
 
         (await GetFindingsAsync(app, attacker)).ShouldBe(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task A_genuine_entry_put_back_after_a_revocation_is_rejected()
+    {
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        await using var app = await TestApp.StartAsync(services: services => services.AddSingleton<TimeProvider>(time));
+        var admin = Guid.NewGuid();
+        app.Data.Assign(admin, FakeDataSource.Admin);
+        (await GetFindingsAsync(app, admin)).ShouldBe(HttpStatusCode.OK);
+        var sealedCache = app.Services.GetRequiredService<SealedDecisionCache>();
+        var hybrid = app.Services.GetRequiredService<HybridCache>();
+        var storageKey = sealedCache.StorageKey($"assignments:{admin:N}:{TestApp.TenantId:N}");
+
+        // Someone with write access to the shared cache keeps a copy of the genuine entry from before the revocation.
+        var copy = sealedCache.Seal(storageKey, new[] { new UserAssignmentDto(FakeDataSource.Admin, "tenant", null, null) }, TimeSpan.FromMinutes(1));
+        time.Advance(TimeSpan.FromSeconds(1));
+        app.Data.Assignments.Clear();
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<IIntegrationEventHandler<UserRoleRevokedEvent>>()
+                .HandleAsync(new UserRoleRevokedEvent(admin, TestApp.TenantId, FakeDataSource.Admin), TestContext.Current.CancellationToken);
+        }
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        await hybrid.SetAsync(storageKey, copy, cancellationToken: TestContext.Current.CancellationToken);
+
+        (await GetFindingsAsync(app, admin)).ShouldBe(HttpStatusCode.Forbidden);
+    }
+
+    [Theory]
+    [InlineData("Production", "too-short-sealing-key", false)]
+    [InlineData("Staging", "0123456789abcdef0123456789abcde", false)]
+    [InlineData("Production", "0123456789abcdef0123456789abcdef", true)]
+    [InlineData("Production", null, true)]
+    [InlineData("Development", "too-short-sealing-key", true)]
+    public void A_short_sealing_key_fails_outside_development(string environment, string? key, bool accepted)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IHostEnvironment>(new HostingEnvironment { EnvironmentName = environment });
+        services.AddJeffOpsPermissionAuthorization(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["JeffOps:Authorization:Cache:SealingKey"] = key,
+        }).Build());
+        using var provider = services.BuildServiceProvider();
+
+        var read = () => provider.GetRequiredService<IOptions<PermissionAuthorizationOptions>>().Value;
+
+        if (accepted)
+        {
+            read().ShouldNotBeNull();
+        }
+        else
+        {
+            Should.Throw<OptionsValidationException>(read).Message.ShouldContain("SealingKey");
+        }
     }
 
     [Fact]

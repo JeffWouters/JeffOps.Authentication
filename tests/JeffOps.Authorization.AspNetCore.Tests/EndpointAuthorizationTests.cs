@@ -203,7 +203,7 @@ public sealed class EndpointAuthorizationTests
             settings: new Dictionary<string, string?>
             {
                 ["JeffOps:Authorization:SensitivePermissions:0"] = "policy.write",
-                ["JeffOps:Authorization:Cache:SealingKey"] = "test-sealing-key",
+                ["JeffOps:Authorization:Cache:SealingKey"] = "test-sealing-key-of-at-least-32-bytes",
             },
             services: services => services.AddLogging(logging => logging.AddProvider(logs))))
         {
@@ -252,6 +252,27 @@ public sealed class EndpointAuthorizationTests
         (await SendAsync(app, TestApp.User(user), HttpMethod.Get, $"/workspaces/{workspace}/items")).StatusCode.ShouldBe(HttpStatusCode.OK);
         (await SendAsync(app, TestApp.User(user), HttpMethod.Get, $"/workspaces/{Guid.NewGuid()}/items")).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
         (await SendAsync(app, TestApp.User(user), HttpMethod.Get, "/workspaces/not-a-guid/items")).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task With_an_ownership_port_a_role_grants_nothing_on_another_tenants_instance()
+    {
+        var ours = Guid.NewGuid();
+        var theirs = Guid.NewGuid();
+        var ownership = new FakeOwnership { [ours] = TestApp.TenantId, [theirs] = Guid.NewGuid() };
+        await using var app = await TestApp.StartAsync(services: services => services.AddSingleton<Contracts.IScopeInstanceOwnership>(ownership));
+        var user = Guid.NewGuid();
+        app.Data.Assign(user, FakeDataSource.ItemReader, "tenant");
+
+        (await SendAsync(app, TestApp.User(user), HttpMethod.Get, $"/workspaces/{ours}/items")).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await SendAsync(app, TestApp.User(user), HttpMethod.Get, $"/workspaces/{theirs}/items")).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await SendAsync(app, TestApp.User(user), HttpMethod.Get, $"/workspaces/{Guid.NewGuid()}/items")).StatusCode.ShouldBe(HttpStatusCode.Forbidden, "unknown instances belong to no tenant");
+    }
+
+    private sealed class FakeOwnership : Dictionary<Guid, Guid>, Contracts.IScopeInstanceOwnership
+    {
+        public Task<Guid?> TenantOfAsync(string scopeKey, Guid instanceId, CancellationToken cancellationToken) =>
+            Task.FromResult(TryGetValue(instanceId, out var tenant) ? tenant : (Guid?)null);
     }
 
     [Fact]

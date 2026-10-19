@@ -53,6 +53,11 @@ public sealed class AssignRoleHandler(
                 : $"'{role.Name}' can only be assigned at '{role.MinScopeKey}' or broader.");
         }
 
+        if (await guard.InstanceOutsideTenantAsync(request.TenantId, scopeKey, request.ScopeInstanceId, cancellationToken).ConfigureAwait(false) is { } foreign)
+        {
+            return foreign;
+        }
+
         if (AssignmentRules.ExpiryProblem(role, request.ExpiresAt, now, guard.Options.BreakGlassMaxDuration) is { } expiryProblem)
         {
             return Error.Failure(ManagementErrors.InvalidExpiry, expiryProblem);

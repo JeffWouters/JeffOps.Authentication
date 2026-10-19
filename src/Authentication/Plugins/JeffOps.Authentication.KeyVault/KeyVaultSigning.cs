@@ -29,6 +29,12 @@ public sealed class KeyVaultSigningOptions
 
     /// <summary>How often to check for a new key version.</summary>
     public TimeSpan RefreshInterval { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// The client id of a user-assigned managed identity to reach the vault with, when no <see cref="TokenCredential"/> is
+    /// registered. Null: the system-assigned identity.
+    /// </summary>
+    public string? ManagedIdentityClientId { get; set; }
 }
 
 /// <summary>Registers Azure Key Vault as the source of token signing keys.</summary>
@@ -36,8 +42,10 @@ public static class KeyVaultSigningExtensions
 {
     /// <summary>
     /// Signs tokens with an RSA key in Azure Key Vault or Managed HSM: the private key never leaves the vault. Uses the
-    /// registered <see cref="TokenCredential"/>, or <see cref="DefaultAzureCredential"/>. A new key version is picked up
-    /// without a restart; the previous version stays published so its tokens keep validating.
+    /// registered <see cref="TokenCredential"/>; without one, a <see cref="ManagedIdentityCredential"/> (see
+    /// <see cref="KeyVaultSigningOptions.ManagedIdentityClientId"/>), or <see cref="DefaultAzureCredential"/> in Development
+    /// only, so a production host never signs with whatever developer or environment credential happens to be around. A new
+    /// key version is picked up without a restart; the previous version stays published so its tokens keep validating.
     /// </summary>
     public static AuthenticationBuilder AddKeyVaultSigning(this AuthenticationBuilder builder)
     {
@@ -118,7 +126,7 @@ internal sealed partial class KeyVaultKeyProvider(
     private SigningKey Load(SigningKey? previous)
     {
         var settings = options.Value;
-        _credential ??= services.GetService<TokenCredential>() ?? new DefaultAzureCredential();
+        _credential ??= Credential(services, settings);
         _keyClient ??= new KeyClient(settings.VaultUri, _credential);
 
         KeyVaultKey key = _keyClient.GetKey(settings.KeyName);
@@ -131,6 +139,24 @@ internal sealed partial class KeyVaultKeyProvider(
         var publicKey = key.Key.ToRSA(includePrivateParameters: false);
         var rsa = new RemoteRsa(publicKey, new CryptographyClient(key.Id, _credential));
         return new SigningKey(version, rsa, DateTimeOffset.MinValue);
+    }
+
+    /// <summary>The registered credential; else a managed identity, or the developer credential chain in Development only.</summary>
+    internal static TokenCredential Credential(IServiceProvider services, KeyVaultSigningOptions settings)
+    {
+        if (services.GetService<TokenCredential>() is { } registered)
+        {
+            return registered;
+        }
+
+        if (services.GetService<IHostEnvironment>()?.IsDevelopment() == true)
+        {
+            return new DefaultAzureCredential();
+        }
+
+        return new ManagedIdentityCredential(string.IsNullOrWhiteSpace(settings.ManagedIdentityClientId)
+            ? ManagedIdentityId.SystemAssigned
+            : ManagedIdentityId.FromUserAssignedClientId(settings.ManagedIdentityClientId));
     }
 
     [LoggerMessage(EventId = 8401, Level = LogLevel.Information, Message = "Signing with Key Vault key version {KeyId}.")]

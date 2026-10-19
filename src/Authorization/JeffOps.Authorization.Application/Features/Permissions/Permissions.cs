@@ -78,10 +78,19 @@ public sealed class RegisterPermissionsHandler(
     }
 }
 
-public sealed record GetCatalogQuery;
+/// <summary>The permission catalog, for those who may read roles.</summary>
+public sealed record GetCatalogQuery(ManagementCaller Caller);
 
-public sealed class GetCatalogHandler(PermissionCatalog catalog) : IQueryHandler<GetCatalogQuery, IReadOnlyList<CatalogEntryDto>>
+public sealed class GetCatalogHandler(PermissionCatalog catalog, ManagementGuard guard) : IQueryHandler<GetCatalogQuery, IReadOnlyList<CatalogEntryDto>>
 {
-    public async Task<Result<IReadOnlyList<CatalogEntryDto>>> HandleAsync(GetCatalogQuery query, CancellationToken cancellationToken) =>
-        Result.Success(await catalog.EntriesAsync(cancellationToken).ConfigureAwait(false));
+    public async Task<Result<IReadOnlyList<CatalogEntryDto>>> HandleAsync(GetCatalogQuery query, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (await guard.RequireInOwnTenantAsync(query.Caller, guard.Options.Permissions.RolesRead, cancellationToken).ConfigureAwait(false) is { } refused)
+        {
+            return refused;
+        }
+
+        return Result.Success(await catalog.EntriesAsync(cancellationToken).ConfigureAwait(false));
+    }
 }

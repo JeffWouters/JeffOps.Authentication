@@ -68,6 +68,45 @@ public sealed class GroupAssignmentTests
         (await CodeOf(response)).ShouldBe("privilege_escalation");
     }
 
+    [Fact]
+    public async Task Revoking_a_groups_privileged_role_needs_its_permissions()
+    {
+        await using var host = await StartAsync();
+        var carol = Guid.NewGuid();
+        var assigners = await host.ReadAsync<RoleDto>(await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Roles,
+            new CreateRoleRequest("Assigners", ["authorization.assignments.read", "authorization.assignments.write"])));
+        (await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Assignments, new AssignRoleRequest(carol, assigners.Id, TenantA))).StatusCode.ShouldBe(HttpStatusCode.OK);
+        var admin = (await host.ReadAsync<List<RoleDto>>(await host.GetAsync(RootUser(), ManagementRoutes.Roles))).Single(role => role.Name == TenantAdmin);
+        var grant = await host.ReadAsync<GroupAssignmentDto>(await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.GroupAssignments, new AssignGroupRoleRequest(Engineers, admin.Id, TenantA)));
+
+        var response = await host.SendAsync(User(carol), HttpMethod.Delete, $"{ManagementRoutes.GroupAssignments}/{grant.Id}");
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeOf(response)).ShouldBe("privilege_escalation");
+    }
+
+    [Fact]
+    public async Task A_grantor_who_joins_the_group_does_not_get_permissions_they_lack()
+    {
+        await using var host = await StartAsync();
+        var carol = Guid.NewGuid();
+        var assigners = await host.ReadAsync<RoleDto>(await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Roles,
+            new CreateRoleRequest("Assigners", ["authorization.assignments.read", "authorization.assignments.write"])));
+        (await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Assignments, new AssignRoleRequest(carol, assigners.Id, TenantA))).StatusCode.ShouldBe(HttpStatusCode.OK);
+        var readers = await host.ReadAsync<RoleDto>(await host.SendAsync(RootUser(), HttpMethod.Post, ManagementRoutes.Roles, new CreateRoleRequest("Readers", ["billing.invoices.read"])));
+        await MembersAsync(host, [Dana]);
+
+        // Granting a group she isn't in is allowed; joining it afterwards would be a grant to herself.
+        (await host.SendAsync(User(carol), HttpMethod.Post, ManagementRoutes.GroupAssignments, new AssignGroupRoleRequest(Engineers, readers.Id, TenantA)))
+            .StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await host.GetAsync(User(Dana), "/invoices")).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        await MembersAsync(host, [Dana, carol], added: [carol]);
+
+        (await host.GetAsync(User(carol), "/invoices")).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await host.ReadAsync<List<GroupAssignmentDto>>(await host.GetAsync(RootUser(), ManagementRoutes.GroupAssignments))).ShouldBeEmpty();
+    }
+
     private static async Task MembersAsync(ManagementHost host, Guid[] members, Guid[]? added = null, Guid[]? removed = null)
     {
         await using var scope = host.Services.CreateAsyncScope();

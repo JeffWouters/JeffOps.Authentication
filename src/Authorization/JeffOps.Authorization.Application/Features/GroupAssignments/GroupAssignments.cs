@@ -53,6 +53,11 @@ public sealed class AssignGroupRoleHandler(
             return Error.Failure(ManagementErrors.InvalidScope, $"'{role.Name}' can't be assigned at '{scopeKey}'.");
         }
 
+        if (await guard.InstanceOutsideTenantAsync(request.TenantId, scopeKey, request.ScopeInstanceId, cancellationToken).ConfigureAwait(false) is { } foreign)
+        {
+            return foreign;
+        }
+
         if (AssignmentRules.ExpiryProblem(role, request.ExpiresAt, now, guard.Options.BreakGlassMaxDuration) is { } expiryProblem)
         {
             return Error.Failure(ManagementErrors.InvalidExpiry, expiryProblem);
@@ -87,11 +92,14 @@ public sealed class AssignGroupRoleHandler(
 
 public sealed record RevokeGroupAssignmentCommand(ManagementCaller Caller, Guid AssignmentId);
 
+/// <summary>Revokes a group's role. Revoking a privileged role needs the same ceiling as granting it.</summary>
 public sealed class RevokeGroupAssignmentHandler(
     IGroupAssignmentRepository assignments,
     IGroupMemberRepository members,
+    IRoleRepository roles,
     IUnitOfWork unitOfWork,
     ManagementGuard guard,
+    HeldPermissions held,
     ManagementAudit audit,
     IEventPublisher events,
     TimeProvider time) : ICommandHandler<RevokeGroupAssignmentCommand>
@@ -110,6 +118,17 @@ public sealed class RevokeGroupAssignmentHandler(
         if (await guard.RequireAsync(caller, assignment.TenantId, guard.Options.Permissions.AssignmentsWrite, cancellationToken).ConfigureAwait(false) is { } refused)
         {
             return refused;
+        }
+
+        if (!caller.IsRoot
+            && await roles.FindAsync(assignment.RoleId, cancellationToken).ConfigureAwait(false) is { } role
+            && AssignmentRules.IsPrivileged(role, guard.Options.PrivilegedPermissions()))
+        {
+            var holds = await held.OfCallerAsync(caller, assignment.TenantId, "tenant", null, cancellationToken).ConfigureAwait(false);
+            if (AssignmentRules.Uncovered(holds, role.PermissionCodes()).Count > 0)
+            {
+                return Error.Forbidden(ManagementErrors.Escalation, $"You can't revoke '{role.Name}': it carries permissions you don't hold.");
+            }
         }
 
         assignments.Remove(assignment);

@@ -140,6 +140,31 @@ public sealed class ForwardedHeadersTests
         }));
 
     [Fact]
+    public async Task Outside_development_trusted_hops_need_the_proxies_listed() =>
+        (await Should.ThrowAsync<OptionsValidationException>(() => Host.StartAsync(new Dictionary<string, string?>
+        {
+            ["JeffOps:ForwardedHeaders:TrustedProxyHops"] = "1",
+        }))).Message.ShouldContain("KnownProxies");
+
+    [Theory]
+    [InlineData("JeffOps:ForwardedHeaders:KnownProxies:0", "10.0.0.5")]
+    [InlineData("JeffOps:ForwardedHeaders:KnownNetworks:0", "10.0.0.0/8")]
+    public async Task Listed_proxies_satisfy_trusted_hops(string key, string value)
+    {
+        await using var app = await Host.StartAsync(new Dictionary<string, string?>
+        {
+            ["JeffOps:ForwardedHeaders:TrustedProxyHops"] = "1",
+            [key] = value,
+        });
+    }
+
+    [Fact]
+    public async Task Development_trusts_hops_without_listed_proxies()
+    {
+        await using var app = await Host.StartAsync(new Dictionary<string, string?> { ["JeffOps:ForwardedHeaders:TrustedProxyHops"] = "1" }, environment: "Development");
+    }
+
+    [Fact]
     public void Trusted_hops_enable_for_and_proto_with_the_known_proxies()
     {
         var options = new ForwardedHeadersOptions();
@@ -164,6 +189,28 @@ public sealed class ForwardedHeadersTests
 
         options.ForwardedHeaders.ShouldBe(Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.None);
         options.KnownProxies.ShouldBeEmpty();
+    }
+}
+
+public sealed class AllowedHostsTests
+{
+    [Theory]
+    [InlineData("*")]
+    [InlineData("auth.example.com;*")]
+    public async Task Outside_development_any_host_fails_startup(string allowedHosts) =>
+        (await Should.ThrowAsync<OptionsValidationException>(() => Host.StartAsync(Host.NoProxy.With("AllowedHosts", allowedHosts))))
+            .Message.ShouldContain("AllowedHosts");
+
+    [Fact]
+    public async Task Named_hosts_are_accepted()
+    {
+        await using var app = await Host.StartAsync(Host.NoProxy.With("AllowedHosts", "auth.example.com"));
+    }
+
+    [Fact]
+    public async Task Development_accepts_any_host()
+    {
+        await using var app = await Host.StartAsync(Host.NoProxy.With("AllowedHosts", "*"), environment: "Development");
     }
 }
 

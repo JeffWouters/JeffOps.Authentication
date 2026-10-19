@@ -19,9 +19,9 @@ public static class BffServiceCollectionExtensions
     /// <summary>
     /// Adds the backend-for-frontend (docs/DESIGN.md §9.1): a confidential OpenID Connect client of the token server (code
     /// flow with PKCE via the OpenIddict client), server-side sessions in <see cref="Microsoft.Extensions.Caching.Distributed.IDistributedCache"/>
-    /// protected with Data Protection, single-flight token refresh, and back-channel logout. Register a distributed cache
-    /// (Redis in production) and a shared Data Protection key ring for multiple replicas.
-    /// Options bind from <see cref="BffOptions.SectionName"/>.
+    /// protected with Data Protection, single-flight token refresh, and back-channel logout. Outside Development, startup
+    /// fails without a distributed cache other than the in-memory one (Redis in production) and a persisted, encrypted Data
+    /// Protection key ring. Options bind from <see cref="BffOptions.SectionName"/>.
     /// </summary>
     public static IServiceCollection AddJeffOpsBff(this IServiceCollection services, IConfiguration configuration)
     {
@@ -39,6 +39,7 @@ public static class BffServiceCollectionExtensions
         services.AddDistributedMemoryCache();
         services.AddMemoryCache();
         services.AddDataProtection();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, StateStorageCheck>());
         services.TryAddSingleton<BffSessionStore>();
         services.TryAddSingleton<BffSessionManager>();
         services.TryAddSingleton<DerivedSessionManager>();

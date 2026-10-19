@@ -165,6 +165,7 @@ public sealed class TestTokenIssuer : IDisposable
         var now = _time.GetUtcNow().UtcDateTime;
         return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
+            TokenType = "at+jwt",
             Issuer = Issuer,
             Audience = audience ?? Audience,
             Subject = new ClaimsIdentity(principal.Claims(Names)),

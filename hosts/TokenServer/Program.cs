@@ -7,6 +7,12 @@ using JeffOps.Security.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// The request host builds absolute URLs, so outside Development the host names are explicit ('*' fails in AddJeffOpsSecurity).
+if (!builder.Environment.IsDevelopment() && string.IsNullOrWhiteSpace(builder.Configuration["AllowedHosts"]))
+{
+    throw new InvalidOperationException("Set AllowedHosts to the host names this service answers to.");
+}
+
 // Hardening baseline and the key ring that protects token keys at rest (docs/DESIGN.md §16).
 builder.Services.AddJeffOpsSecurity(builder.Configuration);
 builder.Services.AddJeffOpsDataProtection(builder.Configuration);

@@ -170,6 +170,7 @@ public sealed class DpopResourceServerTests
 
         return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
+            TokenType = "at+jwt",
             Issuer = Issuer,
             Audience = "api",
             Claims = claims,
