@@ -352,6 +352,20 @@ internal sealed class Stack : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// One pruning pass with every spent token eligible (as the store maintenance does once they pass their retention), timed:
+    /// what a pass costs on the rows a run left behind.
+    /// </summary>
+    public async Task<(long Tokens, long Authorizations, TimeSpan Elapsed)> PruneSpentAsync()
+    {
+        await using var scope = TokenServer.Services.CreateAsyncScope();
+        var threshold = DateTimeOffset.UtcNow.AddDays(1);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var tokens = await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictTokenManager>().PruneAsync(threshold);
+        var authorizations = await scope.ServiceProvider.GetRequiredService<OpenIddict.Abstractions.IOpenIddictAuthorizationManager>().PruneAsync(threshold);
+        return (tokens, authorizations, clock.Elapsed);
+    }
+
     // ---- Users and sessions --------------------------------------------------------------------------------------------
 
     /// <summary>A user of the tenant with the order reader role (so the API allows them), signed in nowhere yet.</summary>

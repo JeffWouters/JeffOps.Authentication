@@ -8,7 +8,7 @@ namespace JeffOps.Authentication.LoadTests;
 /// <summary>
 /// The load harness (docs/DESIGN.md §20). Options: --scenario NAME|all (mixed, for soak runs, only by name), --users N, --duration SECONDS, --warmup SECONDS,
 /// --logging (format every log message at Information, as a host's default configuration does), --directory-latency MS,
-/// --database-latency MS (SQLite only), --report PATH. The database is SQLite, or SQL Server with JEFFOPS_TEST_DATABASE=SqlServer.
+/// --database-latency MS (SQLite only), --report PATH, --prune (after the run, one timed pruning pass with every spent row eligible). The database is SQLite, or SQL Server with JEFFOPS_TEST_DATABASE=SqlServer.
 /// </summary>
 public static class Program
 {
@@ -77,6 +77,14 @@ public static class Program
 
             details.AppendLine().AppendLine("Timeline (s: working set MB / heap MB): " + string.Join(", ", runtime.Timeline.Select(point => $"{point.Second}: {point.WorkingSetMb}/{point.HeapMb}")));
             details.AppendLine();
+        }
+
+        if (args.Contains("--prune"))
+        {
+            var before = await stack.RowCountsAsync();
+            var (tokens, authorizations, elapsed) = await stack.PruneSpentAsync();
+            report.AppendLine().AppendLine(CultureInfo.InvariantCulture,
+                $"Prune pass (every spent row eligible): {before["tokens"]} tokens and {before["authorizations"]} authorizations before; removed {tokens} and {authorizations} in {elapsed.TotalMilliseconds:F0} ms");
         }
 
         var categories = FormattingLoggerProvider.ByCategory.IsEmpty ? ""

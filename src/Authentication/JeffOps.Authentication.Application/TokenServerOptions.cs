@@ -59,6 +59,19 @@ public sealed class TokenServerOptions
     public bool RequireDpopNonce { get; set; }
 
     /// <summary>
+    /// How long tokens and authorizations that can no longer be used (expired, redeemed, revoked, or of an ended
+    /// authorization) are kept before they are pruned. Never less than <see cref="SessionLifetime"/>: a redeemed refresh token
+    /// stays while it could be presented, so its reuse is still recognised. Valid tokens are never pruned. Default: 14 days.
+    /// </summary>
+    public TimeSpan PruneAfter { get; set; } = TimeSpan.FromDays(14);
+
+    /// <summary>
+    /// How often each instance prunes the token store, after a random first delay of up to five minutes. Zero disables
+    /// pruning (for hosts that prune the store themselves). Default: 1 hour.
+    /// </summary>
+    public TimeSpan PruneInterval { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
     /// The grant type of the extension grant <paramref name="name"/>: <c>{ExtensionGrantNamespace}:{name}</c>, or the name itself
     /// when it is already a URN (standard grants such as RFC 7523's JWT bearer grant).
     /// </summary>

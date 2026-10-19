@@ -86,6 +86,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddSingleton<ClientSnapshots>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());
         services.AddHostedService<KeyRotationService>();
+        services.AddHostedService<StoreMaintenance>();
 
         services.AddOpenIddict()
             .AddCore(core =>
@@ -241,6 +242,11 @@ public static class AuthenticationServiceCollectionExtensions
             if (options.SessionLifetime <= TimeSpan.Zero || options.AccessTokenLifetime <= TimeSpan.Zero)
             {
                 failures.Add("Session and access-token lifetimes must be positive.");
+            }
+
+            if (options.PruneAfter < TimeSpan.Zero || options.PruneInterval < TimeSpan.Zero)
+            {
+                failures.Add("PruneAfter and PruneInterval can't be negative (a zero PruneInterval disables pruning).");
             }
 
             if (options.Pat.MaxLifetime <= TimeSpan.Zero || string.IsNullOrWhiteSpace(options.Pat.Prefix))
