@@ -702,7 +702,7 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Passwords** (D10 decided): PBKDF2-HMAC-SHA512, 210,000 iterations (OWASP 2023), 16-byte salt, format `v2.{iterations}.{salt}.{key}`; `v1` (PBKDF2-SHA256) accepted for imports; both rehashed transparently when the format or iteration count is below current. Length-only rules (NIST SP 800-63B, default ≥ 12). Unknown emails, accounts without a password and wrong passwords answer identically after identical work.
 - **Lockout** (I5): progressive — 3 free failures, then 2 s doubling per failure up to 15 min; password and second-factor failures count together; a locked account still spends the hashing work.
 - **Email flows**: verification and reset tokens are 256-bit, stored as SHA-256, single use, superseded by newer ones; registration, resend and forgot-password are enumeration-safe (an already-registered email gets an "already registered" email instead). A reset proves control of the email and lifts a lockout. `IAccountEmailSender` is the host's port; the default only logs links in Development.
-- **Second factor**: RFC 6238 TOTP (SHA-1, 30 s, 6 digits, ±1 step, replay-protected by last accepted step), secret protected with Data Protection; 10 hashed single-use recovery codes. The password step leaves a 5-minute Data-Protected cookie; the code step completes the sign-in. `amr`: `pwd` / `pwd otp mfa`.
+- **Second factor**: RFC 6238 TOTP (SHA-1, 30 s, 6 digits, ±1 step, replay-protected by last accepted step), secret protected with Data Protection; 10 hashed single-use recovery codes. The password step leaves a 5-minute Data-Protected `__Host-` cookie bound to the security stamp; the code step completes the sign-in. `amr`: `pwd` / `pwd otp mfa`.
 - **Passkeys** through ASP.NET Core Identity's WebAuthn (`PasskeyHandler<T>` with a narrow `IUserPasskeyStore` over our stores; nothing else of Identity). Registration needs a stepped-up session; sign-in is passwordless (`amr`: `hwk`/`swk` + `user mfa` when user-verified). Ceremony state lives in a 5-minute Data-Protected cookie. Configure `PasskeyServerDomain` and `PasskeyAllowedOrigins` explicitly in production.
 - **Hosted UI**: the login page shows a password form (with antiforgery) when the email has no federated provider; `account/login/code` takes the authenticator or a recovery code. Credential management is a JSON API under `account/local/manage/*` for the signed-in user's own session (never under impersonation, delegation or PAT tokens).
 - **Events**: every credential change is audited and the user is notified (`INotifier`).
@@ -1050,6 +1050,93 @@ Non-negotiable defaults. Each has a test.
 - **Suspended or deleted tenants** (`TenantInfo.AcceptsSessions` false, or unknown): their SCIM tokens stop working, their
   own providers are gone, and their verified domains admit and claim no one. An SSO-only policy keeps refusing other
   sign-ins under those domains.
+
+### 16.2 As built (2026-10 hardening, low findings)
+
+**Token server**
+- **PKCE** accepts S256 only; plain, or a challenge without a method, is refused, and discovery lists S256 alone.
+- **Client assertions** (`private_key_jwt`) authenticate one request: the `jti` is kept in the replay cache until the
+  assertion expires, and an assertion without one is refused. Workload identity tokens are presented again by their
+  platforms, so they aren't one-time; `FederatedCredential.MaxTokenLifetime` (2 hours) caps how long one is accepted.
+- **Device flow:** approving a code respects the client's provider list, as the authorize endpoint does.
+- **Sign-out:** `connect/endsession` signs out at once only with an `id_token_hint` for this very session, a navigation from
+  this site (`Sec-Fetch-Site`), or the confirmation page (`account/logout`) posted back with antiforgery; anything else
+  shows that page, so another site can't sign users out with a link. After signing out, the session's access tokens no
+  longer reach the account APIs and no longer act as actor tokens.
+- **Placeholder secrets:** outside Development, a client secret containing a sample marker (`development`, `replace`,
+  `changeme`, `placeholder`, `example`) fails startup.
+- Migrations and seeding run before key rotation and store maintenance start.
+
+**Delegation and authorization**
+- An impersonation token never carries `step_up` (D29), so it can't take step-up actions as the target.
+  `ImpersonationRefusedPermissions` is empty by default, and resource services log a startup warning until it is set.
+- `RefuseUnderImpersonation()` and `RequireStepUp()` apply even on a route that checks no permission.
+- Impersonation is recognised by the configured names of `act`, `act_kind` and `grant_id`; `ImpersonationMarkers` only
+  adds further marker claims.
+- A user who is Root in any membership can't be impersonated (checked at request and at every mint). A partner
+  impersonates in a managed tenant only at Tenant level or above in its own tenant, as for tenant switch, checked live.
+- Root doesn't hold `ExplicitGrantPermissions` (default `auth.impersonation.breakglass`) by being Root; it needs a role
+  grant. Platform mints re-read the actor's Root standing from the tenant directory.
+- Delegation audit records name who took each step (approver, denier, ender, revoker); events carry `ChangedBy`.
+  Impersonating in a lockbox tenant starts and records the tenant-access grant; mint audits record client, scopes and
+  lockbox grant.
+- Impersonation and tenant-switch mints never issue an ID token (`openid` is dropped).
+- `perm` claims count only on service tokens (`lvl=Service`).
+
+**Local accounts**
+- The login form answers a locked account like a wrong password (the lockout still applies), and its redirects never carry
+  the email address. Registration, verification and reset emails are queued and sent in the background
+  (`IAccountMailQueue`), so those answers take as long for addresses without an account.
+- Step-up counts only while the multi-factor sign-in is recent (`Mfa:StepUpMaxAge`, 15 minutes; RFC 9470 `max_age`):
+  tokens carry `step_up` only within that age of `auth_time`, and the local credential APIs check `auth_time` and challenge
+  with `max_age`.
+- Recovery codes carry 80 random bits (16 base32 characters in groups of four). Codes issued earlier keep working until
+  used or regenerated.
+- Local self-registration follows the external sign-in domain policy: outside Development it is closed unless
+  `Federation:OpenRegistration` is on or the address is in `Federation:AllowedEmailDomains` (which admits only while
+  `LocalAccounts:RequireVerifiedEmail` is on).
+- The second-factor and passkey-state cookies are `__Host-` prefixed over HTTPS; the second-factor cookie is bound to the
+  credential's security stamp, so a password change or reset ends a pending second-factor step.
+- A password reset that verifies the email removes the authenticator, recovery codes and passkeys enrolled before it.
+  Passkey sign-in honours `RequireVerifiedEmail` for accounts without an external login.
+
+**Enterprise and federation**
+- SCIM group announcements and audit records are written only after the change is saved; authorization applies a group
+  announcement only when its version is newer than the last applied.
+- A SCIM token can be given an expiry at creation. Every SCIM write is audited (`scim.user_*`, `scim.group_*`,
+  `scim.account_linked`).
+- An account records whether an operator disabled it. Provisioning re-enables only accounts it disabled itself; an
+  operator's disable is audited and stands until an operator lifts it.
+- Provisioned email addresses must be plain addresses (dot-atom, ASCII host name); anything else is a SCIM 400
+  `invalidValue`.
+- The first sign-in through a tenant's provider claims the account the tenant's provisioning is linked to, even when an
+  older account with the same address exists.
+- SSO-only is checked against both the address a provider reports and the linked account's own address.
+- Requests to tenant-supplied URLs never go through a proxy. IPv6 addresses that carry an IPv4 address (NAT64, 6to4) are
+  judged by that address; Teredo, benchmarking (198.18.0.0/15), documentation and other special-use ranges are refused.
+- A tenant provider answers only at its canonical (lower-case) name.
+- Encrypted SAML assertions must use RSA-OAEP key transport and AES-GCM, checked before anything is decrypted. RSA
+  PKCS#1 v1.5 is always refused; AES-CBC only where `AllowCbcEncryption` is set for a provider that can't use GCM.
+- A tenant OIDC provider's `error` parameter is logged only as a known OAuth error code (`other` otherwise).
+
+**Authorization management, clients and hosts**
+- A new role's permissions wait for four-eyes approval when approval is on. Group revokes need the privileged ceiling,
+  and a grantor joining a group re-runs the self-grant check. Policy simulation needs Root or `policies.write`; the
+  catalog and scopes need `roles.read`. Hosts can tie scope instances to tenants through the optional
+  `IScopeInstanceOwnership` port; without it, handlers must check object ownership themselves.
+- The decision cache's sealing key must be at least 32 bytes outside Development, and entries sealed before an
+  invalidation are refused.
+- Resource services accept only `at+jwt` access tokens: an ID token is never a bearer credential. Audiences name
+  resources, not clients.
+- The BFF keeps the ID token server-side: `bff/logout` answers `/bff/logout/end`, which sends the browser to the token
+  server with the session's ID token as `id_token_hint` (from a two-minute, Data-Protected cookie, used once). WebSocket
+  handshakes carrying the session cookie need an allowed `Origin`. Outside Development the BFF and PAT exchange need a
+  durable distributed cache and a persisted, encrypted key ring.
+- Outside Development, trusted forwarded-header hops need listed proxies or networks, and `AllowedHosts: *` fails startup.
+  The reference host keeps development-only settings in `appsettings.Development.json`.
+- Log event ids are unique (an architecture test enforces it), and the default audit sink logs record details.
+- Key Vault signs with a managed identity outside Development (`ManagedIdentityClientId`, else `AZURE_CLIENT_ID`, else
+  the system-assigned identity), never the full `DefaultAzureCredential` chain.
 
 ---
 

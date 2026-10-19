@@ -212,8 +212,10 @@ public static class BffPaths
     public const string Login = "/bff/login";
     /// <summary>The redirect URI the token server returns to; it creates the session and sets the session cookie.</summary>
     public const string Callback = "/bff/callback";
-    /// <summary>Ends the session (a POST with the CSRF header) and answers the token server's end-session URL.</summary>
+    /// <summary>Ends the session (a POST with the CSRF header) and answers where the browser goes next (<see cref="EndSession"/>).</summary>
     public const string Logout = "/bff/logout";
+    /// <summary>Sends the browser on to the token server's end-session endpoint, naming the session with its ID token.</summary>
+    public const string EndSession = "/bff/logout/end";
     /// <summary>Answers the signed-in user's claims (<see cref="BffOptions.UserClaims"/>).</summary>
     public const string Me = "/bff/me";
 

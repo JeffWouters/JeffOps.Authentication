@@ -32,7 +32,7 @@ public sealed class KeyVaultSigningOptions
 
     /// <summary>
     /// The client id of a user-assigned managed identity to reach the vault with, when no <see cref="TokenCredential"/> is
-    /// registered. Null: the system-assigned identity.
+    /// registered. Null: the <c>AZURE_CLIENT_ID</c> setting (as Azure.Identity reads it), else the system-assigned identity.
     /// </summary>
     public string? ManagedIdentityClientId { get; set; }
 }
@@ -154,10 +154,16 @@ internal sealed partial class KeyVaultKeyProvider(
             return new DefaultAzureCredential();
         }
 
-        return new ManagedIdentityCredential(string.IsNullOrWhiteSpace(settings.ManagedIdentityClientId)
-            ? ManagedIdentityId.SystemAssigned
-            : ManagedIdentityId.FromUserAssignedClientId(settings.ManagedIdentityClientId));
+        return new ManagedIdentityCredential(ManagedIdentityClientId(services, settings) is { } clientId
+            ? ManagedIdentityId.FromUserAssignedClientId(clientId)
+            : ManagedIdentityId.SystemAssigned);
     }
+
+    /// <summary>The user-assigned identity to use: the configured one, else <c>AZURE_CLIENT_ID</c>; null for the system-assigned one.</summary>
+    internal static string? ManagedIdentityClientId(IServiceProvider services, KeyVaultSigningOptions settings) =>
+        !string.IsNullOrWhiteSpace(settings.ManagedIdentityClientId) ? settings.ManagedIdentityClientId
+        : services.GetService<Microsoft.Extensions.Configuration.IConfiguration>()?["AZURE_CLIENT_ID"] is { Length: > 0 } fromEnvironment ? fromEnvironment
+        : null;
 
     [LoggerMessage(EventId = 8401, Level = LogLevel.Information, Message = "Signing with Key Vault key version {KeyId}.")]
     private static partial void LogNewVersion(ILogger logger, string keyId);

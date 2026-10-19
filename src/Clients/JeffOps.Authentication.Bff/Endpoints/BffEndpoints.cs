@@ -2,9 +2,11 @@ using JeffOps.Authentication.Bff.Middleware;
 using JeffOps.Authentication.Bff.Sessions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -28,6 +30,7 @@ internal static partial class BffEndpoints
         group.MapGet(BffPaths.Login, Login);
         group.MapMethods(BffPaths.Callback, [HttpMethods.Get, HttpMethods.Post], CallbackAsync);
         group.MapPost(BffPaths.Logout, LogoutAsync);
+        group.MapGet(BffPaths.EndSession, EndSession);
         group.MapGet(BffPaths.Me, MeAsync);
         group.MapGet(BffPaths.Token, TokenAsync);
         group.MapPost(BffPaths.BackchannelLogout, BackchannelLogoutAsync).DisableAntiforgery();
@@ -95,9 +98,10 @@ internal static partial class BffEndpoints
 
     /// <summary>
     /// Ends the session (revoking its refresh token) and answers where the browser should go to end the session at the token
-    /// server too: <c>{ "endSessionUrl": … }</c>. A POST with the CSRF header, so another site can't sign the user out. The
-    /// URL names this client, not its ID token: tokens never reach JavaScript, and the token server ends the session its own
-    /// sign-in cookie names.
+    /// server too: <c>{ "endSessionUrl": "/bff/logout/end" }</c>. A POST with the CSRF header, so another site can't sign the
+    /// user out. The session's ID token waits in a short-lived, Data-Protected cookie for <see cref="BffPaths.EndSession"/>,
+    /// which sends it to the token server as <c>id_token_hint</c>: tokens never reach JavaScript, and the token server signs
+    /// the user out without asking, because the request proves which session it means.
     /// </summary>
     private static async Task<IResult> LogoutAsync(
         HttpContext context,
@@ -112,6 +116,13 @@ internal static partial class BffEndpoints
         if (context.Request.Cookies.TryGetValue(cookie, out var id) && !string.IsNullOrEmpty(id))
         {
             var own = await store.GetAsync(id, context.RequestAborted).ConfigureAwait(false);
+            if (own?.IdentityToken is { } identityToken)
+            {
+                // A session cookie: the sealed value expires by itself.
+                var endSessionCookie = BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch);
+                endSessionCookie.Expires = null;
+                context.Response.Cookies.Append(EndSessionCookie(context.Request), EndSessionProtector(context).Protect(identityToken, EndSessionLifetime), endSessionCookie);
+            }
 
             // End an impersonation first, while the own session's token can still tell the token server.
             if (context.Request.Cookies.TryGetValue(actingCookie, out var actingId) && !string.IsNullOrEmpty(actingId))
@@ -131,9 +142,41 @@ internal static partial class BffEndpoints
         context.Response.Cookies.Delete(cookie, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
         context.Response.Cookies.Delete(actingCookie, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
 
-        var endSession = new Uri(options.Value.Authority!, "connect/endsession").AbsoluteUri + "?client_id=" + Uri.EscapeDataString(options.Value.ClientId!);
-        return TypedResults.Ok(new { endSessionUrl = endSession });
+        return TypedResults.Ok(new { endSessionUrl = BffPaths.EndSession });
     }
+
+    private static readonly TimeSpan EndSessionLifetime = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Sends the browser to the token server's end-session endpoint, with the ID token of the session just ended (from the
+    /// cookie <see cref="LogoutAsync"/> left, used once) as <c>id_token_hint</c>. Without one, the token server asks the
+    /// user to confirm.
+    /// </summary>
+    private static IResult EndSession(HttpContext context, IOptions<BffOptions> options)
+    {
+        var endSession = new Uri(options.Value.Authority!, "connect/endsession").AbsoluteUri + "?client_id=" + Uri.EscapeDataString(options.Value.ClientId!);
+        var name = EndSessionCookie(context.Request);
+        if (context.Request.Cookies.TryGetValue(name, out var sealedToken) && !string.IsNullOrEmpty(sealedToken))
+        {
+            context.Response.Cookies.Delete(name, BffCookie.Options(context.Request, DateTimeOffset.UnixEpoch));
+            try
+            {
+                endSession += "&id_token_hint=" + Uri.EscapeDataString(EndSessionProtector(context).Unprotect(sealedToken));
+            }
+            catch (System.Security.Cryptography.CryptographicException)
+            {
+                // Expired or not ours: the token server asks the user instead.
+            }
+        }
+
+        context.Response.Headers.CacheControl = "no-store";
+        return Results.Redirect(endSession);
+    }
+
+    private static string EndSessionCookie(HttpRequest request) => request.IsHttps ? "__Host-jeffops-bff-logout" : "jeffops-bff-logout";
+
+    private static ITimeLimitedDataProtector EndSessionProtector(HttpContext context) =>
+        context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("JeffOps.Bff.EndSession.v1").ToTimeLimitedDataProtector();
 
     /// <summary>The signed-in user's claims (from the access token), or 401.</summary>
     private static async Task<IResult> MeAsync(HttpContext context, BffSessionManager sessions, IOptions<BffOptions> options)

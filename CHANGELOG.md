@@ -42,6 +42,13 @@ First public preview (`0.1.0-alpha`).
   (`JeffOps:DataProtection:KeyDirectory` is new). BFF and PAT cache entries are bound to their keys: BFF users sign in once
   more after upgrading. DPoP proofs may be dated at most a minute ahead, with a per-key quota at resource services. CI pins
   actions to commits, restores from lock files and nuget.org only, releases only tags on `main`, and attests provenance.
+- PKCE is S256 only; client assertions are single-use; end-session signs out without asking only for a request that names
+  the session (`id_token_hint`), otherwise the user confirms. Impersonation tokens never carry `step_up` and get no ID
+  token; step-up expires with `Mfa:StepUpMaxAge`. Local registration follows the email-domain policy, recovery codes are
+  80-bit, and a reset that verifies an email removes earlier second factors. SCIM tokens can expire and SCIM writes are
+  audited; SAML assertions must be encrypted with RSA-OAEP and AES-GCM. Resource services accept only `at+jwt` access
+  tokens. Outside Development, `AllowedHosts: *`, unlisted proxy hops, short decision-cache keys and placeholder client
+  secrets fail startup.
 
 Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
 details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the

@@ -291,6 +291,12 @@ client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 
 - **Issuer and hosts.** Set `JeffOps:TokenServer:Issuer` to the public URL, `AllowedHosts`, and
   `JeffOps:ForwardedHeaders` for your proxy: DPoP and the SAML endpoints compare URLs with the request's scheme and host.
+  Outside Development, `AllowedHosts: *` fails startup, and trusted proxy hops need the proxies or networks listed.
+- **BFF.** Outside Development the BFF needs a distributed cache (Redis) and a persisted, encrypted key ring. Sign-out
+  goes through `/bff/logout/end`, which the BFF answers from `bff/logout`.
+- **Key Vault.** Outside Development signing uses a managed identity: `ManagedIdentityClientId`, else `AZURE_CLIENT_ID`,
+  else the system-assigned one. Register your own `TokenCredential` to use anything else.
+- **Decision cache.** `JeffOps:Authorization:Cache:SealingKey` must be at least 32 bytes outside Development.
 - **Data Protection.** Share and protect the key ring across instances (`JeffOps:DataProtection`); it protects the
   signing keys, cookies and sign-in state. Outside Development the token server doesn't start without a persisted,
   encrypted key ring: set `KekCertificate`, and `KeyDirectory` (a share every instance mounts) or call
@@ -301,6 +307,13 @@ client.DefaultRequestHeaders.Authorization = new("Bearer", token);
   mail per address (20 an hour) and per recipient (5), protocol requests per address (600 a minute) and per client
   (3,000), SCIM per token (1,200). They count per instance and per client address, so set `JeffOps:ForwardedHeaders`
   behind a proxy, and raise `SignInPerAddress` when many users share one address (a corporate NAT).
+- **Self-registration.** Outside Development, local accounts can't be registered unless
+  `JeffOps:TokenServer:Federation:OpenRegistration` is `true` or the address is in `AllowedEmailDomains` (the same policy
+  as external sign-ins).
+- **Step-up freshness.** `JeffOps:TokenServer:Mfa:StepUpMaxAge` (default `00:15:00`): how recent a multi-factor sign-in
+  must be for sensitive actions; `00:00:00` lets one sign-in cover the whole session.
+- **Sign-out.** Send `id_token_hint` with end-session requests (the BFF does, from the server): without one, the user
+  confirms on `account/logout` first.
 - **Log levels.** At the default `Information`, OpenIddict logs every protocol step (about five messages per token
   request, twelve per refresh) and YARP two messages per proxied request, each written to every sink you configure. Keep
   them at `Warning` unless you are diagnosing (the token server template does): `"OpenIddict": "Warning"`,

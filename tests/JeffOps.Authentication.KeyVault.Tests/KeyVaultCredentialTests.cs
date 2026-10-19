@@ -1,5 +1,6 @@
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Internal;
@@ -30,6 +31,20 @@ public sealed class KeyVaultCredentialTests
     [Fact]
     public void Development_may_use_the_developer_credential_chain() =>
         CredentialFor("Development").ShouldBeOfType<DefaultAzureCredential>();
+
+    [Fact]
+    public void The_user_assigned_identity_is_the_configured_one_else_azure_client_id()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["AZURE_CLIENT_ID"] = "from-environment" }).Build());
+        using var provider = services.BuildServiceProvider();
+        using var bare = new ServiceCollection().BuildServiceProvider();
+
+        KeyVaultKeyProvider.ManagedIdentityClientId(provider, new KeyVaultSigningOptions()).ShouldBe("from-environment");
+        KeyVaultKeyProvider.ManagedIdentityClientId(provider, new KeyVaultSigningOptions { ManagedIdentityClientId = "configured" }).ShouldBe("configured");
+        KeyVaultKeyProvider.ManagedIdentityClientId(bare, new KeyVaultSigningOptions()).ShouldBeNull("the system-assigned identity");
+    }
 
     [Fact]
     public void A_registered_credential_wins_everywhere()

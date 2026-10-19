@@ -320,9 +320,15 @@ public sealed partial class BffTests
         var response = await stack.Browser.SendAsync(logout, TestContext.Current.CancellationToken);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
 
-        // The ID token stays in the BFF: JavaScript reads this answer.
+        // The ID token stays out of JavaScript: the answer points at the BFF, which sends the browser on with it.
         var endSessionUrl = body.GetProperty("endSessionUrl").GetString();
-        endSessionUrl.ShouldBe("https://localhost/connect/endsession?client_id=spa-bff");
+        endSessionUrl.ShouldBe("/bff/logout/end");
+        var onward = await stack.Browser.GetAsync(new Uri(endSessionUrl!.TrimStart('/'), UriKind.Relative), TestContext.Current.CancellationToken);
+        onward.Headers.Location!.AbsoluteUri.ShouldStartWith("https://localhost/connect/endsession?client_id=spa-bff&id_token_hint=");
+
+        // Once only.
+        (await stack.Browser.GetAsync(new Uri(endSessionUrl.TrimStart('/'), UriKind.Relative), TestContext.Current.CancellationToken))
+            .Headers.Location!.AbsoluteUri.ShouldBe("https://localhost/connect/endsession?client_id=spa-bff");
         (await stack.Browser.GetAsync(new Uri("bff/me", UriKind.Relative), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
     }
 
