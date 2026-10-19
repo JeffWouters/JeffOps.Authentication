@@ -138,10 +138,16 @@ public sealed class LocalCredentialTests
     }
 
     [Fact]
-    public void Recovery_codes_in_the_earlier_format_hash_as_before()
+    public void Recovery_codes_in_the_earlier_40_bit_format_are_no_longer_accepted()
     {
-        // Codes users already hold (ten hex digits) keep working until used or regenerated.
-        RecoveryCode.HashOf("abcde-12345").ShouldBe(Convert.ToHexStringLower(SHA256.HashData("ABCDE12345"u8)));
+        RecoveryCode.IsCurrentFormat("abcde-12345").ShouldBeFalse("ten hex digits: the earlier format");
+        RecoveryCode.IsCurrentFormat("abcd-efgh-2345-6723").ShouldBeTrue();
+        RecoveryCode.IsCurrentFormat("ABCD-EFGH-2345-6781").ShouldBeFalse("8 and 1 aren't base32");
+
+        var credential = WithPassword("right password");
+        credential.BeginTotp("protected");
+        credential.ConfirmTotp(matchedStep: 1, recoveryCodeCount: 1).ShouldAllBe(code => RecoveryCode.IsCurrentFormat(code));
+        credential.UseRecoveryCode("abcde-12345").ShouldBeFalse();
     }
 
     [Fact]

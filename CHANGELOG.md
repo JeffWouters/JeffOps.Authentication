@@ -47,10 +47,10 @@ First public preview (`0.1.0-alpha`).
 - PKCE is S256 only; client assertions are single-use; end-session signs out without asking only for a request that names
   the session (`id_token_hint`), otherwise the user confirms. Impersonation tokens never carry `step_up` and get no ID
   token; step-up expires with `Mfa:StepUpMaxAge`. Local registration follows the email-domain policy, recovery codes are
-  80-bit, and a reset that verifies an email removes earlier second factors. SCIM tokens can expire and SCIM writes are
-  audited; SAML assertions must be encrypted with RSA-OAEP and AES-GCM. Resource services accept only `at+jwt` access
-  tokens. Outside Development, `AllowedHosts: *`, unlisted proxy hops, short decision-cache keys and placeholder client
-  secrets fail startup.
+  80-bit (earlier 40-bit codes are refused; users generate new ones), and a reset that verifies an email removes earlier
+  second factors. SCIM tokens can expire and SCIM writes are audited; SAML assertions must be encrypted with RSA-OAEP
+  and AES-GCM. Resource services accept only `at+jwt` access tokens. Outside Development, `AllowedHosts: *`, unlisted
+  proxy hops, short decision-cache keys and placeholder client secrets fail startup.
 
 Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
 details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the

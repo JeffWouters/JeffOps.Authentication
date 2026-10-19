@@ -99,8 +99,8 @@ public sealed class StoredPasskey
 }
 
 /// <summary>
-/// A hashed single-use recovery code. Codes issued before they had 80 bits (ten hex digits, 40 bits) hash the same way and
-/// keep working until used or regenerated.
+/// A hashed single-use recovery code: 80 random bits, written as 16 base32 characters. Codes in the earlier 40-bit format
+/// (ten hex digits) are no longer accepted; their holders generate new ones.
 /// </summary>
 public sealed class RecoveryCode
 {
@@ -123,7 +123,13 @@ public sealed class RecoveryCode
     public string Hash { get; private set; }
 
     public static string HashOf(string code) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code.Replace("-", string.Empty, StringComparison.Ordinal).Trim().ToUpperInvariant())));
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Normalize(code))));
+
+    /// <summary>Whether <paramref name="code"/> has the current format: 16 base32 characters, hyphens and case aside.</summary>
+    public static bool IsCurrentFormat(string code) =>
+        Normalize(code) is { Length: 16 } normalized && normalized.All(character => character is (>= 'A' and <= 'Z') or (>= '2' and <= '7'));
+
+    private static string Normalize(string code) => code.Replace("-", string.Empty, StringComparison.Ordinal).Trim().ToUpperInvariant();
 }
 
 /// <summary>
@@ -320,7 +326,12 @@ public sealed class LocalCredential : AggregateRoot<Guid>
     /// <summary>Uses a recovery code; each works once.</summary>
     public bool UseRecoveryCode(string code)
     {
-        var hash = RecoveryCode.HashOf(code ?? string.Empty);
+        if (!RecoveryCode.IsCurrentFormat(code ?? string.Empty))
+        {
+            return false;
+        }
+
+        var hash = RecoveryCode.HashOf(code!);
         var match = _recoveryCodes.FirstOrDefault(candidate =>
             CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(candidate.Hash), Encoding.ASCII.GetBytes(hash)));
         if (match is null)

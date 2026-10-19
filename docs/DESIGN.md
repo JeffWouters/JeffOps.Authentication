@@ -1144,8 +1144,8 @@ Non-negotiable defaults. Each has a test.
 - Step-up counts only while the multi-factor sign-in is recent (`Mfa:StepUpMaxAge`, 15 minutes; RFC 9470 `max_age`):
   tokens carry `step_up` only within that age of `auth_time`, and the local credential APIs check `auth_time` and challenge
   with `max_age`.
-- Recovery codes carry 80 random bits (16 base32 characters in groups of four). Codes issued earlier keep working until
-  used or regenerated.
+- Recovery codes carry 80 random bits (16 base32 characters in groups of four). Codes in the earlier 40-bit format (ten
+  hex digits) are refused; their holders generate new ones.
 - Local self-registration follows the external sign-in domain policy: outside Development it is closed unless
   `Federation:OpenRegistration` is on or the address is in `Federation:AllowedEmailDomains` (which admits only while
   `LocalAccounts:RequireVerifiedEmail` is on).
@@ -1170,7 +1170,9 @@ Non-negotiable defaults. Each has a test.
   judged by that address; Teredo, benchmarking (198.18.0.0/15), documentation and other special-use ranges are refused.
 - A tenant provider answers only at its canonical (lower-case) name.
 - Encrypted SAML assertions must use RSA-OAEP key transport and AES-GCM, checked before anything is decrypted. RSA
-  PKCS#1 v1.5 is always refused; AES-CBC only where `AllowCbcEncryption` is set for a provider that can't use GCM.
+  PKCS#1 v1.5 is always refused; AES-CBC only where `AllowCbcEncryption` is set for a provider that can't use GCM. CBC is
+  open to padding-oracle attacks, because the assertion is decrypted before its signature can be checked: for such a
+  provider, prefer not encrypting assertions at all (TLS protects them in transit) over allowing CBC.
 - A tenant OIDC provider's `error` parameter is logged only as a known OAuth error code (`other` otherwise).
 
 **Authorization management, clients and hosts**

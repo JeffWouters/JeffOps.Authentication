@@ -123,7 +123,8 @@ public sealed class SamlProviderOptions
 
     /// <summary>
     /// Whether encrypted assertions may use AES-CBC, for a provider that can't encrypt with AES-GCM. Default: false (only
-    /// AES-GCM). Keys must always travel with RSA-OAEP; RSA PKCS#1 v1.5 is refused.
+    /// AES-GCM). Keys must always travel with RSA-OAEP; RSA PKCS#1 v1.5 is refused. CBC is open to padding-oracle attacks
+    /// (the assertion is decrypted before its signature is checked): prefer no assertion encryption over allowing it.
     /// </summary>
     public bool AllowCbcEncryption { get; set; }
 }

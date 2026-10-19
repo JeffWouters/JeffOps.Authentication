@@ -122,7 +122,7 @@ migrations in your deployment pipeline, for example with `dotnet ef database upd
 | | |
 |---|---|
 | Any OpenID Connect provider | `.AddOidcProvider("google")`, configured under `JeffOps:TokenServer:Federation:Providers:google` |
-| SAML 2.0 | `.AddSamlProvider("corp")` under `JeffOps:TokenServer:Federation:Saml:corp`, and `app.MapJeffOpsSaml()` |
+| SAML 2.0 | `.AddSamlProvider("corp")` under `JeffOps:TokenServer:Federation:Saml:corp`, and `app.MapJeffOpsSaml()`. Encrypted assertions need AES-GCM; if the provider only offers AES-CBC, prefer turning assertion encryption off over setting `AllowCbcEncryption` |
 | Local accounts (passwords, TOTP, emailed codes, passkeys) | `.AddLocalAccounts().AddSqlServerPersistence()` and `app.MapJeffOpsLocalAccounts()`; options under `JeffOps:LocalAccounts` |
 | Verified domains, per-tenant SSO, SCIM | `.AddEnterprise().AddSqlServerPersistence()`, `app.MapJeffOpsEnterprise()`, `app.MapJeffOpsScim()` |
 | Tenants' own SAML providers (allowed per tenant by an operator) | `.AddSamlTenantProviders()` beside `.AddEnterprise()`, an `auth.enterprise.operate` policy for your operators, and `app.MapJeffOpsSaml()` |
