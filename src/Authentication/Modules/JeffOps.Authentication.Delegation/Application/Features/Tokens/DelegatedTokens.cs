@@ -18,6 +18,8 @@ internal static class ActorTokens
 {
     public const string JsonClaimValueType = "JSON";
 
+    private const string OpenIdScope = "openid";
+
     public static Result<(Guid UserId, ClaimsPrincipal Principal)> Read(ExtensionGrantRequest request, ClaimNames names)
     {
         if (request.Actor is not { } actor)
@@ -42,13 +44,9 @@ internal static class ActorTokens
         return (userId, actor);
     }
 
-    public static void CopyAuthentication(ClaimsPrincipal actor, List<Claim> claims, ClaimNames names, bool includeMethods)
+    public static void CopyAuthentication(ClaimsPrincipal actor, List<Claim> claims, ClaimNames names)
     {
-        if (includeMethods)
-        {
-            claims.AddRange(actor.FindAll(names.AuthenticationMethods).Select(claim => new Claim(names.AuthenticationMethods, claim.Value)));
-        }
-
+        claims.AddRange(actor.FindAll(names.AuthenticationMethods).Select(claim => new Claim(names.AuthenticationMethods, claim.Value)));
         if (AccessContextReader.IsSteppedUp(actor, names))
         {
             claims.Add(new Claim(names.StepUp, names.StepUpSatisfied));
@@ -76,14 +74,30 @@ internal static class ActorTokens
         claims.AddRange(scopes.Distinct(StringComparer.OrdinalIgnoreCase).Select(scope => new Claim(names.DelegationScope, scope.ToLowerInvariant())));
     }
 
-    public static Task AuditMintAsync(IAuditSink audit, string action, string resourceType, Guid resourceId, Guid actorId, Guid? tenantId, DateTimeOffset now, CancellationToken cancellationToken) =>
+    /// <summary>Audits a mint with the client that asked, the scopes it got and, under a lockbox, the tenant-access grant used.</summary>
+    public static Task AuditMintAsync(
+        IAuditSink audit, string action, string resourceType, Guid resourceId, Guid actorId, Guid? tenantId, ExtensionGrantRequest request,
+        IReadOnlyCollection<string> scopes, Guid? lockboxGrantId, DateTimeOffset now, CancellationToken cancellationToken) =>
         audit.WriteAsync(new AuditRecord(action, resourceType, resourceId.ToString())
         {
             ActorId = actorId,
             TenantId = tenantId,
             OccurredAt = now,
             Severity = AuditSeverity.Information,
+            Details = new Dictionary<string, string?>
+            {
+                ["clientId"] = request.ClientId,
+                ["scopes"] = string.Join(' ', scopes),
+                ["tenantAccessGrant"] = lockboxGrantId?.ToString(),
+            },
         }, cancellationToken);
+
+    /// <summary>
+    /// The scopes a delegated token is issued with: never <c>openid</c>, so no ID token names the target (or the actor in a
+    /// managed tenant) without saying who is acting.
+    /// </summary>
+    public static IReadOnlyCollection<string> Scopes(ExtensionGrantRequest request) =>
+        [.. request.Scopes.Where(scope => !string.Equals(scope, OpenIdScope, StringComparison.Ordinal))];
 }
 
 /// <summary>
@@ -134,14 +148,35 @@ public sealed class MintImpersonationTokenHandler(
             return ActorTokens.Invalid("Your account is not active, or your session was ended.");
         }
 
-        if (grant.ActorKind == ActorKind.Platform && !AccessContextReader.Read(actor, names).IsRoot)
+        if (grant.ActorKind == ActorKind.Platform)
         {
-            return ActorTokens.Invalid("You are no longer a platform administrator.");
+            // Still a platform administrator, live (not as the actor token remembers it).
+            var platform = await sessions.StandingAsync(actorId, AccessContextReader.Read(actor, names).TenantId, cancellationToken).ConfigureAwait(false);
+            if (platform.IsFailure && platform.Error.Type == ErrorType.Unavailable)
+            {
+                return platform.Error;
+            }
+
+            if (platform.IsFailure || platform.Value.Membership?.Level != AccessLevel.Root)
+            {
+                return ActorTokens.Invalid("You are no longer a platform administrator.");
+            }
         }
 
         if (await accounts.FindAsync(grant.TargetUserId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true } target)
         {
             return ActorTokens.Invalid("The impersonated account is not active.");
+        }
+
+        var protectedTarget = await ActorStanding.IsPlatformAdministratorAsync(sessions, target.Id, cancellationToken).ConfigureAwait(false);
+        if (protectedTarget.IsFailure)
+        {
+            return protectedTarget.Error;
+        }
+
+        if (protectedTarget.Value)
+        {
+            return ActorTokens.Invalid("Platform administrators can't be impersonated.");
         }
 
         var standing = grant.TargetTenantId is { } tenant
@@ -152,12 +187,8 @@ public sealed class MintImpersonationTokenHandler(
             return standing.Error;
         }
 
-        if (standing.Value.Membership?.Level == AccessLevel.Root)
-        {
-            return ActorTokens.Invalid("Platform administrators can't be impersonated.");
-        }
-
         IReadOnlyList<string> ceiling = [];
+        TenantAccessGrant? lockboxGrant = null;
         var lifetimeEnd = grant.ExpiresAt!.Value;
         if (grant.ActorKind == ActorKind.Partner)
         {
@@ -178,6 +209,11 @@ public sealed class MintImpersonationTokenHandler(
             if (actorStanding.Value.OrganizationId != organization)
             {
                 return ActorTokens.Invalid("You no longer belong to the managing organization.");
+            }
+
+            if (!ActorStanding.ReachesManagedTenants(actorStanding.Value))
+            {
+                return Error.Unauthorized(DelegationErrors.LevelTooLow, "Your access in your organization doesn't extend to managed tenants.");
             }
 
             var scopes = await DirectoryCalls.ScopesAsync(directory, organization, managedTenant, cancellationToken).ConfigureAwait(false);
@@ -204,11 +240,18 @@ public sealed class MintImpersonationTokenHandler(
             }
 
             ceiling = scopes.Value;
+            lockboxGrant = lockbox.Value;
         }
 
         if (!await RecordMintAsync(grant, now, cancellationToken).ConfigureAwait(false))
         {
             return ActorTokens.Invalid("The impersonation grant ended.");
+        }
+
+        // The lockbox grant is used too: its first use starts it, as a tenant switch would.
+        if (lockboxGrant is not null && !await RecordMintAsync(lockboxGrant, now, cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Unauthorized(DelegationErrors.TenantApprovalRequired, "This tenant requires approval and there is no approved access grant.");
         }
 
         var claims = new List<Claim>
@@ -225,8 +268,8 @@ public sealed class MintImpersonationTokenHandler(
             claims.Add(new Claim(names.Name, target.DisplayName));
         }
 
-        // Step-up reflects the actor's sign-in; the target's authentication methods are not claimed.
-        ActorTokens.CopyAuthentication(actor, claims, names, includeMethods: false);
+        // Never step-up, whatever the actor's sign-in: an impersonation session can't take sensitive actions as the target.
+        // The target's authentication methods are not claimed either.
         sessions.AddTenantClaims(claims, standing.Value);
         if (grant.ActorKind == ActorKind.Partner)
         {
@@ -234,10 +277,11 @@ public sealed class MintImpersonationTokenHandler(
             ActorTokens.CapPartnerLevel(claims, names, ceiling);
         }
 
-        await ActorTokens.AuditMintAsync(audit, "impersonation.token_minted", "impersonation_grant", grant.Id, actorId, grant.TargetTenantId, now, cancellationToken).ConfigureAwait(false);
+        var issuedScopes = ActorTokens.Scopes(request);
+        await ActorTokens.AuditMintAsync(audit, "impersonation.token_minted", "impersonation_grant", grant.Id, actorId, grant.TargetTenantId, request, issuedScopes, lockboxGrant?.Id, now, cancellationToken).ConfigureAwait(false);
         var remaining = lifetimeEnd - now;
         var lifetime = options.Value.Impersonation.TokenLifetime;
-        return new IssuedIdentity(target.Id.ToString(), claims, request.Scopes)
+        return new IssuedIdentity(target.Id.ToString(), claims, issuedScopes)
         {
             AccessTokenLifetime = remaining < lifetime ? remaining : lifetime,
             AllowRefresh = false,
@@ -376,7 +420,8 @@ public sealed class MintTenantSwitchTokenHandler(
             grantEnds = grant.ExpiresAt;
         }
 
-        await ActorTokens.AuditMintAsync(audit, "tenant_switch.token_minted", "tenant", target, actorId, target, now, cancellationToken).ConfigureAwait(false);
+        var issuedScopes = ActorTokens.Scopes(request);
+        await ActorTokens.AuditMintAsync(audit, "tenant_switch.token_minted", "tenant", target, actorId, target, request, issuedScopes, lockbox.Value?.Id, now, cancellationToken).ConfigureAwait(false);
 
         var claims = new List<Claim>
         {
@@ -394,7 +439,7 @@ public sealed class MintTenantSwitchTokenHandler(
             claims.Add(new Claim(names.AuthenticationTime, authTime.Value, ClaimValueTypes.Integer64));
         }
 
-        ActorTokens.CopyAuthentication(actor, claims, names, includeMethods: true);
+        ActorTokens.CopyAuthentication(actor, claims, names);
         sessions.AddTenantClaims(claims, standing.Value);
         claims.RemoveAll(claim => claim.Type == names.Level);
         claims.Add(new Claim(names.Level, nameof(AccessLevel.Delegated)));
@@ -406,7 +451,7 @@ public sealed class MintTenantSwitchTokenHandler(
             lifetime = ends - now;
         }
 
-        return new IssuedIdentity(actorId.ToString(), claims, request.Scopes)
+        return new IssuedIdentity(actorId.ToString(), claims, issuedScopes)
         {
             AccessTokenLifetime = lifetime,
             AllowRefresh = false,

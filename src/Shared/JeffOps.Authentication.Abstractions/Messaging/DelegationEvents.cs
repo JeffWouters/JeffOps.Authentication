@@ -15,6 +15,12 @@ public sealed record ImpersonationEvent(string Stage, Guid GrantId, Guid ActorUs
 {
     /// <summary><c>auth.impersonation.{stage}.v1</c>, with <see cref="Stage"/> filled in.</summary>
     public override string Type => $"auth.impersonation.{Stage}.v1";
+
+    /// <summary>
+    /// The user who took this step: the actor for <c>requested</c> and <c>started</c>, the target for <c>approved</c> and
+    /// <c>denied</c>, whoever ended or revoked it; null for <c>expired</c>.
+    /// </summary>
+    public Guid? ChangedBy { get; init; }
 }
 
 /// <summary>
@@ -30,4 +36,10 @@ public sealed record TenantAccessEvent(string Stage, Guid GrantId, Guid ActorUse
 {
     /// <summary><c>auth.tenant_access.{stage}.v1</c>, with <see cref="Stage"/> filled in.</summary>
     public override string Type => $"auth.tenant_access.{Stage}.v1";
+
+    /// <summary>
+    /// The user who took this step: the actor for <c>requested</c> and <c>started</c>, the tenant administrator who approved,
+    /// denied or revoked it, whoever ended it; null for <c>expired</c>.
+    /// </summary>
+    public Guid? ChangedBy { get; init; }
 }

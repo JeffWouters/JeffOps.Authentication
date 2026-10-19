@@ -93,15 +93,22 @@ public sealed class RequestImpersonationHandler(
             return Error.Failure(DelegationErrors.TargetInactive, "The user doesn't exist or is not active.");
         }
 
+        // Root in any membership protects the account, not only in the tenant it would be impersonated in.
+        var protectedTarget = await ActorStanding.IsPlatformAdministratorAsync(sessions, target.Id, cancellationToken).ConfigureAwait(false);
+        if (protectedTarget.IsFailure)
+        {
+            return protectedTarget.Error;
+        }
+
+        if (protectedTarget.Value)
+        {
+            return Error.Forbidden(DelegationErrors.TargetProtected, "Platform administrators can't be impersonated.");
+        }
+
         var standing = await sessions.StandingAsync(target.Id, boundTenant: null, cancellationToken).ConfigureAwait(false);
         if (standing.IsFailure)
         {
             return standing.Error;
-        }
-
-        if (standing.Value.Membership?.Level == JeffOps.Authentication.Abstractions.Access.AccessLevel.Root)
-        {
-            return Error.Forbidden(DelegationErrors.TargetProtected, "Platform administrators can't be impersonated.");
         }
 
         var targetTenant = standing.Value.Membership?.TenantId;
@@ -111,6 +118,18 @@ public sealed class RequestImpersonationHandler(
             if (caller.OrganizationId is not { } organization || targetTenant is not { } tenant)
             {
                 return Error.Forbidden(DelegationErrors.NotManaged, "Your organization doesn't manage this user's tenant.");
+            }
+
+            // The same bar as switching into a managed tenant, read live.
+            var actorStanding = await sessions.StandingAsync(caller.UserId, caller.TenantId, cancellationToken).ConfigureAwait(false);
+            if (actorStanding.IsFailure)
+            {
+                return actorStanding.Error;
+            }
+
+            if (!ActorStanding.ReachesManagedTenants(actorStanding.Value))
+            {
+                return Error.Forbidden(DelegationErrors.LevelTooLow, "Your access in your organization doesn't extend to managed tenants.");
             }
 
             var managed = await DirectoryCalls.ScopesAsync(directory, organization, tenant, cancellationToken).ConfigureAwait(false);
@@ -177,7 +196,7 @@ public sealed class DecideImpersonationHandler(
         var now = time.GetUtcNow();
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var decided = command.Approve ? grant.Approve(caller.UserId, now, options.Value.Impersonation.SessionWindow) : grant.Deny(now);
+            var decided = command.Approve ? grant.Approve(caller.UserId, now, options.Value.Impersonation.SessionWindow) : grant.Deny(now, caller.UserId);
             if (await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
             {
                 return decided
@@ -217,8 +236,8 @@ public sealed class EndImpersonationHandler(IImpersonationGrantRepository grants
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var changed = command.Revoke
-                ? grant.Revoke(now, grant.TargetUserId == command.CallerUserId ? GrantEndReasons.RevokedByTarget : GrantEndReasons.Revoked)
-                : grant.End(now);
+                ? grant.Revoke(now, grant.TargetUserId == command.CallerUserId ? GrantEndReasons.RevokedByTarget : GrantEndReasons.Revoked, command.CallerUserId)
+                : grant.End(now, command.CallerUserId);
             if (!changed)
             {
                 return Error.Failure(DelegationErrors.NotLive, command.Revoke ? "The grant is already over." : "The grant is not live.");

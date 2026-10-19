@@ -24,9 +24,15 @@ public sealed class PermissionAuthorizationOptions
 
     /// <summary>
     /// Permissions an impersonation session may not use on state-changing requests: those that hand out or withdraw
-    /// access, or change where tenant data is delivered.
+    /// access, or change where tenant data is delivered. Empty by default, and the host warns at startup while it is.
     /// </summary>
     public IList<string> ImpersonationRefusedPermissions { get; } = [];
+
+    /// <summary>
+    /// Permissions Root does not hold just by being Root: a Root caller needs a role grant for them like anyone else, so
+    /// holding one is a decision someone made. Default: <c>auth.impersonation.breakglass</c>.
+    /// </summary>
+    public IList<string> ExplicitGrantPermissions { get; } = ["auth.impersonation.breakglass"];
 
     /// <summary>The scopes a delegated (impersonation or tenant-switch) token can carry, and what each one allows.</summary>
     public DelegationCeilingOptions Delegation { get; } = new();

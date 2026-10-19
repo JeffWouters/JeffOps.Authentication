@@ -36,8 +36,11 @@ internal sealed class AuthorizationEvaluator(
         var action = Permission.Normalize(request.Action);
         var now = time.GetUtcNow();
 
+        // Root holds every permission except those configured to need an explicit grant, such as break-glass.
+        var isRoot = access.IsRoot && !options.Value.ExplicitGrantPermissions.Contains(action, StringComparer.OrdinalIgnoreCase);
+
         var hasRoleGrant = false;
-        if (!access.IsRoot && access.UserId is { } userId && access.EffectiveTenantId is { } tenantId)
+        if (!isRoot && access.UserId is { } userId && access.EffectiveTenantId is { } tenantId)
         {
             var assignments = await data.GetAssignmentsAsync(userId, tenantId, cancellationToken).ConfigureAwait(false);
             if (assignments.Count > 0)
@@ -59,9 +62,9 @@ internal sealed class AuthorizationEvaluator(
             Action = action,
             ResourceType = request.ResourceType,
             Attributes = policies.Count > 0 ? BuildAttributes(user, action, request.Resource, now) : NoAttributes,
-            IsRoot = access.IsRoot,
+            IsRoot = isRoot,
             HasRoleGrant = hasRoleGrant,
-            ServicePermissions = access.IsRoot ? [] : AccessContextReader.ValuesOf(user, names.ServicePermission),
+            ServicePermissions = access.Level == AccessLevel.Service ? AccessContextReader.ValuesOf(user, names.ServicePermission) : [],
             Policies = policies,
             PatCeiling = AccessContextReader.ValuesOf(user, names.PatCeiling),
             DelegationScopes = AccessContextReader.ValuesOf(user, names.DelegationScope),

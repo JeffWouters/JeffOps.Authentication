@@ -77,7 +77,12 @@ public sealed record ClaimNames
     public string SessionId { get; init; } = "sid";
 
     /// <summary>
-    /// Claims that mark an impersonation token (RFC 8693 actor and its companions). Any one present marks the token.
+    /// Further claims that mark an impersonation token. <see cref="Actor"/>, <see cref="ActorKind"/> and
+    /// <see cref="DelegationGrant"/> always do, under whatever names they are configured with; any one present marks the token.
     /// </summary>
-    public IReadOnlyList<string> ImpersonationMarkers { get; init; } = ["act", "act_kind", "grant_id"];
+    public IReadOnlyList<string> ImpersonationMarkers { get; init; } = [];
+
+    /// <summary>Whether <paramref name="claimType"/> marks an impersonation token.</summary>
+    public bool IsImpersonationMarker(string claimType) =>
+        claimType == Actor || claimType == ActorKind || claimType == DelegationGrant || ImpersonationMarkers.Contains(claimType, StringComparer.Ordinal);
 }

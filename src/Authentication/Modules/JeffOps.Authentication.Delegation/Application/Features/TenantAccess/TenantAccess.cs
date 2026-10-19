@@ -133,7 +133,7 @@ public sealed class DecideTenantAccessHandler(
         var now = time.GetUtcNow();
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var decided = command.Approve ? grant.Approve(caller.UserId, now, options.Value.TenantAccess.SessionWindow) : grant.Deny(now);
+            var decided = command.Approve ? grant.Approve(caller.UserId, now, options.Value.TenantAccess.SessionWindow) : grant.Deny(now, caller.UserId);
             if (await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
             {
                 return decided
@@ -174,7 +174,7 @@ public sealed class EndTenantAccessHandler(ITenantAccessGrantRepository grants, 
         var now = time.GetUtcNow();
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var changed = command.Revoke ? grant.Revoke(now) : grant.End(now);
+            var changed = command.Revoke ? grant.Revoke(now, revokedBy: caller.UserId) : grant.End(now, caller.UserId);
             if (!changed)
             {
                 return Error.Failure(DelegationErrors.NotLive, command.Revoke ? "The grant is already over." : "The grant is not live.");

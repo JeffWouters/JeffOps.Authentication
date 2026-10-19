@@ -1,12 +1,16 @@
+using JeffOps.Authentication.Abstractions.Access;
+using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authorization.Domain.Ceilings;
+using JeffOps.Authorization.Domain.Decisions;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 
 namespace JeffOps.Authorization.AspNetCore.Evaluation;
 
 /// <summary>
-/// Endpoint metadata refusing every permission checked on one route to an impersonation token, for a route that hands out
-/// or withdraws access, or changes where tenant data is delivered, under a permission whose other routes don't.
+/// Endpoint metadata refusing one route to an impersonation token, for a route that hands out or withdraws access, or
+/// changes where tenant data is delivered, under a permission whose other routes don't.
 /// </summary>
 public sealed class ImpersonationRouteRule
 {
@@ -33,10 +37,13 @@ public static class AuthorizationEndpointConventionBuilderExtensions
         return builder.RequireAuthorization(PermissionPolicyProvider.Build(new PermissionRequirement(permission, scopeKey, instanceRouteValue)));
     }
 
-    /// <summary>Requires step-up on this route for <paramref name="permissions"/>, or for every permission it checks when none are named.</summary>
+    /// <summary>
+    /// Requires step-up on this route for <paramref name="permissions"/>, or for every permission it checks when none are named.
+    /// With none named, a route that checks no permission requires step-up of every interactive user.
+    /// </summary>
     public static TBuilder RequireStepUp<TBuilder>(this TBuilder builder, params string[] permissions)
         where TBuilder : IEndpointConventionBuilder =>
-        builder.WithMetadata(StepUpRouteRule.Require(permissions));
+        builder.WithMetadata(StepUpRouteRule.Require(permissions)).RequireAuthorization(RouteRuleRequirement.Policy);
 
     /// <summary>
     /// Lifts step-up on this route for the named sensitive permissions. Validated at host start: naming a permission that
@@ -46,10 +53,59 @@ public static class AuthorizationEndpointConventionBuilderExtensions
         where TBuilder : IEndpointConventionBuilder =>
         builder.WithMetadata(StepUpRouteRule.Exempt([permission, .. morePermissions]));
 
-    /// <summary>Refuses every permission checked on this route to an impersonation token.</summary>
+    /// <summary>Refuses this route to an impersonation token, whether or not the route checks a permission.</summary>
     public static TBuilder RefuseUnderImpersonation<TBuilder>(this TBuilder builder)
         where TBuilder : IEndpointConventionBuilder =>
-        builder.WithMetadata(ImpersonationRouteRule.Refuse);
+        builder.WithMetadata(ImpersonationRouteRule.Refuse).RequireAuthorization(RouteRuleRequirement.Policy);
+}
+
+/// <summary>
+/// Applies the route rules (<c>RefuseUnderImpersonation()</c>, <c>RequireStepUp()</c>) on a route that checks no permission,
+/// so they never silently do nothing. A route that checks a permission applies them in the permission decision instead.
+/// </summary>
+public sealed class RouteRuleRequirement : IAuthorizationRequirement
+{
+    private RouteRuleRequirement()
+    {
+    }
+
+    /// <summary>The requirement's single instance.</summary>
+    public static RouteRuleRequirement Instance { get; } = new();
+
+    /// <summary>A policy with only this requirement: it adds no authentication requirement of its own.</summary>
+    public static AuthorizationPolicy Policy { get; } = new AuthorizationPolicyBuilder().AddRequirements(Instance).Build();
+}
+
+/// <summary>Decides a <see cref="RouteRuleRequirement"/>, recording a refusal's code as for a permission refusal.</summary>
+internal sealed class RouteRuleAuthorizationHandler(ClaimNames names) : AuthorizationHandler<RouteRuleRequirement>
+{
+    protected override Task HandleRequirementAsync(AuthorizationHandlerContext context, RouteRuleRequirement requirement)
+    {
+        var user = context.User;
+        if (context.Requirements.OfType<PermissionRequirement>().Any() || user.Identity?.IsAuthenticated != true)
+        {
+            context.Succeed(requirement);
+            return Task.CompletedTask;
+        }
+
+        var endpoint = EndpointRules.EndpointOf(context.Resource);
+        if (AccessContextReader.IsImpersonation(user, names) && EndpointRules.RefusesImpersonation(endpoint))
+        {
+            context.Fail(new AuthorizationFailureReason(this, AuthorizationCodes.ImpersonationNotAllowed));
+        }
+        else if (AccessContextReader.IsInteractiveUser(user, names)
+            && !AccessContextReader.IsSteppedUp(user, names)
+            && EndpointRules.StepUpRulesOf(endpoint).Any(rule => rule.Required && rule.Permissions.Count == 0))
+        {
+            context.Fail(new AuthorizationFailureReason(this, AuthorizationCodes.StepUpRequired));
+        }
+        else
+        {
+            context.Succeed(requirement);
+        }
+
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>Reads route rules from the endpoint behind an authorization resource.</summary>

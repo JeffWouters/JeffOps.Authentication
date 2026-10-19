@@ -38,7 +38,7 @@ public static class DelegationEndpointRouteBuilderExtensions
         const string tokenPolicy = JeffOps.Authentication.Application.AccountApi.PolicyName;
 
         var impersonation = endpoints.MapGroup(ImpersonationRoutes).WithTags("Impersonation").RequireAuthorization(tokenPolicy).AddEndpointFilter<NotFromPatFilter>();
-        impersonation.MapPost("/", RequestImpersonationAsync).AddEndpointFilter<StepUpFilter>().WithName("RequestImpersonation");
+        impersonation.MapPost("/", RequestImpersonationAsync).AddEndpointFilter<HomeSessionFilter>().AddEndpointFilter<StepUpFilter>().WithName("RequestImpersonation");
         impersonation.MapGet("/", ListImpersonationsAsync).AddEndpointFilter<HomeSessionFilter>().WithName("ListImpersonations");
         impersonation.MapGet("/{grantId:guid}", GetImpersonationAsync).AddEndpointFilter<HomeSessionFilter>().WithName("GetImpersonation");
         impersonation.MapPost("/{grantId:guid}/approve", (Guid grantId, HttpContext context, ICommandHandler<DecideImpersonationCommand, ImpersonationGrantDto> handler) =>

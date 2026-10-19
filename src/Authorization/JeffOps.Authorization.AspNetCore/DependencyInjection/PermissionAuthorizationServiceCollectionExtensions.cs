@@ -88,6 +88,7 @@ public static class PermissionAuthorizationServiceCollectionExtensions
         services.AddAuthorization();
         services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
         services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
+        services.AddSingleton<IAuthorizationHandler, RouteRuleAuthorizationHandler>();
         services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler, PermissionResultHandler>();
         services.AddTransient<Microsoft.AspNetCore.Hosting.IStartupFilter, RouteRuleValidator>();
 

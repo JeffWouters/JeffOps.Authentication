@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Access;
+using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.Delegation.Application;
@@ -13,6 +14,7 @@ using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace JeffOps.Authentication.Server.Tests;
 
@@ -30,6 +32,7 @@ public sealed class DelegationTests : IAsyncLifetime
 
     private readonly FakeDelegationDirectory _directory = new();
     private readonly Approvers _approvers = new();
+    private readonly RecordingAuditSink _audit = new();
     private readonly string _delegationDatabase = TestDatabase.SqliteFile("delegation");
     private TokenServerHost _host = null!;
 
@@ -46,6 +49,7 @@ public sealed class DelegationTests : IAsyncLifetime
             {
                 builder.Services.AddSingleton(_directory);
                 builder.Services.AddSingleton(_approvers);
+                builder.Services.Replace(ServiceDescriptor.Singleton<IAuditSink>(_audit));
                 new AuthenticationBuilder(builder.Services, builder.Configuration)
                     .AddDelegation()
                     .UseDirectory<FakeDelegationDirectory.Scoped>()
@@ -237,6 +241,111 @@ public sealed class DelegationTests : IAsyncLifetime
         (await GetAsync<JsonElement>(supportToken, $"delegation/impersonation/{grantId}")).GetProperty("status").GetString().ShouldBe("Expired");
     }
 
+    [Fact]
+    public async Task An_impersonation_token_never_carries_step_up()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root, multiFactor: true);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+
+        var minted = await MintImpersonationAsync(grantId, supportToken);
+
+        minted.Status.ShouldBe(HttpStatusCode.OK, minted.Body.ToString());
+        minted.Claims("step_up").ShouldBeEmpty();
+        minted.Claims("amr").ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Delegated_mints_issue_no_id_token()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var (_, partnerToken) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+
+        var impersonation = WithActor(new() { ["grant_type"] = ImpersonationGrant, ["grant_id"] = grantId }, supportToken);
+        impersonation["scope"] = "openid api";
+        var minted = await _host.TokenAsync(impersonation);
+        minted.Status.ShouldBe(HttpStatusCode.OK, minted.Body.ToString());
+        minted.IdToken.ShouldBeNull();
+
+        var tenantSwitch = WithActor(new() { ["grant_type"] = TenantSwitchGrant, ["target_tenant"] = CustomerTenant.ToString() }, partnerToken);
+        tenantSwitch["scope"] = "openid api";
+        var switched = await _host.TokenAsync(tenantSwitch);
+        switched.Status.ShouldBe(HttpStatusCode.OK, switched.Body.ToString());
+        switched.IdToken.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task A_user_who_is_root_in_any_membership_can_t_be_impersonated()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+
+        // Root in a second membership, not the one the user is impersonated in.
+        _host.Tenants.Memberships[customer].Add(new TenantMembership(PlatformTenant, null, null, AccessLevel.Root));
+
+        (await MintImpersonationAsync(grantId, supportToken)).Code.ShouldBe("grant_invalid");
+        var response = await _host.SendAsync(HttpMethod.Post, "delegation/impersonation", supportToken,
+            JsonContent.Create(new { targetUserId = customer, breakGlass = true, reason = "testing" }));
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeAsync(response)).ShouldBe("target_protected");
+    }
+
+    [Fact]
+    public async Task A_workspace_guest_of_the_partner_can_t_impersonate_in_managed_tenants()
+    {
+        var (_, guestToken) = await UserAsync("guest@example.com", PartnerTenant, PartnerOrganization, AccessLevel.Workspace);
+        var (customer, _) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+
+        var response = await _host.SendAsync(HttpMethod.Post, "delegation/impersonation", guestToken, JsonContent.Create(new { targetUserId = customer }));
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await CodeAsync(response)).ShouldBe("level_too_low");
+    }
+
+    [Fact]
+    public async Task A_partner_demoted_to_workspace_guest_can_t_mint_impersonation_tokens()
+    {
+        var (partner, partnerToken) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(partnerToken, customer, customerToken);
+
+        _host.Tenants.Memberships[partner] = [new TenantMembership(PartnerTenant, PartnerOrganization, Guid.NewGuid(), AccessLevel.Workspace)];
+
+        (await MintImpersonationAsync(grantId, partnerToken)).Code.ShouldBe("level_too_low");
+    }
+
+    [Fact]
+    public async Task A_platform_mint_rechecks_that_the_actor_is_still_a_platform_administrator()
+    {
+        var (support, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+
+        // The actor token still says Root; the directory no longer does.
+        _host.Tenants.Memberships[support] = [new TenantMembership(PlatformTenant, null, null, AccessLevel.Tenant)];
+
+        (await MintImpersonationAsync(grantId, supportToken)).Code.ShouldBe("grant_invalid");
+    }
+
+    [Fact]
+    public async Task The_audit_trail_names_who_approved_and_who_revoked()
+    {
+        var (support, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+        await PostAsync<JsonElement>(customerToken, $"delegation/impersonation/{grantId}/revoke");
+
+        var requested = _audit.Single("impersonation.requested", grantId);
+        requested.ActorId.ShouldBe(support);
+        var approved = _audit.Single("impersonation.approved", grantId);
+        approved.ActorId.ShouldBe(customer);
+        approved.Details["actor"].ShouldBe(support.ToString());
+        _audit.Single("impersonation.revoked", grantId).ActorId.ShouldBe(customer);
+    }
+
     // ---- Tenant switch and lockbox -------------------------------------------------------------------------------------
 
     [Fact]
@@ -311,6 +420,30 @@ public sealed class DelegationTests : IAsyncLifetime
         // Ending the lockbox grant ends the impersonation too.
         await PostAsync<JsonElement>(adminToken, $"delegation/tenant-access/{access}/revoke");
         (await MintImpersonationAsync(grantId, partnerToken)).Code.ShouldBe("tenant_approval_required");
+    }
+
+    [Fact]
+    public async Task Impersonating_in_a_lockbox_tenant_uses_and_records_its_access_grant()
+    {
+        var (partner, partnerToken) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        var (admin, adminToken) = await UserAsync("admin@example.com", LockboxTenant, CustomerOrganization);
+        var (member, memberToken) = await UserAsync("member@example.com", LockboxTenant, CustomerOrganization);
+        _approvers.Add(admin);
+        var access = (await PostAsync<JsonElement>(partnerToken, "delegation/tenant-access", new { tenantId = LockboxTenant })).GetProperty("id").GetString()!;
+        await PostAsync<JsonElement>(adminToken, $"delegation/tenant-access/{access}/approve");
+        var grantId = await ApprovedImpersonationAsync(partnerToken, member, memberToken);
+
+        (await MintImpersonationAsync(grantId, partnerToken)).Status.ShouldBe(HttpStatusCode.OK);
+
+        (await GetAsync<JsonElement>(adminToken, "delegation/tenant-access")).GetProperty("intoMyTenant")[0].GetProperty("status").GetString().ShouldBe("Active");
+        _audit.Single("tenant_access.approved", access).ActorId.ShouldBe(admin);
+        _audit.Single("tenant_access.started", access).ActorId.ShouldBe(partner);
+        var minted = _audit.Single("impersonation.token_minted", grantId);
+        minted.Details["tenantAccessGrant"].ShouldBe(access);
+        minted.Details["clientId"].ShouldBe(TokenServerHost.BffClient);
+
+        await PostAsync<JsonElement>(adminToken, $"delegation/tenant-access/{access}/revoke");
+        _audit.Single("tenant_access.revoked", access).ActorId.ShouldBe(admin);
     }
 
     [Fact]
@@ -485,6 +618,21 @@ public sealed class DelegationTests : IAsyncLifetime
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         return body.TryGetProperty("code", out var code) ? code.GetString() : null;
     }
+}
+
+/// <summary>Keeps every audit record, so a test can see who the trail names.</summary>
+internal sealed class RecordingAuditSink : IAuditSink
+{
+    private readonly ConcurrentQueue<AuditRecord> _records = new();
+
+    public Task WriteAsync(AuditRecord record, CancellationToken cancellationToken)
+    {
+        _records.Enqueue(record);
+        return Task.CompletedTask;
+    }
+
+    public AuditRecord Single(string action, string targetId) =>
+        _records.Single(record => record.Action == action && record.TargetId == targetId);
 }
 
 internal sealed class Approvers : ConcurrentDictionary<Guid, bool>

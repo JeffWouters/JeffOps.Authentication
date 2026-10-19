@@ -41,7 +41,8 @@ internal sealed class TestApp : IAsyncDisposable
     public static async Task<TestApp> StartAsync(
         Action<WebApplication>? mapEndpoints = null,
         Dictionary<string, string?>? settings = null,
-        FakeDataSource? data = null)
+        FakeDataSource? data = null,
+        Action<IServiceCollection>? services = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseTestServer();
@@ -55,6 +56,7 @@ internal sealed class TestApp : IAsyncDisposable
 
         data ??= new FakeDataSource();
         builder.Services.AddSingleton(data);
+        services?.Invoke(builder.Services);
         builder.Services.AddJeffOpsPermissionAuthorization(builder.Configuration);
         builder.Services.AddTransient<IAuthorizationDataSource>(provider => provider.GetRequiredService<FakeDataSource>());
         builder.Services.AddAuthentication(TestAuthentication.SchemeName)

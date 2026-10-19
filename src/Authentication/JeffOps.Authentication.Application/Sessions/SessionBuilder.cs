@@ -33,18 +33,13 @@ public sealed class SessionBuilder(ITenantDirectory tenants, ClaimNames names, I
     /// </summary>
     public async Task<Result<TenantStanding>> StandingAsync(Guid accountId, Guid? boundTenant, CancellationToken cancellationToken)
     {
-        IReadOnlyList<TenantMembership> memberships;
-        try
+        var found = await MembershipsAsync(accountId, cancellationToken).ConfigureAwait(false);
+        if (found.IsFailure)
         {
-            memberships = await tenants.GetMembershipsAsync(accountId, cancellationToken).ConfigureAwait(false);
-        }
-#pragma warning disable CA1031 // Any directory failure is an outage, reported so clients retry rather than sign out.
-        catch (Exception) when (!cancellationToken.IsCancellationRequested)
-#pragma warning restore CA1031
-        {
-            return Unavailable();
+            return found.Error;
         }
 
+        var memberships = found.Value;
         if (boundTenant is { } bound)
         {
             var held = memberships.FirstOrDefault(membership => membership.TenantId == bound);
@@ -68,6 +63,21 @@ public sealed class SessionBuilder(ITenantDirectory tenants, ClaimNames names, I
         return memberships.Count == 0
             ? TenantStanding.None
             : Error.Unauthorized(GrantErrors.TenantInactive, "The account's tenant is no longer active.");
+    }
+
+    /// <summary>Every active membership of the account, live from the tenant directory.</summary>
+    public async Task<Result<IReadOnlyList<TenantMembership>>> MembershipsAsync(Guid accountId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Result.Success(await tenants.GetMembershipsAsync(accountId, cancellationToken).ConfigureAwait(false));
+        }
+#pragma warning disable CA1031 // Any directory failure is an outage, reported so clients retry rather than sign out.
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+#pragma warning restore CA1031
+        {
+            return Unavailable();
+        }
     }
 
     /// <summary>The claims of an interactive user session.</summary>

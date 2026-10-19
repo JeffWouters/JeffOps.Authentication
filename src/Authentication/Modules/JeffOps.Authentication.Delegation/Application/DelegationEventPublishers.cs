@@ -8,7 +8,7 @@ namespace JeffOps.Authentication.Delegation.Application;
 
 /// <summary>
 /// Turns grant changes into integration events, audit records and notifications: the target hears about every request on
-/// their account (and about break-glass immediately), and every step is audited.
+/// their account (and about break-glass immediately), and every step is audited under the user who took it.
 /// </summary>
 public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditSink audit, INotifier notifier, TimeProvider time) :
     IDomainEventHandler<DelegationGrantRequested>,
@@ -22,12 +22,12 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
         var grant = domainEvent.Grant;
         if (grant is not ImpersonationGrant impersonation)
         {
-            await PublishAsync(grant, "requested", cancellationToken).ConfigureAwait(false);
+            await PublishAsync(grant, "requested", grant.ActorUserId, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         // The target hears first (break-glass is urgent), and a failing step doesn't stop the others.
-        await AllAsync(() => NotifyTargetAsync(impersonation, cancellationToken), () => PublishAsync(grant, "requested", cancellationToken)).ConfigureAwait(false);
+        await AllAsync(() => NotifyTargetAsync(impersonation, cancellationToken), () => PublishAsync(grant, "requested", grant.ActorUserId, cancellationToken)).ConfigureAwait(false);
     }
 
     private Task NotifyTargetAsync(ImpersonationGrant impersonation, CancellationToken cancellationToken)
@@ -78,13 +78,13 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
     public Task HandleAsync(DelegationGrantApproved domainEvent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
-        return PublishAsync(domainEvent.Grant, "approved", cancellationToken);
+        return PublishAsync(domainEvent.Grant, "approved", domainEvent.Grant.ApprovedBy, cancellationToken);
     }
 
     public Task HandleAsync(DelegationGrantStarted domainEvent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
-        return PublishAsync(domainEvent.Grant, "started", cancellationToken);
+        return PublishAsync(domainEvent.Grant, "started", domainEvent.Grant.ActorUserId, cancellationToken);
     }
 
     public Task HandleAsync(DelegationGrantFinished domainEvent, CancellationToken cancellationToken)
@@ -97,10 +97,11 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
             DelegationGrantStatus.Revoked => "revoked",
             _ => "ended",
         };
-        return PublishAsync(domainEvent.Grant, stage, cancellationToken);
+        return PublishAsync(domainEvent.Grant, stage, domainEvent.By, cancellationToken);
     }
 
-    private async Task PublishAsync(DelegationGrant grant, string stage, CancellationToken cancellationToken)
+    /// <summary>Audits and publishes one step; <paramref name="by"/> (null for expiry) is the audit record's actor.</summary>
+    private async Task PublishAsync(DelegationGrant grant, string stage, Guid? by, CancellationToken cancellationToken)
     {
         var now = time.GetUtcNow();
         IntegrationEvent integrationEvent;
@@ -108,15 +109,16 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
 
         if (grant is ImpersonationGrant impersonation)
         {
-            integrationEvent = new ImpersonationEvent(stage, grant.Id, grant.ActorUserId, impersonation.TargetUserId, impersonation.TargetTenantId, impersonation.BreakGlass) { OccurredAt = now };
+            integrationEvent = new ImpersonationEvent(stage, grant.Id, grant.ActorUserId, impersonation.TargetUserId, impersonation.TargetTenantId, impersonation.BreakGlass) { OccurredAt = now, ChangedBy = by };
             record = new AuditRecord($"impersonation.{stage}", "impersonation_grant", grant.Id.ToString())
             {
-                ActorId = grant.ActorUserId,
+                ActorId = by,
                 TenantId = impersonation.TargetTenantId,
                 OccurredAt = now,
                 Severity = impersonation.BreakGlass || stage is "started" or "revoked" ? AuditSeverity.Warning : AuditSeverity.Information,
                 Details = new Dictionary<string, string?>
                 {
+                    ["actor"] = grant.ActorUserId.ToString(),
                     ["target"] = impersonation.TargetUserId.ToString(),
                     ["breakGlass"] = impersonation.BreakGlass ? "true" : "false",
                     ["reason"] = impersonation.Reason,
@@ -127,14 +129,19 @@ public sealed class DelegationEventPublishers(IEventPublisher publisher, IAuditS
         else
         {
             var access = (TenantAccessGrant)grant;
-            integrationEvent = new TenantAccessEvent(stage, grant.Id, grant.ActorUserId, grant.ActorOrganizationId, access.TargetTenantId) { OccurredAt = now };
+            integrationEvent = new TenantAccessEvent(stage, grant.Id, grant.ActorUserId, grant.ActorOrganizationId, access.TargetTenantId) { OccurredAt = now, ChangedBy = by };
             record = new AuditRecord($"tenant_access.{stage}", "tenant_access_grant", grant.Id.ToString())
             {
-                ActorId = grant.ActorUserId,
+                ActorId = by,
                 TenantId = access.TargetTenantId,
                 OccurredAt = now,
                 Severity = stage is "started" or "revoked" ? AuditSeverity.Warning : AuditSeverity.Information,
-                Details = new Dictionary<string, string?> { ["organization"] = grant.ActorOrganizationId?.ToString(), ["endedReason"] = grant.EndedReason },
+                Details = new Dictionary<string, string?>
+                {
+                    ["actor"] = grant.ActorUserId.ToString(),
+                    ["organization"] = grant.ActorOrganizationId?.ToString(),
+                    ["endedReason"] = grant.EndedReason,
+                },
             };
         }
 

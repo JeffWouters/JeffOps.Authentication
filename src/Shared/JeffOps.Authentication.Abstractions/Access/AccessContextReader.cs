@@ -55,7 +55,7 @@ public static class AccessContextReader
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(names);
 
-        return user.Claims.Any(claim => names.ImpersonationMarkers.Contains(claim.Type, StringComparer.Ordinal));
+        return user.Claims.Any(claim => names.IsImpersonationMarker(claim.Type));
     }
 
     /// <summary>

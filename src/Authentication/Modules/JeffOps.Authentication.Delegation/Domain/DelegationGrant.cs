@@ -97,7 +97,7 @@ public abstract class DelegationGrant : AggregateRoot<Guid>
 
         if (now > ApprovalDeadline)
         {
-            Finish(DelegationGrantStatus.Expired, GrantEndReasons.Expired, now);
+            Finish(DelegationGrantStatus.Expired, GrantEndReasons.Expired, now, by: null);
             return false;
         }
 
@@ -109,14 +109,17 @@ public abstract class DelegationGrant : AggregateRoot<Guid>
         return true;
     }
 
-    public bool Deny(DateTimeOffset now)
+    /// <summary>Denies a pending grant.</summary>
+    /// <param name="now">The current time.</param>
+    /// <param name="deniedBy">Who denied it, for the audit trail.</param>
+    public bool Deny(DateTimeOffset now, Guid? deniedBy = null)
     {
         if (Status != DelegationGrantStatus.PendingApproval)
         {
             return false;
         }
 
-        Finish(DelegationGrantStatus.Denied, GrantEndReasons.Denied, now);
+        Finish(DelegationGrantStatus.Denied, GrantEndReasons.Denied, now, deniedBy);
         return true;
     }
 
@@ -137,26 +140,31 @@ public abstract class DelegationGrant : AggregateRoot<Guid>
     }
 
     /// <summary>Ends a live grant normally (the actor is done, or the target ends it).</summary>
-    public bool End(DateTimeOffset now)
+    /// <param name="now">The current time.</param>
+    /// <param name="endedBy">Who ended it, for the audit trail.</param>
+    public bool End(DateTimeOffset now, Guid? endedBy = null)
     {
         if (Status is not (DelegationGrantStatus.Approved or DelegationGrantStatus.Active))
         {
             return false;
         }
 
-        Finish(DelegationGrantStatus.Ended, GrantEndReasons.Ended, now);
+        Finish(DelegationGrantStatus.Ended, GrantEndReasons.Ended, now, endedBy);
         return true;
     }
 
     /// <summary>Withdraws a grant that isn't over yet, pending or live.</summary>
-    public bool Revoke(DateTimeOffset now, string reason = GrantEndReasons.Revoked)
+    /// <param name="now">The current time.</param>
+    /// <param name="reason">Why, one of <see cref="GrantEndReasons"/>.</param>
+    /// <param name="revokedBy">Who revoked it, for the audit trail.</param>
+    public bool Revoke(DateTimeOffset now, string reason = GrantEndReasons.Revoked, Guid? revokedBy = null)
     {
         if (IsTerminal)
         {
             return false;
         }
 
-        Finish(DelegationGrantStatus.Revoked, reason, now);
+        Finish(DelegationGrantStatus.Revoked, reason, now, revokedBy);
         return true;
     }
 
@@ -170,7 +178,7 @@ public abstract class DelegationGrant : AggregateRoot<Guid>
             return false;
         }
 
-        Finish(DelegationGrantStatus.Expired, GrantEndReasons.Expired, now);
+        Finish(DelegationGrantStatus.Expired, GrantEndReasons.Expired, now, by: null);
         return true;
     }
 
@@ -184,12 +192,12 @@ public abstract class DelegationGrant : AggregateRoot<Guid>
 
     protected void Announce() => Raise(new DelegationGrantRequested(this));
 
-    private void Finish(DelegationGrantStatus status, string reason, DateTimeOffset now)
+    private void Finish(DelegationGrantStatus status, string reason, DateTimeOffset now, Guid? by)
     {
         Status = status;
         EndedAt = now;
         EndedReason = reason;
-        Raise(new DelegationGrantFinished(this, status, reason));
+        Raise(new DelegationGrantFinished(this, status, reason, by));
     }
 }
 
@@ -199,5 +207,8 @@ public sealed record DelegationGrantApproved(DelegationGrant Grant) : IDomainEve
 
 public sealed record DelegationGrantStarted(DelegationGrant Grant) : IDomainEvent;
 
-/// <summary>Raised when a grant reaches a terminal state: denied, expired, revoked or ended.</summary>
-public sealed record DelegationGrantFinished(DelegationGrant Grant, DelegationGrantStatus Status, string Reason) : IDomainEvent;
+/// <summary>
+/// Raised when a grant reaches a terminal state: denied, expired, revoked or ended. <paramref name="By"/> is the user who
+/// denied, revoked or ended it; null when it expired.
+/// </summary>
+public sealed record DelegationGrantFinished(DelegationGrant Grant, DelegationGrantStatus Status, string Reason, Guid? By) : IDomainEvent;

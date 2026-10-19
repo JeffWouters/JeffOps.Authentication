@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authorization.AspNetCore.Evaluation;
@@ -63,20 +64,29 @@ internal sealed class PermissionResultHandler : IAuthorizationMiddlewareResultHa
 
 /// <summary>
 /// Validates route rules when the host starts: a step-up exemption naming a permission that isn't sensitive does nothing,
-/// so it is a typo or a stale rename that leaves the intended route gated. Fails startup instead.
+/// so it is a typo or a stale rename that leaves the intended route gated. Fails startup instead. Also warns when no
+/// permission is refused to impersonation sessions, since an impersonation session can then make every change the target can.
 /// </summary>
 /// <remarks>
 /// A startup filter rather than a hosted service: the web server's hosted service starts last, and minimal API endpoints
 /// only reach the shared endpoint data source while it builds the request pipeline. Validating right after the rest of the
 /// pipeline is built sees every endpoint, and an exception here fails <c>StartAsync</c>.
 /// </remarks>
-internal sealed class RouteRuleValidator(IOptions<PermissionAuthorizationOptions> options) : IStartupFilter
+internal sealed partial class RouteRuleValidator(IOptions<PermissionAuthorizationOptions> options, ILogger<RouteRuleValidator> logger) : IStartupFilter
 {
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
     {
         next(app);
         Validate(app.ApplicationServices.GetRequiredService<EndpointDataSource>(), options.Value);
+        if (options.Value.ImpersonationRefusedPermissions.Count == 0)
+        {
+            LogNoImpersonationRefusals(logger);
+        }
     };
+
+    [LoggerMessage(EventId = 7121, Level = LogLevel.Warning,
+        Message = "JeffOps:Authorization:ImpersonationRefusedPermissions is empty: impersonation sessions may make every change their target may, except sensitive (step-up) ones. List the permissions that hand out access or redirect tenant data.")]
+    private static partial void LogNoImpersonationRefusals(ILogger logger);
 
     internal static void Validate(EndpointDataSource endpoints, PermissionAuthorizationOptions options)
     {
