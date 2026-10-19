@@ -4,12 +4,16 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Access;
+using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.Abstractions.Messaging;
 using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Application.DependencyInjection;
+using JeffOps.Authentication.Application.Features.Accounts;
+using JeffOps.Authentication.Enterprise.Application;
 using JeffOps.Authentication.Enterprise.Endpoints;
 using JeffOps.Authentication.Enterprise.Infrastructure;
+using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,6 +27,8 @@ public sealed class ScimTests : IAsyncDisposable
     private readonly string _database = TestDatabase.SqliteFile("scim");
     private readonly RecordingMemberships _memberships = new();
     private readonly ConcurrentQueue<IntegrationEvent> _events = new();
+    private readonly RecordingAudit _audit = new();
+    private readonly OvertakenSaves _saves = new();
     private TokenServerHost _host = null!;
     private string _token = null!;
 
@@ -169,12 +175,137 @@ public sealed class ScimTests : IAsyncDisposable
     {
         await StartAsync();
         var jo = await UserIdAsync("jo@contoso.com");
-        await _host.WithAccountAsync(jo, account => account.Disable(_host.Time.GetUtcNow()));
+        await _host.WithAccountAsync(jo, account => account.Disable(_host.Time.GetUtcNow(), byOperator: true));
 
         await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """{"Operations":[{"op":"replace","value":{"active":false}}]}"""));
         await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """{"Operations":[{"op":"replace","value":{"active":true}}]}"""));
 
         (await AccountAsync(jo)).CanAuthenticate.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task An_operator_s_disable_of_a_deactivated_user_stands_and_is_audited()
+    {
+        await StartAsync();
+        var jo = await UserIdAsync("jo@contoso.com");
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """{"Operations":[{"op":"replace","value":{"active":false}}]}"""));
+        (await AccountAsync(jo)).CanAuthenticate.ShouldBeFalse();
+
+        // The account is disabled already (by provisioning); the operator's disable still counts, as theirs.
+        var operatorId = Guid.NewGuid();
+        await SetStatusAsync(operatorId, jo, disable: true);
+        _audit.Records.ShouldContain(record => record.Action == "account.disabled" && record.TargetId == jo.ToString() && record.ActorId == operatorId);
+
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """{"Operations":[{"op":"replace","value":{"active":true}}]}"""));
+        (await AccountAsync(jo)).CanAuthenticate.ShouldBeFalse("only an operator lifts an operator's disable");
+
+        await SetStatusAsync(operatorId, jo, disable: false);
+        (await AccountAsync(jo)).CanAuthenticate.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task A_change_another_request_overtook_is_not_announced()
+    {
+        await StartAsync();
+        var ann = await UserIdAsync("ann@contoso.com");
+        await JsonAsync(await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Admins","members":[{"value":"{{ann}}"}]}"""));
+        var created = Last<GroupMembershipChangedEvent>();
+        var announced = _events.Count;
+
+        _saves.OvertakeNext = true;
+        (await ScimAsync(HttpMethod.Patch, $"Users/{ann}", """{"Operations":[{"op":"replace","value":{"active":false}}]}""")).StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        _events.Count.ShouldBe(announced, "nothing was saved, so nothing may be announced");
+        _audit.Actions.ShouldNotContain("scim.user_deactivated");
+
+        _saves.OvertakeNext = true;
+        (await ScimAsync(HttpMethod.Delete, $"Users/{ann}")).StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        _events.Count.ShouldBe(announced);
+        _audit.Actions.ShouldNotContain("scim.user_deprovisioned");
+
+        // The identity provider's retry is announced, newer than anything announced before.
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{ann}", """{"Operations":[{"op":"replace","value":{"active":false}}]}"""));
+        var deactivated = Last<GroupMembershipChangedEvent>();
+        deactivated.Removed.ShouldBe([ann]);
+        deactivated.Version.ShouldBeGreaterThan(created.Version);
+
+        // The overtaken attempt's disable was provisioning's own: reactivating enables the account again.
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{ann}", """{"Operations":[{"op":"replace","value":{"active":true}}]}"""));
+        (await AccountAsync(ann)).CanAuthenticate.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task Provisioning_changes_are_audited()
+    {
+        await StartAsync();
+        var jo = await UserIdAsync("jo@contoso.com");
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """
+            {"Operations":[{"op":"replace","path":"emails[type eq \"work\"].value","value":"jo.doe@contoso.com"}]}
+            """));
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """{"Operations":[{"op":"replace","value":{"active":false}}]}"""));
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """{"Operations":[{"op":"replace","value":{"active":true}}]}"""));
+        var group = await JsonAsync(await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Admins","members":[{"value":"{{jo}}"}]}"""));
+        var groupId = group.GetProperty("id").GetString();
+        await JsonAsync(await ScimAsync(HttpMethod.Patch, $"Groups/{groupId}", $$"""{"Operations":[{"op":"remove","path":"members[value eq \"{{jo}}\"]"}]}"""));
+        (await ScimAsync(HttpMethod.Delete, $"Groups/{groupId}")).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await ScimAsync(HttpMethod.Delete, $"Users/{jo}")).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+
+        var provisioning = _audit.Records.Where(record => record.Action.StartsWith("scim.", StringComparison.Ordinal)).ToList();
+        provisioning.Select(record => record.Action).ShouldBe(
+        [
+            "scim.user_created", "scim.user_email_changed", "scim.user_deactivated", "scim.user_reactivated",
+            "scim.group_created", "scim.group_changed", "scim.group_deleted", "scim.user_deprovisioned",
+        ]);
+        provisioning.ShouldAllBe(record => record.TenantId == Contoso);
+        provisioning.Where(record => record.TargetType == "account").ShouldAllBe(record => record.TargetId == jo.ToString());
+    }
+
+    [Fact]
+    public async Task Malformed_email_addresses_are_refused()
+    {
+        await StartAsync();
+        string[] malformed =
+        [
+            "jo smith@contoso.com", "jo@@contoso.com", "<script>@contoso.com", "jo..doe@contoso.com", ".jo@contoso.com",
+            "\"jo\"@contoso.com", "jo@contoso.com.", "jö@contoso.com", "jo@contoso.com\r\nBcc: x@contoso.com", "jo(comment)@contoso.com",
+        ];
+
+        foreach (var email in malformed)
+        {
+            var body = JsonSerializer.Serialize(new { userName = $"u-{Guid.NewGuid():N}", emails = new[] { new { value = email } } });
+            var refused = await ScimAsync(HttpMethod.Post, "Users", body);
+            refused.StatusCode.ShouldBe(HttpStatusCode.BadRequest, email);
+            (await refused.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).ShouldContain("invalidValue", customMessage: email);
+        }
+
+        var jo = await UserIdAsync("jo@contoso.com");
+        (await ScimAsync(HttpMethod.Patch, $"Users/{jo}", """
+            {"Operations":[{"op":"replace","path":"emails[type eq \"work\"].value","value":"jo@@contoso.com"}]}
+            """)).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await AccountAsync(jo)).Email.ShouldBe("jo@contoso.com");
+    }
+
+    [Fact]
+    public async Task A_scim_token_stops_working_at_the_expiry_chosen_for_it()
+    {
+        await StartAsync();
+        var admin = await AdminAsync();
+
+        var past = await _host.SendAsync(HttpMethod.Post, EnterpriseEndpointRouteBuilderExtensions.ScimTokenRoutes, admin,
+            JsonContent.Create(new { name = "Late", expiresAt = _host.Time.GetUtcNow().AddMinutes(-1) }));
+        past.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        var created = await _host.SendAsync(HttpMethod.Post, EnterpriseEndpointRouteBuilderExtensions.ScimTokenRoutes, admin,
+            JsonContent.Create(new { name = "Expiring", expiresAt = _host.Time.GetUtcNow().AddDays(1) }));
+        var json = await JsonAsync(created);
+        _token = json.GetProperty("token").GetString()!;
+        json.GetProperty("details").GetProperty("expiresAt").GetDateTimeOffset().ShouldBe(_host.Time.GetUtcNow().AddDays(1));
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        _host.Time.Advance(TimeSpan.FromDays(1));
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        var tokens = await JsonAsync(await _host.SendAsync(HttpMethod.Get, EnterpriseEndpointRouteBuilderExtensions.ScimTokenRoutes, await AdminAsync()));
+        tokens.EnumerateArray().Single(token => token.GetProperty("name").GetString() == "Expiring").GetProperty("active").GetBoolean().ShouldBeFalse();
     }
 
     [Fact]
@@ -680,6 +811,11 @@ public sealed class ScimTests : IAsyncDisposable
                 builder.Services.AddSingleton<IIntegrationEventHandler<GroupMembershipChangedEvent>>(new Recorder<GroupMembershipChangedEvent>(_events));
                 builder.Services.AddSingleton<IIntegrationEventHandler<GroupDeletedEvent>>(new Recorder<GroupDeletedEvent>(_events));
                 new AuthenticationBuilder(builder.Services, builder.Configuration).AddEnterprise().UseTestDatabase(_database);
+                builder.Services.AddSingleton<IAuditSink>(_audit);
+                var saves = builder.Services.Last(service => service.ServiceType == typeof(IEnterpriseUnitOfWork));
+                builder.Services.Remove(saves);
+                builder.Services.AddScoped<IEnterpriseUnitOfWork>(services =>
+                    new OvertakableUnitOfWork(_saves, (IEnterpriseUnitOfWork)ActivatorUtilities.CreateInstance(services, saves.ImplementationType!)));
                 builder.Services.AddScoped<IEnterpriseDatabaseInitializer, SeedDomain>();
                 var policies = builder.Services.AddAuthorizationBuilder().AddPolicy("auth.enterprise.manage", policy => policy.RequireAuthenticatedUser());
                 if (scimTokenPolicy)
@@ -753,6 +889,37 @@ public sealed class ScimTests : IAsyncDisposable
     }
 
     private T Last<T>() => _events.OfType<T>().Last();
+
+    private async Task SetStatusAsync(Guid operatorId, Guid accountId, bool disable)
+    {
+        await using var scope = _host.Services.CreateAsyncScope();
+        var handler = scope.ServiceProvider.GetRequiredService<ICommandHandler<SetAccountStatusCommand>>();
+        (await handler.HandleAsync(new SetAccountStatusCommand(operatorId, accountId, disable), TestContext.Current.CancellationToken)).IsSuccess.ShouldBeTrue();
+    }
+
+    /// <summary>When set, the next versioned save finds that another request changed the resource meanwhile.</summary>
+    private sealed class OvertakenSaves
+    {
+        public bool OvertakeNext { get; set; }
+    }
+
+    private sealed class OvertakableUnitOfWork(OvertakenSaves saves, IEnterpriseUnitOfWork inner) : IEnterpriseUnitOfWork
+    {
+        public Task SaveChangesAsync(CancellationToken cancellationToken) => inner.SaveChangesAsync(cancellationToken);
+
+        public Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken)
+        {
+            if (saves.OvertakeNext)
+            {
+                saves.OvertakeNext = false;
+                return Task.FromResult(false);
+            }
+
+            return inner.TrySaveChangesAsync(cancellationToken);
+        }
+
+        public Task<bool> TrySaveUniqueAsync(CancellationToken cancellationToken) => inner.TrySaveUniqueAsync(cancellationToken);
+    }
 
     /// <summary>Verifies contoso.com for the Contoso tenant, once the schema exists.</summary>
     private sealed class SeedDomain(EnterpriseDbContext db) : IEnterpriseDatabaseInitializer

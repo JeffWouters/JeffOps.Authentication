@@ -133,18 +133,22 @@ public sealed record ScimGroupView(Guid Id, string DisplayName, string? External
 /// <summary>
 /// Applies provisioned user state to accounts and memberships. Shared by create, replace and patch so all run the same rules:
 /// <list type="bullet">
-/// <item>Emails must be in one of the tenant's verified domains, so a tenant can provision (and link) only people whose
-/// addresses it controls — never another tenant's users or an operator, and never squat on someone else's address.</item>
+/// <item>Emails must be well-formed addresses in one of the tenant's verified domains, so a tenant can provision (and link)
+/// only people whose addresses it controls — never another tenant's users or an operator, and never squat on someone else's
+/// address.</item>
 /// <item>An existing account is linked only when its email is verified (an unverified self-registration can't capture a
 /// provisioned identity).</item>
 /// <item>Profile and status changes reach the account only when provisioning created it, since a linked account may belong
 /// to other tenants too; it is disabled only while no other tenant provisions it, and enabled again only if provisioning
-/// disabled it.</item>
+/// disabled it and no operator disabled it since.</item>
 /// <item>The tenant membership changes first: when the tenant system fails, nothing is recorded and the identity provider's
 /// retry starts over.</item>
 /// <item>Deactivated users keep their group records but drop out of the members announced to authorization, so their
 /// group-derived roles stop at once.</item>
+/// <item>Group announcements and audit records wait for the save: the handler calls <see cref="CommittedAsync"/> once the
+/// change is stored, so nothing is announced for a change another request overtook.</item>
 /// </list>
+/// Scoped: one request's pending announcements; each create, apply or delete starts afresh.
 /// </summary>
 public sealed class ScimProvisioning(
     IAccountRepository accounts,
@@ -157,9 +161,13 @@ public sealed class ScimProvisioning(
     IAuditSink audit,
     TimeProvider time)
 {
+    private readonly List<(ScimGroup Group, IReadOnlyList<Guid> Added, IReadOnlyList<Guid> Removed)> _announcements = [];
+    private readonly List<AuditRecord> _audits = [];
+
     public async Task<Result<ScimUser>> CreateAsync(Guid tenantId, ScimUserData data, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(data);
+        Discard();
         var now = time.GetUtcNow();
 
         if ((await users.ListAsync(tenantId, ScimFilters.ForUsers(ScimFilter.Eq("userName", data.UserName)).Value, 0, 1, null, cancellationToken).ConfigureAwait(false)).Total > 0)
@@ -206,17 +214,10 @@ public sealed class ScimProvisioning(
 
         await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         users.Add(user);
-        if (!created)
-        {
-            // An existing account the tenant now provisions: never claimable by its provider without the owner (docs §8.2).
-            await audit.WriteAsync(new AuditRecord("scim.account_linked", "account", account.Id.ToString())
-            {
-                TenantId = tenantId,
-                OccurredAt = now,
-                Severity = AuditSeverity.Warning,
-            }, cancellationToken).ConfigureAwait(false);
-        }
 
+        // An existing account the tenant now provisions: never claimable by its provider without the owner (docs §8.2).
+        Audit(created ? "scim.user_created" : "scim.account_linked", tenantId, account.Id, now, created ? AuditSeverity.Information : AuditSeverity.Warning,
+            data.Active ? null : new Dictionary<string, string?> { ["active"] = "false" });
         return user;
     }
 
@@ -224,6 +225,7 @@ public sealed class ScimProvisioning(
     {
         ArgumentNullException.ThrowIfNull(user);
         ArgumentNullException.ThrowIfNull(data);
+        Discard();
         var now = time.GetUtcNow();
 
         if (!string.Equals(user.UserName, data.UserName, StringComparison.OrdinalIgnoreCase)
@@ -234,8 +236,8 @@ public sealed class ScimProvisioning(
 
         var account = user.CreatedAccount ? await accounts.FindAsync(user.AccountId, cancellationToken).ConfigureAwait(false) : null;
         var email = EmailOf(data);
-        if (account is not null && email is not null && !string.Equals(email, account.Email, StringComparison.OrdinalIgnoreCase)
-            && await OwnedEmailAsync(user.TenantId, email, cancellationToken).ConfigureAwait(false) is { } notOwned)
+        var emailChanged = account is not null && email is not null && !string.Equals(email, account.Email, StringComparison.OrdinalIgnoreCase);
+        if (emailChanged && await OwnedEmailAsync(user.TenantId, email!, cancellationToken).ConfigureAwait(false) is { } notOwned)
         {
             return notOwned;
         }
@@ -254,24 +256,35 @@ public sealed class ScimProvisioning(
             if (!data.Active && !user.DisabledAccount
                 && !await users.ProvisionedElsewhereAsync(account.Id, user.TenantId, cancellationToken).ConfigureAwait(false))
             {
-                user.RecordAccountDisabled(account.Disable(now));
+                // Provisioning's own disable, also when an earlier attempt that another request overtook saved it already;
+                // never an operator's.
+                account.Disable(now);
+                user.RecordAccountDisabled(!account.DisabledByOperator);
             }
             else if (data.Active && user.DisabledAccount)
             {
-                account.Enable(now);
+                // Not when an operator disabled the account since: their disable stands until an operator lifts it.
+                account.Enable(now, byOperator: false);
                 user.RecordAccountDisabled(false);
             }
 
             await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        if (emailChanged)
+        {
+            Audit("scim.user_email_changed", user.TenantId, user.AccountId, now, AuditSeverity.Warning);
+        }
+
         if (wasActive != data.Active)
         {
-            // Group roles follow: the user's groups are announced with or without them.
+            Audit(data.Active ? "scim.user_reactivated" : "scim.user_deactivated", user.TenantId, user.AccountId, now, AuditSeverity.Warning);
+
+            // Group roles follow: the user's groups are announced with or without them, once saved.
             foreach (var group in await groups.ListForMemberAsync(user.TenantId, user.AccountId, cancellationToken).ConfigureAwait(false))
             {
                 group.MembersChanged(now);
-                await PublishMembershipAsync(group, data.Active ? [user.AccountId] : [], data.Active ? [] : [user.AccountId], cancellationToken).ConfigureAwait(false);
+                _announcements.Add((group, data.Active ? [user.AccountId] : [], data.Active ? [] : [user.AccountId]));
             }
         }
 
@@ -285,6 +298,7 @@ public sealed class ScimProvisioning(
     public async Task<Error?> DeleteAsync(ScimUser user, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(user);
+        Discard();
         var now = time.GetUtcNow();
 
         if (user.Active && await MembershipAsync(user.TenantId, user.AccountId, add: false, cancellationToken).ConfigureAwait(false) is { } failure)
@@ -302,12 +316,48 @@ public sealed class ScimProvisioning(
         foreach (var group in await groups.ListForMemberAsync(user.TenantId, user.AccountId, cancellationToken).ConfigureAwait(false))
         {
             group.RemoveMembers([user.AccountId], now);
-            await PublishMembershipAsync(group, [], [user.AccountId], cancellationToken).ConfigureAwait(false);
+            _announcements.Add((group, [], [user.AccountId]));
         }
 
         users.Remove(user);
+        Audit("scim.user_deprovisioned", user.TenantId, user.AccountId, now, AuditSeverity.Warning);
         return null;
     }
+
+    /// <summary>
+    /// Announces the group changes and writes the audit records of the last create, apply or delete. Call it only after the
+    /// change was saved; a change that wasn't saved is never announced.
+    /// </summary>
+    public async Task CommittedAsync(CancellationToken cancellationToken)
+    {
+        var announcements = _announcements.ToList();
+        var records = _audits.ToList();
+        Discard();
+        foreach (var (group, added, removed) in announcements)
+        {
+            await PublishMembershipAsync(group, added, removed, cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var record in records)
+        {
+            await audit.WriteAsync(record, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void Discard()
+    {
+        _announcements.Clear();
+        _audits.Clear();
+    }
+
+    private void Audit(string action, Guid tenantId, Guid accountId, DateTimeOffset now, AuditSeverity severity, IReadOnlyDictionary<string, string?>? details = null) =>
+        _audits.Add(new AuditRecord(action, "account", accountId.ToString())
+        {
+            TenantId = tenantId,
+            OccurredAt = now,
+            Severity = severity,
+            Details = details ?? new Dictionary<string, string?>(),
+        });
 
     public async Task<ScimUserView> ViewAsync(ScimUser user, CancellationToken cancellationToken)
     {
@@ -374,12 +424,44 @@ public sealed class ScimProvisioning(
             cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Refuses an email outside the tenant's verified domains.</summary>
+    /// <summary>
+    /// Whether <paramref name="email"/> is a plain address (RFC 5322 addr-spec, dot-atom form): a local part of at most 64
+    /// characters from the atom set, with single dots between atoms, and a host name of letters, digits and hyphens. Quoted
+    /// local parts, address literals, comments, spaces and non-ASCII characters are refused.
+    /// </summary>
+    public static bool IsAddrSpec(string? email)
+    {
+        if (string.IsNullOrEmpty(email) || email.Length > 254)
+        {
+            return false;
+        }
+
+        var at = email.IndexOf('@', StringComparison.Ordinal);
+        if (at <= 0 || at > 64 || at != email.LastIndexOf('@'))
+        {
+            return false;
+        }
+
+        var local = email[..at];
+        var domain = email[(at + 1)..];
+        return local.Split('.').All(atom => atom.Length > 0 && atom.All(IsAtext))
+            && TenantDomain.Normalize(domain) is { } normalized
+            && string.Equals(normalized, domain, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAtext(char character) =>
+        char.IsAsciiLetterOrDigit(character) || "!#$%&'*+-/=?^_`{|}~".Contains(character, StringComparison.Ordinal);
+
+    /// <summary>Refuses a malformed email, or one outside the tenant's verified domains.</summary>
     private async Task<Error?> OwnedEmailAsync(Guid tenantId, string email, CancellationToken cancellationToken)
     {
+        if (!IsAddrSpec(email))
+        {
+            return Error.Validation([new ValidationFailure("emails", "The email address is not valid.")]);
+        }
+
         var at = email.LastIndexOf('@');
-        return at > 0
-            && TenantDomain.Normalize(email[(at + 1)..]) is { } domain
+        return TenantDomain.Normalize(email[(at + 1)..]) is { } domain
             && await domains.FindVerifiedAsync(domain, cancellationToken).ConfigureAwait(false) is { } verified
             && verified.TenantId == tenantId
             ? null

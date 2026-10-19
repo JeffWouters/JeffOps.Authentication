@@ -57,7 +57,8 @@ public sealed class TenantOidcIdentityProvider
 
     /// <summary>The id in a tenant OIDC provider's name, or null when <paramref name="name"/> isn't one.</summary>
     public static Guid? IdOf(string? name) =>
-        name is not null && name.StartsWith(NamePrefix, StringComparison.Ordinal) && Guid.TryParseExact(name[NamePrefix.Length..], "N", out var id) ? id : null;
+        name is not null && name.StartsWith(NamePrefix, StringComparison.Ordinal) && Guid.TryParseExact(name[NamePrefix.Length..], "N", out var id)
+            && string.Equals(name[NamePrefix.Length..], id.ToString("N"), StringComparison.Ordinal) ? id : null;
 
     public void Set(string displayName, string issuer, string clientId, IEnumerable<string> scopes, IEnumerable<string> multiFactorAcrValues, Guid by, DateTimeOffset now)
     {

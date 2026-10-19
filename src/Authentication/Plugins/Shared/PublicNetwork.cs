@@ -6,15 +6,17 @@ namespace JeffOps.Authentication.Federation;
 /// <summary>
 /// Outbound connections to addresses tenants supply (their providers' metadata URLs): only to public addresses. The check
 /// runs on every connection, after DNS resolution, so a host name that resolves (or later re-resolves) to a private,
-/// loopback or link-local address can't make this server reach its own network (SSRF). Shared source: compiled into each
-/// federation plug-in that fetches from tenant-supplied URLs.
+/// loopback or link-local address can't make this server reach its own network (SSRF). Never through a proxy: the proxy
+/// would make the connection, past the check. Shared source: compiled into each federation plug-in that fetches from
+/// tenant-supplied URLs.
 /// </summary>
 internal static class PublicNetwork
 {
-    /// <summary>A handler that connects only to public addresses and doesn't follow redirects.</summary>
+    /// <summary>A handler that connects only to public addresses, directly (no proxy), and doesn't follow redirects.</summary>
     public static SocketsHttpHandler Handler() => new()
     {
         AllowAutoRedirect = false,
+        UseProxy = false,
         ConnectTimeout = TimeSpan.FromSeconds(10),
         ConnectCallback = ConnectAsync,
     };
@@ -68,6 +70,11 @@ internal static class PublicNetwork
         }
     }
 
+    /// <summary>
+    /// Whether <paramref name="address"/> is a public unicast address. IPv6 addresses that carry an IPv4 address (mapped,
+    /// NAT64 <c>64:ff9b::/96</c>, 6to4 <c>2002::/16</c>) are judged by that IPv4 address; Teredo, local-use NAT64 and the
+    /// other special-use ranges are refused.
+    /// </summary>
     public static bool IsPublic(IPAddress address)
     {
         ArgumentNullException.ThrowIfNull(address);
@@ -90,15 +97,35 @@ internal static class PublicNetwork
                 || (bytes[0] == 169 && bytes[1] == 254)                     // link-local, cloud metadata
                 || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
                 || (bytes[0] == 192 && bytes[1] == 168)
-                || (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0)
+                || (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 0)      // IETF protocol assignments
+                || (bytes[0] == 192 && bytes[1] == 0 && bytes[2] == 2)      // documentation
+                || (bytes[0] == 192 && bytes[1] == 88 && bytes[2] == 99)    // 6to4 relay anycast
+                || (bytes[0] == 198 && (bytes[1] == 18 || bytes[1] == 19))  // benchmarking 198.18.0.0/15
+                || (bytes[0] == 198 && bytes[1] == 51 && bytes[2] == 100)   // documentation
+                || (bytes[0] == 203 && bytes[1] == 0 && bytes[2] == 113)    // documentation
                 || bytes[0] >= 224);                                        // multicast and reserved
         }
 
         if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
             var bytes = address.GetAddressBytes();
-            return !(address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6Multicast
-                || (bytes[0] & 0xFE) == 0xFC);                              // unique local fc00::/7
+            if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b && bytes.AsSpan(4, 8).IndexOfAnyExcept((byte)0) < 0)
+            {
+                return IsPublic(new IPAddress(bytes.AsSpan(12, 4)));      // NAT64 64:ff9b::/96
+            }
+
+            if (bytes[0] == 0x20 && bytes[1] == 0x02)
+            {
+                return IsPublic(new IPAddress(bytes.AsSpan(2, 4)));       // 6to4 2002::/16
+            }
+
+            return !(address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6Multicast || address.IsIPv6Teredo
+                || (bytes[0] & 0xFE) == 0xFC                                // unique local fc00::/7
+                || bytes.AsSpan(0, 12).IndexOfAnyExcept((byte)0) < 0       // IPv4-compatible ::/96
+                || (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b) // other NAT64, such as local-use 64:ff9b:1::/48
+                || (bytes[0] == 0x01 && bytes[1] == 0x00 && bytes.AsSpan(2, 6).IndexOfAnyExcept((byte)0) < 0) // discard 100::/64
+                || (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0d && bytes[3] == 0xb8)            // documentation 2001:db8::/32
+                || (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x00 && bytes[3] < 0x02));           // IETF protocol assignments 2001::/23
         }
 
         return false;

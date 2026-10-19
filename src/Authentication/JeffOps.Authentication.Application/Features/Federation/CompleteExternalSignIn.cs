@@ -66,6 +66,18 @@ public sealed class CompleteExternalSignInHandler(
             return Error.Forbidden(FederationErrors.SsoRequired, "Your organization requires signing in with its own identity provider.");
         }
 
+        // The linked account's own address counts too: a provider linked earlier can't sign it in around its domain's SSO-only
+        // policy by now reporting another address (or none).
+        if (existing is not null && HomeRealm.DomainOf(existing.Email) is { } accountDomain
+            && !string.Equals(accountDomain, domain, StringComparison.OrdinalIgnoreCase)
+            && await realms.FindByDomainAsync(accountDomain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true } accountRealm
+            && !string.Equals(accountRealm.Provider, identity.Provider, StringComparison.OrdinalIgnoreCase)
+            && !pendingLinks.Confirms(existing.Id, accountRealm))
+        {
+            await AuditRefusalAsync(identity, FederationErrors.SsoRequired, now, cancellationToken).ConfigureAwait(false);
+            return Error.Forbidden(FederationErrors.SsoRequired, "Your organization requires signing in with its own identity provider.");
+        }
+
         // A tenant's verified domain admits its members through the tenant's own provider.
         var admittedByTenant = realm is { Provider: { } realmProvider } && identity.EmailVerified
             && string.Equals(realmProvider, identity.Provider, StringComparison.OrdinalIgnoreCase);

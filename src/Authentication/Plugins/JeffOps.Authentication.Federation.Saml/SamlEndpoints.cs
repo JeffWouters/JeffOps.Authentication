@@ -140,9 +140,23 @@ public static partial class SamlEndpoints
         }
 
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
-        if (saml.Providers.Settings(provider).RequireEncryptedAssertions && !IsEncrypted(form["SAMLResponse"].ToString()))
+        var document = Parse(form["SAMLResponse"].ToString());
+        if (document is null)
+        {
+            LogRejected(logger, provider, "response not readable");
+            return BackToLogin(returnUrl, "provider_error");
+        }
+
+        if (saml.Providers.Settings(provider).RequireEncryptedAssertions && !IsEncrypted(document))
         {
             LogRejected(logger, provider, "assertion not encrypted");
+            return BackToLogin(returnUrl, "provider_error");
+        }
+
+        // Before anything is decrypted: a weak scheme could make this endpoint a decryption oracle.
+        if (RefusedEncryption(document, saml.Providers.Settings(provider).AllowCbcEncryption) is { } weak)
+        {
+            LogRejected(logger, provider, $"encrypted with {weak}");
             return BackToLogin(returnUrl, "provider_error");
         }
 
@@ -558,8 +572,8 @@ public static partial class SamlEndpoints
         return confirmed ? null : "no bearer confirmation for this request and endpoint";
     }
 
-    /// <summary>Whether the posted response carries its assertion encrypted, and no plain one beside it.</summary>
-    private static bool IsEncrypted(string samlResponse)
+    /// <summary>The response's XML (no DTDs, no external resources), or null when it isn't base64 XML.</summary>
+    private static System.Xml.XmlDocument? Parse(string samlResponse)
     {
         try
         {
@@ -568,14 +582,57 @@ public static partial class SamlEndpoints
                 new MemoryStream(Convert.FromBase64String(samlResponse)),
                 new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null });
             document.Load(reader);
-            const string Assertion = "urn:oasis:names:tc:SAML:2.0:assertion";
-            return document.GetElementsByTagName("EncryptedAssertion", Assertion).Count == 1
-                && document.GetElementsByTagName("Assertion", Assertion).Count == 0;
+            return document;
         }
         catch (Exception exception) when (exception is FormatException or System.Xml.XmlException)
         {
-            return false;
+            return null;
         }
+    }
+
+    /// <summary>Whether the posted response carries its assertion encrypted, and no plain one beside it.</summary>
+    private static bool IsEncrypted(System.Xml.XmlDocument document)
+    {
+        const string Assertion = "urn:oasis:names:tc:SAML:2.0:assertion";
+        return document.GetElementsByTagName("EncryptedAssertion", Assertion).Count == 1
+            && document.GetElementsByTagName("Assertion", Assertion).Count == 0;
+    }
+
+    private const string XmlEnc = "http://www.w3.org/2001/04/xmlenc#";
+
+    /// <summary>Key transport this server accepts: RSA-OAEP only.</summary>
+    private static readonly string[] KeyTransportAlgorithms = [XmlEnc + "rsa-oaep-mgf1p", "http://www.w3.org/2009/xmlenc11#rsa-oaep"];
+
+    private static readonly string[] GcmAlgorithms =
+        ["http://www.w3.org/2009/xmlenc11#aes128-gcm", "http://www.w3.org/2009/xmlenc11#aes192-gcm", "http://www.w3.org/2009/xmlenc11#aes256-gcm"];
+
+    private static readonly string[] CbcAlgorithms = [XmlEnc + "aes128-cbc", XmlEnc + "aes192-cbc", XmlEnc + "aes256-cbc"];
+
+    /// <summary>
+    /// What the response is encrypted with that this server refuses (a fixed name, never the response's own text), or null.
+    /// Keys must travel with RSA-OAEP (never PKCS#1 v1.5, open to padding-oracle attacks); data must be AES-GCM, or AES-CBC
+    /// where <paramref name="allowCbc"/>.
+    /// </summary>
+    private static string? RefusedEncryption(System.Xml.XmlDocument document, bool allowCbc)
+    {
+        foreach (var method in document.GetElementsByTagName("EncryptionMethod", XmlEnc).OfType<System.Xml.XmlElement>())
+        {
+            var algorithm = method.GetAttribute("Algorithm");
+            var allowed = method.ParentNode is System.Xml.XmlElement { LocalName: "EncryptedKey", NamespaceURI: XmlEnc }
+                ? KeyTransportAlgorithms.Contains(algorithm, StringComparer.Ordinal)
+                : GcmAlgorithms.Contains(algorithm, StringComparer.Ordinal) || (allowCbc && CbcAlgorithms.Contains(algorithm, StringComparer.Ordinal));
+            if (!allowed)
+            {
+                return algorithm switch
+                {
+                    XmlEnc + "rsa-1_5" => "RSA PKCS#1 v1.5",
+                    _ when CbcAlgorithms.Contains(algorithm, StringComparer.Ordinal) => "AES-CBC",
+                    _ => "an unsupported algorithm",
+                };
+            }
+        }
+
+        return null;
     }
 
     private static string? AuthnContextOf(Saml2AuthnResponse response) =>

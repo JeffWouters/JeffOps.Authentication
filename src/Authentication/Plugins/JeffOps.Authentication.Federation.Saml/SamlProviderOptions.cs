@@ -120,6 +120,12 @@ public sealed class SamlProviderOptions
     /// Whether assertions must arrive encrypted (needs a decryption certificate); an unencrypted one is refused. Default: false.
     /// </summary>
     public bool RequireEncryptedAssertions { get; set; }
+
+    /// <summary>
+    /// Whether encrypted assertions may use AES-CBC, for a provider that can't encrypt with AES-GCM. Default: false (only
+    /// AES-GCM). Keys must always travel with RSA-OAEP; RSA PKCS#1 v1.5 is refused.
+    /// </summary>
+    public bool AllowCbcEncryption { get; set; }
 }
 
 /// <summary>
@@ -143,4 +149,7 @@ public sealed class SamlTenantProviderOptions
 
     /// <summary>The password of <see cref="DecryptionCertificatePfx"/>, if any.</summary>
     public string? DecryptionCertificatePassword { get; set; }
+
+    /// <summary>Whether tenants' providers may encrypt assertions with AES-CBC (<see cref="SamlProviderOptions.AllowCbcEncryption"/>). Default: false.</summary>
+    public bool AllowCbcEncryption { get; set; }
 }

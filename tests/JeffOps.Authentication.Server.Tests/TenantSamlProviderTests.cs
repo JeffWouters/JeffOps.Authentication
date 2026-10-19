@@ -55,6 +55,23 @@ public sealed class TenantSamlProviderTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_tenant_provider_answers_only_at_its_canonical_name()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await AllowAsync(Contoso);
+        var provider = await RegisterAsync(admin);
+        var variant = Application.Federation.TenantProviderNames.Prefix + provider[Application.Federation.TenantProviderNames.Prefix.Length..].ToUpperInvariant();
+        variant.ShouldNotBe(provider);
+
+        using var browser = new Browser(_host);
+        (await browser.GetAsync(null!, $"signin/saml/{provider}?returnUrl=%2Fdone")).StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        (await browser.GetAsync(null!, $"signin/saml/{variant}?returnUrl=%2Fdone")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+        (await browser.GetAsync(null!, $"signin/saml/{variant}/metadata")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task A_suspended_tenant_s_provider_and_domains_admit_no_one()
     {
         await StartAsync();
@@ -152,8 +169,32 @@ public sealed class TenantSamlProviderTests : IAsyncDisposable
     [InlineData("fd00::1", false)]
     [InlineData("fe80::1", false)]
     [InlineData("::ffff:10.0.0.1", false)]
+    [InlineData("198.18.0.1", false)]
+    [InlineData("198.19.255.254", false)]
+    [InlineData("198.20.0.1", true)]
+    [InlineData("192.0.2.1", false)]
+    [InlineData("203.0.113.9", false)]
+    [InlineData("64:ff9b::a9fe:a9fe", false)]   // NAT64 of 169.254.169.254
+    [InlineData("64:ff9b::7f00:1", false)]      // NAT64 of 127.0.0.1
+    [InlineData("64:ff9b::808:808", true)]      // NAT64 of 8.8.8.8
+    [InlineData("64:ff9b:1::a00:1", false)]     // local-use NAT64
+    [InlineData("2002:a9fe:a9fe::1", false)]    // 6to4 of 169.254.169.254
+    [InlineData("2002:c0a8:101::1", false)]     // 6to4 of 192.168.1.1
+    [InlineData("2002:808:808::1", true)]       // 6to4 of 8.8.8.8
+    [InlineData("2001:0:4136:e378:8000:63bf:3fff:fdd2", false)] // Teredo
+    [InlineData("::a00:1", false)]              // IPv4-compatible 10.0.0.1
+    [InlineData("2001:db8::1", false)]
     public void Tenant_metadata_is_fetched_from_public_addresses_only(string address, bool allowed) =>
         PublicNetwork.IsPublic(IPAddress.Parse(address)).ShouldBe(allowed);
+
+    [Fact]
+    public void Tenant_metadata_is_fetched_directly_never_through_a_proxy()
+    {
+        // A proxy would make the connection itself, past the address check.
+        using var handler = PublicNetwork.Handler();
+        handler.UseProxy.ShouldBeFalse();
+        handler.AllowAutoRedirect.ShouldBeFalse();
+    }
 
     public async ValueTask DisposeAsync()
     {

@@ -148,6 +148,41 @@ public sealed class EnterpriseTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task An_older_unverified_account_with_the_address_doesn_t_hide_the_provisioned_one()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = false });
+        var squatter = await _host.CreateAccountAsync("kim@contoso.com", emailVerified: false);
+        _host.Time.Advance(TimeSpan.FromMinutes(1));
+        var provisioned = await ProvisionAsync("kim@contoso.com", Contoso);
+
+        var signedIn = await ExternalSignInAsync(CorporateProvider, "kim@contoso.com", subject: "kim-at-idp");
+
+        signedIn.IsSuccess.ShouldBeTrue(signedIn.IsFailure ? signedIn.Error.Message : null);
+        signedIn.Value.AccountId.ShouldBe(provisioned);
+        signedIn.Value.AccountId.ShouldNotBe(squatter.Id);
+    }
+
+    [Fact]
+    public async Task A_linked_provider_reporting_another_address_doesn_t_get_around_sso_only()
+    {
+        await StartAsync(new() { ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true" });
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = true });
+        var pat = await _host.CreateAccountAsync("pat@contoso.com");
+        await _host.WithAccountAsync(pat.Id, account => account.LinkExternalLogin(new ExternalLoginKey("https://idp.test/", "pat-elsewhere"), "other-idp", _host.Time.GetUtcNow()));
+
+        var refused = await ExternalSignInAsync("other-idp", "pat@private.test", subject: "pat-elsewhere");
+
+        refused.IsFailure.ShouldBeTrue("the account's own address is in an SSO-only domain");
+        refused.Error.Code.ShouldBe("sso_required");
+        (await ExternalSignInAsync(CorporateProvider, "pat@contoso.com", subject: "pat-at-corp")).IsSuccess.ShouldBeTrue();
+    }
+
+    [Fact]
     public async Task Accounts_the_tenant_didn_t_provision_are_not_claimed_by_email()
     {
         await StartAsync();
@@ -275,16 +310,22 @@ public sealed class EnterpriseTests : IAsyncDisposable
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
-    private async Task StartAsync()
+    private async Task StartAsync(Dictionary<string, string?>? extra = null)
     {
+        var settings = new Dictionary<string, string?>
+        {
+            ["JeffOps:LocalAccounts:Enabled"] = "true",
+            ["JeffOps:LocalAccounts:HashIterations"] = "10000",
+            ["JeffOps:TokenServer:Federation:OpenRegistration"] = "false",
+            ["JeffOps:Enterprise:RecheckDomains"] = "false",
+        };
+        foreach (var (key, value) in extra ?? [])
+        {
+            settings[key] = value;
+        }
+
         _host = await TokenServerHost.StartAsync(
-            new()
-            {
-                ["JeffOps:LocalAccounts:Enabled"] = "true",
-                ["JeffOps:LocalAccounts:HashIterations"] = "10000",
-                ["JeffOps:TokenServer:Federation:OpenRegistration"] = "false",
-                ["JeffOps:Enterprise:RecheckDomains"] = "false",
-            },
+            settings,
             configure: builder =>
             {
                 builder.Services.AddSingleton(_dns);

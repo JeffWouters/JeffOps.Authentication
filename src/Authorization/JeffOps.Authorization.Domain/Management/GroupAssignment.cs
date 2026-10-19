@@ -79,12 +79,13 @@ public sealed class GroupSyncState
     public long Version { get; private set; }
 
     /// <summary>
-    /// Whether an announcement of <paramref name="version"/> applies (it is not older than the newest applied one), recording
-    /// it if so. Unversioned announcements (0) apply unless the group was deleted.
+    /// Whether an announcement of <paramref name="version"/> applies (it is newer than the newest applied one), recording it if
+    /// so. Each saved change has its own version, so one with a version already applied is a repeat or stale and is ignored.
+    /// Unversioned announcements (0) apply unless the group was deleted.
     /// </summary>
     public bool TryAdvance(long version)
     {
-        if (Version == Deleted || (version != 0 && version < Version))
+        if (Version == Deleted || (version != 0 && version <= Version))
         {
             return false;
         }

@@ -98,6 +98,7 @@ internal sealed class SamlProviders(
             EmailVerified = true,
             SigningCertificate = _tenantCertificates.Value.Signing,
             DecryptionCertificate = _tenantCertificates.Value.Decryption,
+            AllowCbcEncryption = tenantDefaults.Value.AllowCbcEncryption,
         };
         foreach (var certificate in found.SigningCertificates)
         {

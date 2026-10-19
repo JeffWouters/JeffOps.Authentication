@@ -48,6 +48,7 @@ public sealed class CreateScimUserHandler(ScimProvisioning provisioning, IEnterp
         }
 
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await provisioning.CommittedAsync(cancellationToken).ConfigureAwait(false);
         return ScimProvisioning.NewView(created.Value, command.Data);
     }
 }
@@ -99,6 +100,7 @@ public sealed class UpdateScimUserHandler(IScimUserRepository users, ScimProvisi
             return ScimVersions.Overtaken(command.IfMatch);
         }
 
+        await provisioning.CommittedAsync(cancellationToken).ConfigureAwait(false);
         return await provisioning.ViewAsync(user, cancellationToken).ConfigureAwait(false);
     }
 }
@@ -126,7 +128,13 @@ public sealed class DeleteScimUserHandler(IScimUserRepository users, ScimProvisi
             return failure;
         }
 
-        return await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false) ? Result.Success() : ScimVersions.Overtaken(command.IfMatch);
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return ScimVersions.Overtaken(command.IfMatch);
+        }
+
+        await provisioning.CommittedAsync(cancellationToken).ConfigureAwait(false);
+        return Result.Success();
     }
 }
 

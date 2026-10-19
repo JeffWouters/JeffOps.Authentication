@@ -45,6 +45,12 @@ public sealed class Account : AggregateRoot<Guid>
 
     public AccountStatus Status { get; private set; }
 
+    /// <summary>
+    /// Whether an operator disabled the account. Then only an operator enables it again: provisioning, which may enable an
+    /// account it disabled itself, leaves it alone.
+    /// </summary>
+    public bool DisabledByOperator { get; private set; }
+
     public DateTimeOffset CreatedAt { get; private set; }
 
     public DateTimeOffset UpdatedAt { get; private set; }
@@ -125,29 +131,44 @@ public sealed class Account : AggregateRoot<Guid>
         return true;
     }
 
-    /// <summary>Disables the account. Returns false when it already was.</summary>
-    public bool Disable(DateTimeOffset now)
+    /// <summary>
+    /// Disables the account. Returns false when nothing changed: it already was disabled (for an operator: by an operator). An
+    /// operator disabling an account provisioning disabled takes the disable over, so provisioning can't undo it.
+    /// </summary>
+    public bool Disable(DateTimeOffset now, bool byOperator = false)
     {
         if (Status == AccountStatus.Disabled)
         {
-            return false;
+            if (!byOperator || DisabledByOperator)
+            {
+                return false;
+            }
+
+            DisabledByOperator = true;
+            UpdatedAt = now;
+            return true;
         }
 
         Status = AccountStatus.Disabled;
+        DisabledByOperator = byOperator;
         UpdatedAt = now;
         Raise(new AccountStatusChanged(Id, Disabled: true));
         return true;
     }
 
-    /// <summary>Re-enables a disabled or locked account. Returns false when it already was active.</summary>
-    public bool Enable(DateTimeOffset now)
+    /// <summary>
+    /// Re-enables a disabled or locked account. Returns false when nothing changed: it already was active, or an operator
+    /// disabled it and <paramref name="byOperator"/> is false.
+    /// </summary>
+    public bool Enable(DateTimeOffset now, bool byOperator = true)
     {
-        if (Status == AccountStatus.Active)
+        if (Status == AccountStatus.Active || (DisabledByOperator && !byOperator))
         {
             return false;
         }
 
         Status = AccountStatus.Active;
+        DisabledByOperator = false;
         UpdatedAt = now;
         Raise(new AccountStatusChanged(Id, Disabled: false));
         return true;

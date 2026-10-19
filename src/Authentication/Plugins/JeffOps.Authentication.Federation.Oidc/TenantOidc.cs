@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -212,7 +213,7 @@ public static partial class TenantOidcEndpoints
 
         if (!string.IsNullOrEmpty(query["error"]) || query["code"].ToString() is not { Length: > 0 } code)
         {
-            LogRejected(logger, provider, $"the provider answered '{query["error"]}'");
+            LogProviderError(logger, provider, ErrorCodeOf(query["error"].ToString()));
             return BackToLogin(pending.ReturnUrl, "provider_error");
         }
 
@@ -616,6 +617,19 @@ public static partial class TenantOidcEndpoints
 
     private const string LoggerName = "JeffOps.Authentication.Federation.Oidc.Tenants";
 
+    /// <summary>The error codes of OAuth 2.0 and OpenID Connect authorization responses, the only ones logged as given.</summary>
+    private static readonly FrozenSet<string> KnownErrors = FrozenSet.Create(StringComparer.Ordinal,
+        "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error",
+        "temporarily_unavailable", "interaction_required", "login_required", "account_selection_required", "consent_required",
+        "invalid_request_uri", "invalid_request_object", "request_not_supported", "request_uri_not_supported", "registration_not_supported");
+
+    /// <summary>
+    /// The provider's <c>error</c> as it may reach the log: a known code, <c>none</c> when there is none (no code either), or
+    /// <c>other</c>. The value comes from the browser, so it is never logged as given.
+    /// </summary>
+    internal static string ErrorCodeOf(string? error) =>
+        string.IsNullOrEmpty(error) ? "none" : KnownErrors.Contains(error) ? error : "other";
+
     [LoggerMessage(EventId = 8601, Level = LogLevel.Warning, Message = "Rejected a sign-in through tenant OIDC provider {Provider}: {Reason}")]
     private static partial void LogRejected(ILogger logger, string provider, string reason);
 
@@ -624,6 +638,9 @@ public static partial class TenantOidcEndpoints
 
     [LoggerMessage(EventId = 8603, Level = LogLevel.Warning, Message = "Tenant OIDC provider {Provider} could not be reached or described itself wrongly.")]
     private static partial void LogUnavailable(ILogger logger, Exception exception, string provider);
+
+    [LoggerMessage(EventId = 8605, Level = LogLevel.Warning, Message = "Tenant OIDC provider {Provider} answered a sign-in with error {Error}.")]
+    private static partial void LogProviderError(ILogger logger, string provider, string error);
 
     [LoggerMessage(EventId = 8604, Level = LogLevel.Information, Message = "Tenant OIDC provider {Provider} logged out {Count} session(s) through the back channel.")]
     private static partial void LogBackchannelLogout(ILogger logger, string provider, int count);

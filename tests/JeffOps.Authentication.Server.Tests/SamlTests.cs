@@ -17,6 +17,7 @@ public sealed class SamlTests : IAsyncDisposable
 {
     private const string IdpEntityId = "https://idp.test/";
     private const string MultiFactor = "http://schemas.microsoft.com/claims/multipleauthn";
+    private const string Aes256Gcm = Saml2EncryptionAlgorithms.XmlEncAES256GCMUrl;
 
     private readonly X509Certificate2 _idpCertificate = SelfSigned("CN=Test IdP");
     private TokenServerHost _host = null!;
@@ -148,7 +149,7 @@ public sealed class SamlTests : IAsyncDisposable
         using (var browser = new Browser(_host))
         {
             var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
-            var encrypted = Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart);
+            var encrypted = Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart, encryption: Aes256Gcm);
             Encoding.UTF8.GetString(Convert.FromBase64String(encrypted)).ShouldContain("EncryptedAssertion");
 
             var signedIn = await PostResponseAsync(browser, encrypted);
@@ -158,6 +159,62 @@ public sealed class SamlTests : IAsyncDisposable
         var metadata = await _host.Client.GetStringAsync(new Uri("signin/saml/corp/metadata", UriKind.Relative), TestContext.Current.CancellationToken);
         metadata.ShouldContain("use=\"encryption\"");
         metadata.ShouldContain(Convert.ToBase64String(decryption.RawData));
+    }
+
+    [Fact]
+    public async Task Assertions_encrypted_with_rsa_pkcs1_v1_5_or_aes_cbc_are_refused()
+    {
+        using var decryption = SelfSigned("CN=Token Server Encryption");
+        await StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Federation:Saml:corp:DecryptionCertificatePfx"] = Convert.ToBase64String(decryption.Export(X509ContentType.Pfx)),
+        });
+        using var publicPart = X509CertificateLoader.LoadCertificate(decryption.RawData);
+
+        foreach (var (encryption, keyTransport) in new[]
+        {
+            (Saml2EncryptionAlgorithms.XmlEncAES256Url, Saml2EncryptionAlgorithms.XmlEncRSAOAEPUrl),   // ITfoxtec's default
+            (Aes256Gcm, Saml2EncryptionAlgorithms.XmlEncRSA15Url),
+        })
+        {
+            using var browser = new Browser(_host);
+            var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+            var refused = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart, encryption: encryption, keyTransport: keyTransport));
+            refused.Headers.Location!.OriginalString.ShouldContain("error=provider_error", customMessage: $"{encryption} with {keyTransport}");
+        }
+
+        using (var browser = new Browser(_host))
+        {
+            var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+            var signedIn = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart, encryption: Aes256Gcm, keyTransport: Saml2EncryptionAlgorithms.XmlEncRSAOAEP11Url));
+            signedIn.Headers.Location!.OriginalString.ShouldBe("/done");
+        }
+    }
+
+    [Fact]
+    public async Task Aes_cbc_is_accepted_only_where_allowed_and_rsa_pkcs1_v1_5_never()
+    {
+        using var decryption = SelfSigned("CN=Token Server Encryption");
+        await StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Federation:Saml:corp:DecryptionCertificatePfx"] = Convert.ToBase64String(decryption.Export(X509ContentType.Pfx)),
+            ["JeffOps:TokenServer:Federation:Saml:corp:AllowCbcEncryption"] = "true",
+        });
+        using var publicPart = X509CertificateLoader.LoadCertificate(decryption.RawData);
+
+        using (var browser = new Browser(_host))
+        {
+            var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+            var refused = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart, keyTransport: Saml2EncryptionAlgorithms.XmlEncRSA15Url));
+            refused.Headers.Location!.OriginalString.ShouldContain("error=provider_error");
+        }
+
+        using (var browser = new Browser(_host))
+        {
+            var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
+            var signedIn = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate, encryptFor: publicPart));
+            signedIn.Headers.Location!.OriginalString.ShouldBe("/done");
+        }
     }
 
     [Fact]
@@ -503,9 +560,17 @@ public sealed class SamlTests : IAsyncDisposable
 
     private static string Response(
         string inResponseTo, Uri acs, string audience, string? authnContext, X509Certificate2? signer,
-        string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent", X509Certificate2? encryptFor = null, DateTime? authenticatedAt = null)
+        string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent", X509Certificate2? encryptFor = null, DateTime? authenticatedAt = null,
+        string encryption = Saml2EncryptionAlgorithms.XmlEncAES256Url, string keyTransport = Saml2EncryptionAlgorithms.XmlEncRSAOAEPUrl)
     {
-        var configuration = new Saml2Configuration { Issuer = IdpEntityId, SigningCertificate = signer, EncryptionCertificate = encryptFor };
+        var configuration = new Saml2Configuration
+        {
+            Issuer = IdpEntityId,
+            SigningCertificate = signer,
+            EncryptionCertificate = encryptFor,
+            EncryptionAlgorithm = encryption,
+            KeyEncryptionAlgorithm = keyTransport,
+        };
         var response = new Saml2AuthnResponse(configuration)
         {
             InResponseTo = new Saml2Id(inResponseTo),

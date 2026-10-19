@@ -37,9 +37,11 @@ public sealed class SetSsoPolicyHandler(
         ArgumentNullException.ThrowIfNull(command);
         var now = time.GetUtcNow();
 
-        if (command.Provider is { } provider && !command.KnownProviders.Contains(provider, StringComparer.OrdinalIgnoreCase))
+        // Stored as the provider spells its name: a tenant provider answers only to its canonical name.
+        var canonical = command.Provider is { } provider ? command.KnownProviders.FirstOrDefault(known => string.Equals(known, provider, StringComparison.OrdinalIgnoreCase)) : null;
+        if (command.Provider is { } unknown && canonical is null)
         {
-            return Error.Failure(EnterpriseErrors.UnknownProvider, $"Unknown provider '{provider}'.");
+            return Error.Failure(EnterpriseErrors.UnknownProvider, $"Unknown provider '{unknown}'.");
         }
 
         if (command.SsoOnly && command.Provider is null)
@@ -59,7 +61,7 @@ public sealed class SetSsoPolicyHandler(
             policies.Add(policy);
         }
 
-        policy.Set(command.Provider, command.SsoOnly, command.Caller.UserId, now);
+        policy.Set(canonical, command.SsoOnly, command.Caller.UserId, now);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await audit.WriteAsync(new AuditRecord("sso_policy.changed", "tenant", command.Caller.TenantId.ToString())
         {

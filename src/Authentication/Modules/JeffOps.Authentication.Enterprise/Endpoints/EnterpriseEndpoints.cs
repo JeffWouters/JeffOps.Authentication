@@ -21,7 +21,8 @@ public sealed record ClaimDomainRequest(string Domain);
 
 public sealed record SetSsoPolicyRequest(string? Provider, bool SsoOnly);
 
-public sealed record CreateScimTokenRequest(string Name);
+/// <summary>A new SCIM token: its name, and optionally when it stops working.</summary>
+public sealed record CreateScimTokenRequest(string Name, DateTimeOffset? ExpiresAt = null);
 
 public sealed record SetCustomProvidersRequest(bool Allowed);
 
@@ -90,7 +91,7 @@ public static class EnterpriseEndpointRouteBuilderExtensions
         root.MapGet(ScimTokenRoutes, async (HttpContext context, IQueryHandler<ListScimTokensQuery, IReadOnlyList<ScimTokenDto>> handler) =>
             ToResult(await handler.HandleAsync(new ListScimTokensQuery(Caller(context)), context.RequestAborted).ConfigureAwait(false)));
         root.MapPost(ScimTokenRoutes, async (CreateScimTokenRequest request, HttpContext context, ICommandHandler<CreateScimTokenCommand, CreatedScimToken> handler) =>
-            ToResult(await handler.HandleAsync(new CreateScimTokenCommand(Caller(context), request.Name), context.RequestAborted).ConfigureAwait(false)))
+            ToResult(await handler.HandleAsync(new CreateScimTokenCommand(Caller(context), request.Name, request.ExpiresAt), context.RequestAborted).ConfigureAwait(false)))
             .AddEndpointFilter<StepUpFilter>()
             .AddEndpointFilter(async (context, next) =>
             {

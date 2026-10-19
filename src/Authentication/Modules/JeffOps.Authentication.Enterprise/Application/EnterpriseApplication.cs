@@ -213,15 +213,24 @@ public sealed class EnterpriseTenantProviders(
         && await tenants.FindTenantAsync(tenantId, cancellationToken).ConfigureAwait(false) is { AcceptsSessions: true };
 }
 
-/// <summary>The accounts a tenant's SCIM provisioning created or linked, by email.</summary>
+/// <summary>
+/// The accounts a tenant's SCIM provisioning created or linked, by email: among every account with the address, the one the
+/// tenant's provisioned user is (so an older, unrelated account with the same address doesn't hide it).
+/// </summary>
 public sealed class ScimProvisionedAccounts(IAccountRepository accounts, IScimUserRepository users) : IProvisionedAccountDirectory
 {
     public async Task<ProvisionedAccount?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(email);
-        return await accounts.FindByEmailAsync(email, cancellationToken).ConfigureAwait(false) is { } account
-            && await users.FindAsync(tenantId, account.Id, cancellationToken).ConfigureAwait(false) is { } user
-            ? new ProvisionedAccount(account.Id, user.CreatedAccount)
+        var ids = await accounts.FindIdsByEmailAsync(email, cancellationToken).ConfigureAwait(false);
+        if (ids.Count == 0)
+        {
+            return null;
+        }
+
+        var provisioned = (await users.FindManyAsync(tenantId, ids, cancellationToken).ConfigureAwait(false)).ToDictionary(user => user.AccountId);
+        return ids.Select(id => provisioned.GetValueOrDefault(id)).FirstOrDefault(user => user is not null) is { } found
+            ? new ProvisionedAccount(found.AccountId, found.CreatedAccount)
             : null;
     }
 }

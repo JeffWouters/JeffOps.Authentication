@@ -11,6 +11,9 @@ public interface IAccountRepository
     /// <summary>The oldest account with this (normalized) email. Emails are not unique; use only for lookups, never for linking.</summary>
     Task<Account?> FindByEmailAsync(string email, CancellationToken cancellationToken);
 
+    /// <summary>The ids of every account with this (normalized) email, oldest first (no accounts loaded).</summary>
+    Task<IReadOnlyList<Guid>> FindIdsByEmailAsync(string email, CancellationToken cancellationToken);
+
     Task<Account?> FindByExternalLoginAsync(ExternalLoginKey login, CancellationToken cancellationToken);
 
     /// <summary>The emails of the accounts among <paramref name="accountIds"/> that exist, in one read (no accounts loaded).</summary>

@@ -1,3 +1,5 @@
+using System.Globalization;
+using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.Abstractions.Messaging;
 using JeffOps.Authentication.Enterprise.Domain;
 using JeffOps.Authentication.SharedKernel.Handlers;
@@ -30,6 +32,20 @@ internal static class GroupMapping
             : null;
     }
 
+    /// <summary>An audit record of a provisioned group change; SCIM writes have no acting account.</summary>
+    public static AuditRecord Audit(string action, ScimGroup group, DateTimeOffset now, int added = 0, int removed = 0) =>
+        new(action, "scim_group", group.Id.ToString())
+        {
+            TenantId = group.TenantId,
+            OccurredAt = now,
+            Severity = AuditSeverity.Warning,
+            Details = new Dictionary<string, string?>
+            {
+                ["added"] = added.ToString(CultureInfo.InvariantCulture),
+                ["removed"] = removed.ToString(CultureInfo.InvariantCulture),
+            },
+        };
+
     public static Error? CheckName(string displayName) =>
         displayName.Trim().Length > ScimLimits.MaxLength
             ? Error.Validation([new ValidationFailure("displayName", $"A displayName is limited to {ScimLimits.MaxLength} characters.")])
@@ -38,7 +54,7 @@ internal static class GroupMapping
 
 public sealed record CreateScimGroupCommand(Guid TenantId, string DisplayName, string? ExternalId, IReadOnlyList<Guid> Members);
 
-public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork, TimeProvider time)
+public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork, IAuditSink audit, TimeProvider time)
     : ICommandHandler<CreateScimGroupCommand, ScimGroupView>
 {
     public async Task<Result<ScimGroupView>> HandleAsync(CreateScimGroupCommand command, CancellationToken cancellationToken)
@@ -70,6 +86,7 @@ public sealed class CreateScimGroupHandler(IScimGroupRepository groups, IScimUse
         groups.Add(group);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await provisioning.PublishMembershipAsync(group, group.MemberIds, [], cancellationToken).ConfigureAwait(false);
+        await audit.WriteAsync(GroupMapping.Audit("scim.group_created", group, now, added: group.MemberIds.Count), cancellationToken).ConfigureAwait(false);
         return group.ToView();
     }
 }
@@ -80,7 +97,7 @@ public sealed record ScimGroupChange(string? DisplayName = null, string? Externa
 /// <summary>Changes a group; <paramref name="IfMatch"/>: the versions the caller allows (<c>If-Match</c>), null for any.</summary>
 public sealed record UpdateScimGroupCommand(Guid TenantId, Guid GroupId, ScimGroupChange Change, IReadOnlyList<int>? IfMatch = null);
 
-public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork, TimeProvider time)
+public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUserRepository users, ScimProvisioning provisioning, IEnterpriseUnitOfWork unitOfWork, IAuditSink audit, TimeProvider time)
     : ICommandHandler<UpdateScimGroupCommand, ScimGroupView>
 {
     public async Task<Result<ScimGroupView>> HandleAsync(UpdateScimGroupCommand command, CancellationToken cancellationToken)
@@ -146,14 +163,17 @@ public sealed class UpdateScimGroupHandler(IScimGroupRepository groups, IScimUse
         }
 
         var after = group.MemberIds.ToHashSet();
-        await provisioning.PublishMembershipAsync(group, [.. after.Except(before)], [.. before.Except(after)], cancellationToken).ConfigureAwait(false);
+        List<Guid> added = [.. after.Except(before)];
+        List<Guid> removed = [.. before.Except(after)];
+        await provisioning.PublishMembershipAsync(group, added, removed, cancellationToken).ConfigureAwait(false);
+        await audit.WriteAsync(GroupMapping.Audit("scim.group_changed", group, now, added.Count, removed.Count), cancellationToken).ConfigureAwait(false);
         return group.ToView();
     }
 }
 
 public sealed record DeleteScimGroupCommand(Guid TenantId, Guid GroupId, IReadOnlyList<int>? IfMatch = null);
 
-public sealed class DeleteScimGroupHandler(IScimGroupRepository groups, IEnterpriseUnitOfWork unitOfWork, IEventPublisher events, TimeProvider time) : ICommandHandler<DeleteScimGroupCommand>
+public sealed class DeleteScimGroupHandler(IScimGroupRepository groups, IEnterpriseUnitOfWork unitOfWork, IEventPublisher events, IAuditSink audit, TimeProvider time) : ICommandHandler<DeleteScimGroupCommand>
 {
     public async Task<Result> HandleAsync(DeleteScimGroupCommand command, CancellationToken cancellationToken)
     {
@@ -176,7 +196,9 @@ public sealed class DeleteScimGroupHandler(IScimGroupRepository groups, IEnterpr
             return ScimVersions.Overtaken(command.IfMatch);
         }
 
-        await events.PublishAsync(new GroupDeletedEvent(group.TenantId, group.Id, members) { OccurredAt = time.GetUtcNow() }, cancellationToken).ConfigureAwait(false);
+        var now = time.GetUtcNow();
+        await events.PublishAsync(new GroupDeletedEvent(group.TenantId, group.Id, members) { OccurredAt = now }, cancellationToken).ConfigureAwait(false);
+        await audit.WriteAsync(GroupMapping.Audit("scim.group_deleted", group, now, removed: members.Count), cancellationToken).ConfigureAwait(false);
         return Result.Success();
     }
 }

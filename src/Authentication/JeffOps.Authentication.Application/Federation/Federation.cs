@@ -124,8 +124,10 @@ public static class TenantProviderNames
 
     public static bool IsOidc(string? provider) => IdOf(provider, OidcPrefix) is not null;
 
+    /// <summary>The id in a canonical name only (lower-case hex): another spelling names no provider, so each has one name.</summary>
     private static Guid? IdOf(string? provider, string prefix) =>
-        provider is not null && provider.StartsWith(prefix, StringComparison.Ordinal) && Guid.TryParseExact(provider[prefix.Length..], "N", out var id) ? id : null;
+        provider is not null && provider.StartsWith(prefix, StringComparison.Ordinal) && Guid.TryParseExact(provider[prefix.Length..], "N", out var id)
+            && string.Equals(provider[prefix.Length..], id.ToString("N"), StringComparison.Ordinal) ? id : null;
 }
 
 public sealed class NoTenantProviders : ITenantProviderDirectory

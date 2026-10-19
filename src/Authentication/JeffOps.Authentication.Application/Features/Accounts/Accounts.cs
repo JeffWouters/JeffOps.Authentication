@@ -17,7 +17,10 @@ public sealed record AccountContact(Guid Id, string Email, string DisplayName, b
 
 // ---- SetAccountStatus --------------------------------------------------------------------------------------------------
 
-/// <summary>An operator disables or re-enables an account (the kill switch). The endpoint has authorized the operator.</summary>
+/// <summary>
+/// An operator disables or re-enables an account (the kill switch). The endpoint has authorized the operator. Only an operator
+/// enables an account an operator disabled.
+/// </summary>
 public sealed record SetAccountStatusCommand(Guid ActorId, Guid AccountId, bool Disable);
 
 public sealed class SetAccountStatusHandler(
@@ -41,8 +44,10 @@ public sealed class SetAccountStatusHandler(
             return Error.NotFound(AccountErrors.NotFound, "No such account.");
         }
 
+        // An operator's disable is recorded as theirs (and audited) even when provisioning had disabled the account already,
+        // so provisioning can't enable it again.
         var now = time.GetUtcNow();
-        if (command.Disable ? account.Disable(now) : account.Enable(now))
+        if (command.Disable ? account.Disable(now, byOperator: true) : account.Enable(now, byOperator: true))
         {
             await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await audit.WriteAsync(

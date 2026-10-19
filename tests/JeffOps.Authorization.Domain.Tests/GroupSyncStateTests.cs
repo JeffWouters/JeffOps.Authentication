@@ -11,7 +11,7 @@ public sealed class GroupSyncStateTests
 
         state.TryAdvance(3).ShouldBeTrue();
         state.TryAdvance(2).ShouldBeFalse("v2 arrived after v3");
-        state.TryAdvance(3).ShouldBeTrue("a redelivery of the newest applies again");
+        state.TryAdvance(3).ShouldBeFalse("each saved change has its own version: another v3 is a repeat or never happened");
         state.TryAdvance(4).ShouldBeTrue();
         state.Version.ShouldBe(4);
     }

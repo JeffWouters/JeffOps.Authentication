@@ -47,6 +47,21 @@ public sealed class AccountTests
     }
 
     [Fact]
+    public void Only_an_operator_enables_an_account_an_operator_disabled()
+    {
+        var account = Account.Register("ada@example.com", "Ada", true, Now);
+
+        account.Disable(Now).ShouldBeTrue();
+        account.Disable(Now, byOperator: true).ShouldBeTrue("the operator takes over a disable provisioning made");
+        account.DisabledByOperator.ShouldBeTrue();
+        account.Enable(Now, byOperator: false).ShouldBeFalse();
+        account.CanAuthenticate.ShouldBeFalse();
+
+        account.Enable(Now, byOperator: true).ShouldBeTrue();
+        account.DisabledByOperator.ShouldBeFalse();
+    }
+
+    [Fact]
     public void Revoking_sessions_ends_those_signed_in_before_it_to_the_second()
     {
         var account = Account.Register("ada@example.com", "Ada", true, Now);

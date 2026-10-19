@@ -111,7 +111,6 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             token.Property(entity => entity.TokenHash).HasMaxLength(64);
             token.HasIndex(entity => entity.TokenHash).IsUnique();
             token.HasIndex(entity => entity.TenantId);
-            token.Ignore(entity => entity.IsActive);
         });
 
         modelBuilder.Entity<ScimUser>(user =>

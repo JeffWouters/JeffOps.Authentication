@@ -31,6 +31,9 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<bool>("DisabledByOperator")
+                        .HasColumnType("bit");
+
                     b.Property<string>("DisplayName")
                         .IsRequired()
                         .HasMaxLength(200)

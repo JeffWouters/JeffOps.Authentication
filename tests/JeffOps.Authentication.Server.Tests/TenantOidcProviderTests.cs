@@ -7,6 +7,7 @@ using System.Text.Json;
 using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.DependencyInjection;
+using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Endpoints;
 using JeffOps.Authentication.Enterprise.Infrastructure;
 using JeffOps.Authentication.Federation.Oidc;
@@ -32,6 +33,7 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, bool> _administrators = new();
     private readonly ConcurrentDictionary<Guid, bool> _operators = new();
     private readonly FakeOidcProvider _idp = new(Issuer);
+    private readonly RecordingLogs _logs = new();
     private TokenServerHost _host = null!;
 
     [Fact]
@@ -143,6 +145,35 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
         (await attacker.GetAsync(null!, callback)).Headers.Location!.OriginalString.ShouldContain("error=signin_expired");
 
         (await _host.FindAccountAsync("jo@contoso.com")).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task A_tenant_provider_answers_only_at_its_canonical_name()
+    {
+        var provider = await StartWithProviderAsync();
+        var variant = TenantProviderNames.OidcPrefix + provider[TenantProviderNames.OidcPrefix.Length..].ToUpperInvariant();
+        variant.ShouldNotBe(provider);
+
+        using var browser = new Browser(_host);
+        (await browser.GetAsync(null!, $"signin/oidc/{provider}?returnUrl=%2Fdone")).StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        (await browser.GetAsync(null!, $"signin/oidc/{variant}?returnUrl=%2Fdone")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+        (await browser.GetAsync(null!, $"signin/oidc/{variant}/callback?code=x&state=y")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task A_provider_s_error_reaches_the_log_only_as_a_known_code()
+    {
+        var provider = await StartWithProviderAsync();
+        using var browser = new Browser(_host);
+        var callback = await AuthorizeAtProviderAsync(browser, $"signin/{provider}?returnUrl=%2Fdone", "jo@contoso.com");
+        var state = System.Web.HttpUtility.ParseQueryString(callback[callback.IndexOf('?', StringComparison.Ordinal)..])["state"]!;
+        var path = callback[..callback.IndexOf('?', StringComparison.Ordinal)];
+
+        var refused = await browser.GetAsync(null!, $"{path}?state={Uri.EscapeDataString(state)}&error={Uri.EscapeDataString("x\r\nForged entry: admin signed in")}");
+
+        refused.Headers.Location!.OriginalString.ShouldContain("error=provider_error");
+        _logs.Messages.ShouldContain(message => message.Contains(provider, StringComparison.Ordinal) && message.EndsWith("error other.", StringComparison.Ordinal));
+        _logs.Messages.ShouldNotContain(message => message.Contains("Forged", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -306,6 +337,7 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
             configure: builder =>
             {
                 builder.Services.AddSingleton(_dns);
+                builder.Services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(_logs);
                 var authentication = new AuthenticationBuilder(builder.Services, builder.Configuration);
                 authentication.AddEnterprise().UseDnsResolver<FakeDns.Scoped>().UseTestDatabase(_database);
                 authentication.AddOidcTenantProviders();

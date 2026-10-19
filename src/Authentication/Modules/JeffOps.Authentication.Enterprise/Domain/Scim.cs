@@ -5,19 +5,21 @@ namespace JeffOps.Authentication.Enterprise.Domain;
 
 /// <summary>
 /// A bearer token a tenant gives its identity provider for SCIM provisioning. Only its SHA-256 is stored; the secret is
-/// shown once. Scoped to one tenant: everything provisioned with it lands in that tenant.
+/// shown once. Scoped to one tenant: everything provisioned with it lands in that tenant. It works until revoked, or until the
+/// expiry chosen when it was created.
 /// </summary>
 public sealed class ScimToken
 {
     public const string Prefix = "scim_";
 
-    private ScimToken(Guid tenantId, string name, string hash, DateTimeOffset now)
+    private ScimToken(Guid tenantId, string name, string hash, DateTimeOffset now, DateTimeOffset? expiresAt)
     {
         Id = Guid.NewGuid();
         TenantId = tenantId;
         Name = name;
         TokenHash = hash;
         CreatedAt = now;
+        ExpiresAt = expiresAt;
     }
 
     private ScimToken()
@@ -38,12 +40,16 @@ public sealed class ScimToken
 
     public DateTimeOffset? RevokedAt { get; private set; }
 
-    public bool IsActive => RevokedAt is null;
+    /// <summary>When the token stops working; null for never.</summary>
+    public DateTimeOffset? ExpiresAt { get; private set; }
 
-    public static (ScimToken Token, string Secret) Issue(Guid tenantId, string name, DateTimeOffset now)
+    /// <summary>Not revoked, and not expired at <paramref name="now"/>.</summary>
+    public bool IsActiveAt(DateTimeOffset now) => RevokedAt is null && (ExpiresAt is not { } expires || now < expires);
+
+    public static (ScimToken Token, string Secret) Issue(Guid tenantId, string name, DateTimeOffset now, DateTimeOffset? expiresAt = null)
     {
         var secret = Prefix + Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        return (new ScimToken(tenantId, string.IsNullOrWhiteSpace(name) ? "SCIM" : name.Trim(), HashOf(secret), now), secret);
+        return (new ScimToken(tenantId, string.IsNullOrWhiteSpace(name) ? "SCIM" : name.Trim(), HashOf(secret), now, expiresAt), secret);
     }
 
     public static string HashOf(string secret) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(secret ?? string.Empty)));

@@ -19,6 +19,15 @@ internal sealed class AccountRepository(AuthenticationDbContext db) : IAccountRe
         return matches.OrderBy(account => account.CreatedAt).FirstOrDefault();
     }
 
+    public async Task<IReadOnlyList<Guid>> FindIdsByEmailAsync(string email, CancellationToken cancellationToken)
+    {
+        var normalized = Account.NormalizeEmail(email ?? string.Empty);
+        var matches = await db.Accounts.Where(account => account.Email == normalized)
+            .Select(account => new { account.Id, account.CreatedAt })
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        return [.. matches.OrderBy(account => account.CreatedAt).Select(account => account.Id)];
+    }
+
     public async Task<Account?> FindByExternalLoginAsync(ExternalLoginKey login, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(login);
