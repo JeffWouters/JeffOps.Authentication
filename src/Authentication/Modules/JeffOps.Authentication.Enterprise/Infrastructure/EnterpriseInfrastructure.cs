@@ -438,10 +438,13 @@ internal sealed class DnsOverHttpsResolver(IHttpClientFactory http, IOptions<Ent
 /// <summary>Returned by <see cref="EnterpriseServiceCollectionExtensions.AddEnterprise"/>.</summary>
 public sealed record EnterpriseBuilder(IServiceCollection Services)
 {
+    /// <summary>
+    /// Configures the enterprise store's database provider. Contexts are pooled (one per concurrent request, reused): <paramref name="configure"/> runs once, with the root service provider, so it must not resolve scoped services.
+    /// </summary>
     public EnterpriseBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContext<EnterpriseDbContext>(configure);
+        Services.AddDbContextPool<EnterpriseDbContext>(configure);
         return this;
     }
 

@@ -20,11 +20,13 @@ namespace JeffOps.Authorization.Infrastructure.DependencyInjection;
 /// <summary>Returned by <see cref="AuthorizationManagementServiceCollectionExtensions.AddJeffOpsAuthorization"/>.</summary>
 public sealed record AuthorizationManagementBuilder(IServiceCollection Services, IConfiguration Configuration)
 {
-    /// <summary>Configures the store's database provider.</summary>
+    /// <summary>
+    /// Configures the store's database provider. Contexts are pooled (one per concurrent request, reused): <paramref name="configure"/> runs once, with the root service provider, so it must not resolve scoped services.
+    /// </summary>
     public AuthorizationManagementBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContext<AuthorizationDbContext>(configure);
+        Services.AddDbContextPool<AuthorizationDbContext>(configure);
         return this;
     }
 }

@@ -22,10 +22,13 @@ namespace JeffOps.Authentication.LocalAccounts.Infrastructure;
 /// <summary>Returned by <see cref="LocalAccountsServiceCollectionExtensions.AddLocalAccounts"/>.</summary>
 public sealed record LocalAccountsBuilder(IServiceCollection Services)
 {
+    /// <summary>
+    /// Configures the local-accounts store's database provider. Contexts are pooled (one per concurrent request, reused): <paramref name="configure"/> runs once, with the root service provider, so it must not resolve scoped services.
+    /// </summary>
     public LocalAccountsBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContext<LocalAccountsDbContext>(configure);
+        Services.AddDbContextPool<LocalAccountsDbContext>(configure);
         return this;
     }
 

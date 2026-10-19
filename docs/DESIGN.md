@@ -503,7 +503,7 @@ The `external` token-exchange grant is **kept** as an optional extension for cli
 - **Refresh token reuse:** OpenIddict's reuse leeway is exposed as `RefreshTokenReuseLeeway` (default 30 s, so concurrent refreshes don't sign the user out); outside it, reuse revokes the token chain. Refresh tokens never outlive the session's absolute lifetime.
 - **MFA defaults:** `RequireForSignIn` is off (whether MFA is available depends on the provider); `RequireForSensitiveActions` is on.
 - **Clients** are seeded from configuration at startup and kept in sync; confidential clients need a secret of at least 32 characters outside Development; PKCE is required for every code-flow client.
-- **`AuthenticationBuilder`** lives in Application (it is only the service collection and configuration), so plug-ins that may reference Application only can extend it. EF-specific extensions (`UseDatabase`) live in Infrastructure.
+- **`AuthenticationBuilder`** lives in Application (it is only the service collection and configuration), so plug-ins that may reference Application only can extend it. EF-specific extensions (`UseDatabase`) live in Infrastructure. Every module's DbContext is pooled (`AddDbContextPool`): building a context's internal services per request cost 10–25% of the token server's CPU and about 40% of SCIM's allocations, so the `UseDatabase` delegate runs once with the root service provider and must not resolve scoped services.
 
 ### 7.3.2 As built (phase 9: hardening)
 

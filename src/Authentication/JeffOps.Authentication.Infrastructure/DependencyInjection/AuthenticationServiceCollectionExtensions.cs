@@ -23,13 +23,15 @@ namespace JeffOps.Authentication.Infrastructure.DependencyInjection;
 /// <summary>Infrastructure choices on the <see cref="AuthenticationBuilder"/>.</summary>
 public static class AuthenticationBuilderExtensions
 {
-    /// <summary>Configures the store's database provider. Persistence packages call this; tests may too.</summary>
+    /// <summary>
+    /// Configures the store's database provider. Persistence packages call this; tests may too. Contexts are pooled (one per concurrent request, reused): <paramref name="configure"/> runs once, with the root service provider, so it must not resolve scoped services.
+    /// </summary>
     public static AuthenticationBuilder UseDatabase(this AuthenticationBuilder builder, Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
 
-        builder.Services.AddDbContext<AuthenticationDbContext>((provider, options) =>
+        builder.Services.AddDbContextPool<AuthenticationDbContext>((provider, options) =>
         {
             configure(provider, options);
             options.UseOpenIddict();

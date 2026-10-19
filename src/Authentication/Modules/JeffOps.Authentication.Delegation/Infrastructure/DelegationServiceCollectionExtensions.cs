@@ -20,11 +20,13 @@ namespace JeffOps.Authentication.Delegation.Infrastructure;
 /// <summary>Returned by <see cref="DelegationServiceCollectionExtensions.AddDelegation"/>.</summary>
 public sealed record DelegationBuilder(IServiceCollection Services)
 {
-    /// <summary>Configures the delegation store's database provider.</summary>
+    /// <summary>
+    /// Configures the delegation store's database provider. Contexts are pooled (one per concurrent request, reused): <paramref name="configure"/> runs once, with the root service provider, so it must not resolve scoped services.
+    /// </summary>
     public DelegationBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContext<DelegationDbContext>(configure);
+        Services.AddDbContextPool<DelegationDbContext>(configure);
         return this;
     }
 
