@@ -710,6 +710,55 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Email codes** (`EmailCodes`): accounts without an authenticator app complete a password sign-in with a six-digit code sent by email (`IAccountEmailSender.SendSignInCodeAsync`), valid `EmailCodeLifetime` (10 min), accepted once, stored as a hash bound to the account; wrong codes count towards lockout, a new code can be asked for at most once a minute, and it counts as a second factor (`otp`, `mfa`).
 - **Hosted pages** for the emailed links: `account/verify-email` (verifies only when the button is pressed, not when a mail scanner opens the link), `account/forgot-password` (the same answer for every address) and `account/reset-password`, posting to antiforgery-checked form endpoints; the login page links to the reset.
 
+### 8.6 Tenancy
+
+The token server asks the host which tenants an account belongs to (`ITenantDirectory`, §13) and leaves the rest to it. A host
+that serves several products and wants per-tenant SSO needs somewhere to keep tenants, their members and their
+administrators: the optional Tenancy module.
+
+#### 8.6.1 As built
+
+- **Package.** `JeffOps.Authentication.Tenancy` (feature module, D17) + `JeffOps.Authentication.Tenancy.SqlServer` (schema
+  `tenancy`). Hosts call `.AddTenancy().AddSqlServerPersistence()` and `app.MapJeffOpsTenancy()`. It replaces the token
+  server's `ITenantDirectory` and the Enterprise module's `ITenantMembershipProvisioner`, whichever is added first.
+- **Tenants** are customer organizations shared by every product that trusts the server; products key their data on `tid`.
+  Status `Active`, `Suspended` or `Deleted` (soft): a closed tenant issues no sessions, and an account whose only tenant is
+  closed can't sign in (`tenant_inactive`, §7.6). Exactly one tenant is the **platform tenant**: its administrators are the
+  platform operators.
+- **Memberships** have a role (`Member`, `Admin`) and a source, so a source only takes away what it gave:
+
+  | Source | When |
+  |---|---|
+  | Directory | sign-in from an Entra directory linked to the tenant (`IExternalSignInObserver`) |
+  | Sso | sign-in through the tenant's own OIDC or SAML provider (§8.4) |
+  | Scim | the tenant's IdP provisions the user; deprovisioning removes only memberships SCIM created |
+  | Invitation | the invitee opens a single-use link and signs in any way the server offers |
+  | Signup | a product's backend creates the tenant for the person signing up |
+  | Operator | operator API, or the configured operators of the platform tenant |
+
+  Automatic sources add a membership or raise a role, never lower one. A tenant always keeps an administrator, except when an
+  operator decides otherwise. Every account's tenants come back oldest first; `tenant_hint` picks another.
+- **Directory links.** An Entra directory (its tenant id) belongs to at most one tenant. A tenant administrator, and a
+  product at signup, can only link a directory the administrator signed in from, so nobody claims another organization's
+  people. Unlinking keeps the members who joined through it.
+- **Invitations.** 256-bit token, SHA-256 at rest, 7 days, single use, at most 100 open per tenant. Matched on the link, never
+  on the email address (Entra doesn't verify it). `GET /invitations/{token}` signs the invitee in, shows the tenant and role,
+  and accepts on an antiforgery-checked `POST`; products can accept through `POST tenancy/invitations/accept` instead. The
+  module doesn't send email: the API returns the link and the product delivers it.
+- **Policies.** With `DefinePolicies` (default), the module defines the policies the server and Enterprise ask for:
+  `auth.enterprise.manage` and `auth.enterprise.scim_tokens` (administrator of the session's tenant),
+  `auth.enterprise.operate` and `auth.accounts.manage` (administrator of the platform tenant). Every check requires the
+  user's own session: not impersonating, not delegated, not PAT-derived.
+- **API** (own APIs: `jeffops-account` tokens only, step-up for changes):
+  `tenancy/tenants[/{id}[/members|directories|invitations]]` for operators, `tenancy/tenant[/members|directories|invitations]`
+  for administrators of the session's tenant, `tenancy/memberships` for any user (a product's tenant switcher),
+  `tenancy/signup` for products' backends holding `auth.tenants.create` (409 `directory_taken` when the organization already
+  has a tenant, so the product can offer to join it instead).
+- **Bootstrap.** `JeffOps:Tenancy:Platform` names the platform tenant (created once), an Entra directory to link to it, and
+  its operators by an external login (issuer, subject). They become administrators at startup and whenever they sign in, so the
+  first operator needs no account id. Removing one from configuration doesn't demote them.
+- **Not yet:** organizations above tenants (`org`), workspaces (`wid`), a hosted administration UI, and invitation email.
+
 ---
 
 ## 9. Client hosting models
@@ -946,7 +995,12 @@ app.MapJeffOpsBff();
 | `AccountErasures` | | |
 | OpenIddict tables | | applications, authorizations, scopes, tokens |
 
-### 14.2 Authorization store
+### 14.2 Tenancy store (optional module, §8.6)
+
+`Tenants` (`Id`, `Name`, `Status`, `IsPlatform` unique where true), `Memberships` (`TenantId`, `AccountId`, `Role`, `Source`),
+`DirectoryLinks` (key `Kind`, `DirectoryId`), `Invitations` (`TokenHash` unique, `ExpiresAt`, `AcceptedAt`, `RevokedAt`).
+
+### 14.3 Authorization store
 
 `Roles`, `RolePermissions`, `Assignments` (subject = user or group), `Groups`, `GroupMembers` (local groups), `RoleChangeRequests`, `AuthzSettings`, `RegisteredPermissions`, `AttributePolicies`, `Scopes`.
 
@@ -1210,6 +1264,7 @@ These requirements differ from the origin implementation. They are listed here s
 | **7 — Local accounts** ✅ | Passkeys, TOTP, lockout, reset, verification, hash v2 | I5 done |
 | **8 — Enterprise** ✅ | Per-tenant SSO, verified domains, groups, SCIM, SAML | Customer-supplied Okta and ADFS work |
 | **9 — Hardening** ✅ | Device grant, PAR, DPoP, `private_key_jwt`, workload identity federation | Opt-in per client |
+| **10 — Tenancy** ✅ | Tenants shared across products, memberships from directories, invitations, tenant SSO and SCIM; tenant administrators and platform operators (§8.6) | Enterprise SSO works without a host-written tenant directory |
 
 ---
 

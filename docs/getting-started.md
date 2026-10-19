@@ -127,6 +127,7 @@ migrations in your deployment pipeline, for example with `dotnet ef database upd
 | Verified domains, per-tenant SSO, SCIM | `.AddEnterprise().AddSqlServerPersistence()`, `app.MapJeffOpsEnterprise()`, `app.MapJeffOpsScim()` |
 | Tenants' own SAML providers (allowed per tenant by an operator) | `.AddSamlTenantProviders()` beside `.AddEnterprise()`, an `auth.enterprise.operate` policy for your operators, and `app.MapJeffOpsSaml()` |
 | Tenants' own OpenID Connect providers (likewise) | `.AddOidcTenantProviders()` beside `.AddEnterprise()`, the same operator policy, and `app.MapJeffOpsTenantOidc()` |
+| Tenants, members, invitations, linked Entra directories, operators | `.AddTenancy().AddSqlServerPersistence()` and `app.MapJeffOpsTenancy()`; options under `JeffOps:Tenancy` |
 | Impersonation, lockbox, tenant switch | `.AddDelegation().AddSqlServerPersistence()` and `app.MapJeffOpsDelegation()` |
 
 **One deployment, several products.** Give each product its own app registration at the provider (its own name on the
@@ -140,7 +141,8 @@ Use `.AddKeyVaultSigning()` (package `JeffOps.Authentication.KeyVault`) to sign 
 `.UseCertificateSigning()` for certificates you manage.
 
 **Tenants.** The token server asks your application which tenants a user belongs to through `ITenantDirectory`
-(`JeffOps.Authentication.Abstractions.Tenancy`). Register your implementation before `AddJeffOpsAuthentication`.
+(`JeffOps.Authentication.Abstractions.Tenancy`). Register your implementation before `AddJeffOpsAuthentication`, or let the
+Tenancy module keep tenants for you (`.AddTenancy()`, design §8.6).
 
 ## 2. An API that checks permissions
 
