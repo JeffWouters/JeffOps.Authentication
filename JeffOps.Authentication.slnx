@@ -54,6 +54,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/JeffOps.Authentication.Architecture.Tests/JeffOps.Authentication.Architecture.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Benchmarks/JeffOps.Authentication.Benchmarks.csproj" />
+    <Project Path="tests/JeffOps.Authentication.LoadTests/JeffOps.Authentication.LoadTests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Client.Tests/JeffOps.Authentication.Client.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Delegation.Tests/JeffOps.Authentication.Delegation.Tests.csproj" />
     <Project Path="tests/JeffOps.Authentication.Domain.Tests/JeffOps.Authentication.Domain.Tests.csproj" />

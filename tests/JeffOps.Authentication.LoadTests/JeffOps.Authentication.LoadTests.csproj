@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The load harness: runs the hosts in process against a real database under concurrent virtual users. Not a test project.
+       Run: dotnet run -c Release (pass help for the options). -->
+  <PropertyGroup>
+    <IsTestProject>false</IsTestProject>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <NoWarn>$(NoWarn);CA1001;CA1031;CA1515;CA1822;CA2007;CA2000;CA5394;CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Remove="xunit.v3.mtp-v2" />
+    <PackageReference Remove="Shouldly" />
+    <Using Remove="Xunit" />
+    <Using Remove="Shouldly" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Infrastructure\JeffOps.Authentication.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Persistence.SqlServer\JeffOps.Authentication.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.Endpoints\JeffOps.Authentication.Endpoints.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\JeffOps.Authentication.UI\JeffOps.Authentication.UI.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Enterprise\JeffOps.Authentication.Enterprise.csproj" />
+    <ProjectReference Include="..\..\src\Authentication\Modules\JeffOps.Authentication.Enterprise.SqlServer\JeffOps.Authentication.Enterprise.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Infrastructure\JeffOps.Authorization.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Persistence.SqlServer\JeffOps.Authorization.Persistence.SqlServer.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.Endpoints\JeffOps.Authorization.Endpoints.csproj" />
+    <ProjectReference Include="..\..\src\Authorization\JeffOps.Authorization.AspNetCore\JeffOps.Authorization.AspNetCore.csproj" />
+    <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff\JeffOps.Authentication.Bff.csproj" />
+    <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Bff.Yarp\JeffOps.Authentication.Bff.Yarp.csproj" />
+    <ProjectReference Include="..\..\src\Clients\JeffOps.Authentication.Client\JeffOps.Authentication.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\TestDatabase.cs" Link="Shared\TestDatabase.cs" />
+  </ItemGroup>
+
+</Project>
