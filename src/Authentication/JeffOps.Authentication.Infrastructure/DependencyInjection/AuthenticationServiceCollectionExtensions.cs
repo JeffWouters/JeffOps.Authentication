@@ -292,6 +292,11 @@ public static class AuthenticationServiceCollectionExtensions
                 failures.Add("PruneAfter and PruneInterval can't be negative (a zero PruneInterval disables pruning).");
             }
 
+            if (options.Mfa.StepUpMaxAge < TimeSpan.Zero)
+            {
+                failures.Add("Mfa:StepUpMaxAge can't be negative (zero lets one multi-factor sign-in cover the whole session).");
+            }
+
             if (options.Pat.MaxLifetime <= TimeSpan.Zero || string.IsNullOrWhiteSpace(options.Pat.Prefix))
             {
                 failures.Add("Personal access tokens need a positive maximum lifetime and a prefix.");

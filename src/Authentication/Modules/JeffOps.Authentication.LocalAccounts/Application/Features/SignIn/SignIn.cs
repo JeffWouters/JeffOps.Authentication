@@ -9,8 +9,9 @@ namespace JeffOps.Authentication.LocalAccounts.Application.Features.SignIn;
 
 /// <summary>
 /// Signs in with email and password. Unknown emails, accounts without a password and wrong passwords all answer
-/// <see cref="LocalSignInStatus.Failed"/> after the same hashing work. Account state (unverified, disabled) is only revealed
-/// after the right password.
+/// <see cref="LocalSignInStatus.Failed"/> after the same hashing work; a locked account answers
+/// <see cref="LocalSignInStatus.LockedOut"/>, which the login form shows like a wrong password, so it doesn't tell which
+/// addresses have accounts. Account state (unverified, disabled) is only revealed after the right password.
 /// </summary>
 public sealed record PasswordSignInCommand(string Email, string Password);
 
@@ -76,7 +77,7 @@ public sealed class PasswordSignInHandler(
         {
             _ when !account.CanAuthenticate => new LocalSignInResult(LocalSignInStatus.AccountInactive),
             _ when settings.RequireVerifiedEmail && !account.EmailVerified => new LocalSignInResult(LocalSignInStatus.EmailNotVerified, account.Id),
-            _ when secondFactor is not null => new LocalSignInResult(LocalSignInStatus.SecondFactorRequired, account.Id) { SecondFactor = secondFactor },
+            _ when secondFactor is not null => new LocalSignInResult(LocalSignInStatus.SecondFactorRequired, account.Id) { SecondFactor = secondFactor, SecurityStamp = credential.SecurityStamp },
             _ => new LocalSignInResult(LocalSignInStatus.SignedIn, account.Id, ["pwd"]),
         };
 
@@ -156,9 +157,10 @@ public sealed class ResendSignInCodeHandler(IAccountRepository accounts, SignInC
 /// <summary>
 /// Completes a password sign-in with an authenticator code or a recovery code — or, for accounts without an authenticator
 /// when <see cref="LocalAccountOptions.EmailCodes"/> is on, the emailed code. Failed codes count towards lockout; a code is
-/// accepted once.
+/// accepted once. <paramref name="SecurityStamp"/> is the credential's stamp at the password step: when it changed since (a
+/// password change or reset), the pending sign-in is over and nothing is checked.
 /// </summary>
-public sealed record SecondFactorCommand(Guid AccountId, string Code, bool IsRecoveryCode);
+public sealed record SecondFactorCommand(Guid AccountId, string Code, bool IsRecoveryCode, string SecurityStamp);
 
 public sealed class SecondFactorHandler(
     IAccountRepository accounts,
@@ -175,6 +177,11 @@ public sealed class SecondFactorHandler(
         var now = time.GetUtcNow();
 
         var credential = await credentials.FindAsync(command.AccountId, cancellationToken).ConfigureAwait(false);
+        if (credential is not null && !string.Equals(credential.SecurityStamp, command.SecurityStamp, StringComparison.Ordinal))
+        {
+            return Error.Unauthorized(LocalAccountErrors.SignInExpired, "The sign-in is no longer valid. Sign in again.");
+        }
+
         var byEmail = credential is { TotpEnabled: false } && options.Value.EmailCodes && !command.IsRecoveryCode;
         if (credential is null || (!byEmail && credential is not { TotpEnabled: true, ProtectedTotpSecret: not null }))
         {

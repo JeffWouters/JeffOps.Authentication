@@ -170,6 +170,20 @@ public sealed class AuthenticationStrengthTests
     }
 
     [Fact]
+    public void Step_up_counts_only_while_the_multi_factor_sign_in_is_recent()
+    {
+        var signedIn = new DateTimeOffset(2026, 10, 15, 8, 0, 0, TimeSpan.Zero);
+        var mfa = AuthenticationStrength.Password.WithMultiFactor();
+        var policy = new MfaPolicy(RequireForSignIn: false, RequireForSensitiveActions: true, StepUpMaxAge: TimeSpan.FromMinutes(15));
+
+        policy.SatisfiesStepUp(mfa, signedIn, signedIn.AddMinutes(15)).ShouldBeTrue();
+        policy.SatisfiesStepUp(mfa, signedIn, signedIn.AddMinutes(16)).ShouldBeFalse();
+        policy.SatisfiesStepUp(AuthenticationStrength.Password, signedIn, signedIn).ShouldBeFalse();
+        (policy with { StepUpMaxAge = TimeSpan.Zero }).SatisfiesStepUp(mfa, signedIn, signedIn.AddHours(7)).ShouldBeTrue();
+        (policy with { RequireForSensitiveActions = false }).SatisfiesStepUp(AuthenticationStrength.None, signedIn, signedIn.AddHours(7)).ShouldBeTrue();
+    }
+
+    [Fact]
     public void Session_lifetime_counts_from_sign_in()
     {
         var signedIn = new DateTimeOffset(2026, 10, 15, 8, 0, 0, TimeSpan.Zero);

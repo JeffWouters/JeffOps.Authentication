@@ -49,7 +49,10 @@ public sealed class ChangePasswordHandler(
     }
 }
 
-/// <summary>Emails a reset link to a local account. Enumeration-safe: always succeeds.</summary>
+/// <summary>
+/// Emails a reset link to a local account. Enumeration-safe: always succeeds, and the email is queued
+/// (<see cref="IAccountMailQueue"/>), so the answer takes as long for an address without an account.
+/// </summary>
 public sealed record RequestPasswordResetCommand(string Email);
 
 public sealed class RequestPasswordResetHandler(
@@ -57,7 +60,7 @@ public sealed class RequestPasswordResetHandler(
     ILocalCredentialRepository credentials,
     IAccountTokenRepository tokens,
     ILocalUnitOfWork unitOfWork,
-    IAccountEmailSender email,
+    IAccountMailQueue mail,
     IOptions<LocalAccountOptions> options,
     TimeProvider time) : ICommandHandler<RequestPasswordResetCommand>
 {
@@ -81,14 +84,16 @@ public sealed class RequestPasswordResetHandler(
         var (token, secret) = AccountToken.Issue(account.Id, AccountTokenPurpose.PasswordReset, now, settings.ResetTokenLifetime);
         tokens.Add(token);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await email.SendPasswordResetAsync(account.Email, new Uri(settings.Link(settings.ResetPasswordPath, secret)), cancellationToken).ConfigureAwait(false);
+        var (address, link) = (account.Email, new Uri(settings.Link(settings.ResetPasswordPath, secret)));
+        mail.Enqueue((sender, cancellation) => sender.SendPasswordResetAsync(address, link, cancellation));
         return Result.Success();
     }
 }
 
 /// <summary>
 /// Sets a new password with an emailed reset token. Also lifts a lockout, and proves control of the email address, so an
-/// unverified account becomes verified.
+/// unverified account becomes verified. When it does, the authenticator, recovery codes and passkeys enrolled before go:
+/// whoever registered the address without owning it may have added them.
 /// </summary>
 public sealed record ResetPasswordCommand(string Token, string NewPassword);
 
@@ -119,11 +124,17 @@ public sealed class ResetPasswordHandler(
             return Error.Failure(LocalAccountErrors.InvalidToken, "The link is invalid or has expired. Ask for a new one.");
         }
 
+        var account = await accounts.FindAsync(token.AccountId, cancellationToken).ConfigureAwait(false);
+        if (account is { EmailVerified: false })
+        {
+            credential.RemoveSecondFactorsAndPasskeys();
+        }
+
         credential.SetPassword(PasswordHasher.Hash(command.NewPassword, settings.HashIterations), now);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         // A reset proves control of the email address, and whoever knew the old password is signed out.
-        if (await accounts.FindAsync(token.AccountId, cancellationToken).ConfigureAwait(false) is { } account)
+        if (account is not null)
         {
             account.MarkEmailVerified(now);
             account.RevokeSessions(now, "password_reset");

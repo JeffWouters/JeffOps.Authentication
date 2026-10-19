@@ -22,9 +22,9 @@ public sealed record TenantStanding(TenantMembership? Membership, TenantInfo? Te
 /// Builds session claims from live state: the account, its authentication strength and its tenant standing. Every grant that
 /// issues a user token goes through here, so claims are never copied from an older token (docs/DESIGN.md §7.6).
 /// </summary>
-public sealed class SessionBuilder(ITenantDirectory tenants, ClaimNames names, IOptions<TokenServerOptions> options)
+public sealed class SessionBuilder(ITenantDirectory tenants, ClaimNames names, IOptions<TokenServerOptions> options, TimeProvider time)
 {
-    private MfaPolicy Mfa => new(options.Value.Mfa.RequireForSignIn, options.Value.Mfa.RequireForSensitiveActions);
+    private MfaPolicy Mfa => new(options.Value.Mfa.RequireForSignIn, options.Value.Mfa.RequireForSensitiveActions, options.Value.Mfa.StepUpMaxAge);
 
     /// <summary>
     /// The account's tenant standing: in <paramref name="boundTenant"/> when given (it must still hold an active membership
@@ -100,7 +100,9 @@ public sealed class SessionBuilder(ITenantDirectory tenants, ClaimNames names, I
         }
 
         claims.AddRange(strength.Methods.Select(method => new Claim(names.AuthenticationMethods, method)));
-        if (Mfa.SatisfiesStepUp(strength))
+
+        // Step-up only while the multi-factor sign-in is recent (MfaOptions.StepUpMaxAge): a refresh later drops it.
+        if (Mfa.SatisfiesStepUp(strength, signedInAt, time.GetUtcNow()))
         {
             claims.Add(new Claim(names.StepUp, names.StepUpSatisfied));
         }

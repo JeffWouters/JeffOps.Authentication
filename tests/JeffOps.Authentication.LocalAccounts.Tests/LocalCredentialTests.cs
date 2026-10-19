@@ -124,6 +124,46 @@ public sealed class LocalCredentialTests
     }
 
     [Fact]
+    public void Recovery_codes_carry_80_random_bits()
+    {
+        // LA-9: codes were ten hex digits (40 bits), so a leaked unsalted hash was quick to reverse.
+        var credential = WithPassword("right password");
+        credential.BeginTotp("protected");
+
+        var codes = credential.ConfirmTotp(matchedStep: 1, recoveryCodeCount: 10);
+
+        codes.ShouldAllBe(code => System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}-[A-Z2-7]{4}$"));
+        codes.Distinct().Count().ShouldBe(10);
+        credential.UseRecoveryCode(codes[3].Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant()).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void Recovery_codes_in_the_earlier_format_hash_as_before()
+    {
+        // Codes users already hold (ten hex digits) keep working until used or regenerated.
+        RecoveryCode.HashOf("abcde-12345").ShouldBe(Convert.ToHexStringLower(SHA256.HashData("ABCDE12345"u8)));
+    }
+
+    [Fact]
+    public void Removing_second_factors_clears_the_authenticator_codes_and_passkeys()
+    {
+        var credential = WithPassword("right password");
+        credential.BeginTotp("protected");
+        credential.ConfirmTotp(matchedStep: 1, recoveryCodeCount: 3);
+        credential.SavePasskey([1, 2, 3], [4], "Laptop", Now, 0, null, true, false, false, [], [], Now);
+        var stamp = credential.SecurityStamp;
+
+        credential.RemoveSecondFactorsAndPasskeys();
+
+        credential.TotpEnabled.ShouldBeFalse();
+        credential.ProtectedTotpSecret.ShouldBeNull();
+        credential.RecoveryCodes.ShouldBeEmpty();
+        credential.Passkeys.ShouldBeEmpty();
+        credential.SecurityStamp.ShouldNotBe(stamp);
+        credential.PasswordHash.ShouldNotBeNull();
+    }
+
+    [Fact]
     public void A_password_change_rotates_the_security_stamp()
     {
         var credential = WithPassword("first password");

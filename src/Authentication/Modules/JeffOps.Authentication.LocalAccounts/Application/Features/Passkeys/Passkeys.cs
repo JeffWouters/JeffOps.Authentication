@@ -3,6 +3,7 @@ using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.LocalAccounts.Domain;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
+using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.LocalAccounts.Application.Features.Passkeys;
 
@@ -60,7 +61,9 @@ public sealed class AddPasskeyHandler(ILocalCredentialRepository credentials, IA
 
 /// <summary>
 /// Completes a passkey sign-in the ceremony verified: records the new signature counter and answers the sign-in methods.
-/// A user-verified passkey is multi-factor on its own (possession plus biometrics or PIN).
+/// A user-verified passkey is multi-factor on its own (possession plus biometrics or PIN). Like a password,
+/// <see cref="LocalAccountOptions.RequireVerifiedEmail"/> applies to accounts that rest on their email address alone (no
+/// external login).
 /// </summary>
 public sealed record PasskeySignInCommand(Guid AccountId, PasskeyData Passkey);
 
@@ -70,6 +73,7 @@ public sealed class PasskeySignInHandler(
     IHomeRealmDirectory realms,
     IPendingLinks pendingLinks,
     ILocalUnitOfWork unitOfWork,
+    IOptions<LocalAccountOptions> options,
     TimeProvider time)
     : ICommandHandler<PasskeySignInCommand, LocalSignInResult>
 {
@@ -91,6 +95,11 @@ public sealed class PasskeySignInHandler(
         if (await accounts.FindAsync(command.AccountId, cancellationToken).ConfigureAwait(false) is not { CanAuthenticate: true } account)
         {
             return new LocalSignInResult(LocalSignInStatus.AccountInactive);
+        }
+
+        if (options.Value.RequireVerifiedEmail && !account.EmailVerified && account.ExternalLogins.Count == 0)
+        {
+            return new LocalSignInResult(LocalSignInStatus.EmailNotVerified, account.Id);
         }
 
         if (HomeRealm.DomainOf(account.Email) is { } domain

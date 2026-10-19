@@ -56,6 +56,17 @@ public interface IAccountEmailSender
     Task SendSignInCodeAsync(string email, string code, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Sends account emails in the background, one at a time and in order, through <see cref="IAccountEmailSender"/>. Requests
+/// about an address (registration, verification, password reset) then take as long whether or not it has an account:
+/// sending is the slow part, and it no longer happens while the request waits.
+/// </summary>
+public interface IAccountMailQueue
+{
+    /// <summary>Queues <paramref name="send"/>; it runs later with a sender of its own scope.</summary>
+    void Enqueue(Func<IAccountEmailSender, CancellationToken, Task> send);
+}
+
 /// <summary>Stable error codes of local-account refusals.</summary>
 public static class LocalAccountErrors
 {
@@ -71,4 +82,6 @@ public static class LocalAccountErrors
     public const string NotFound = "not_found";
     public const string AlreadyEnabled = "already_enabled";
     public const string SsoRequired = "sso_required";
+    public const string DomainNotAllowed = "domain_not_allowed";
+    public const string SignInExpired = "signin_expired";
 }

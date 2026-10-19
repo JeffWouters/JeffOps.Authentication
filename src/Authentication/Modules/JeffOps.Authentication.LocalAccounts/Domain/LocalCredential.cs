@@ -98,9 +98,15 @@ public sealed class StoredPasskey
     internal void Rename(string? name) => Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
 }
 
-/// <summary>A hashed single-use recovery code.</summary>
+/// <summary>
+/// A hashed single-use recovery code. Codes issued before they had 80 bits (ten hex digits, 40 bits) hash the same way and
+/// keep working until used or regenerated.
+/// </summary>
 public sealed class RecoveryCode
 {
+    /// <summary>Random bytes per code: 80 bits.</summary>
+    public const int Bytes = 10;
+
     internal RecoveryCode(Guid accountId, string hash)
     {
         AccountId = accountId;
@@ -328,14 +334,18 @@ public sealed class LocalCredential : AggregateRoot<Guid>
         return true;
     }
 
+    /// <summary>
+    /// Replaces the recovery codes with <paramref name="count"/> new ones, returned once in clear: 80 random bits each, as 16
+    /// base32 characters in groups of four, so a leaked hash can't be reversed by trying every code.
+    /// </summary>
     public IReadOnlyList<string> RegenerateRecoveryCodes(int count)
     {
         _recoveryCodes.Clear();
         var codes = new List<string>(count);
         for (var index = 0; index < count; index++)
         {
-            var raw = Convert.ToHexString(RandomNumberGenerator.GetBytes(5));
-            var code = $"{raw[..5]}-{raw[5..]}";
+            var raw = Totp.Base32(RandomNumberGenerator.GetBytes(RecoveryCode.Bytes));
+            var code = $"{raw[..4]}-{raw[4..8]}-{raw[8..12]}-{raw[12..]}";
             codes.Add(code);
             _recoveryCodes.Add(new RecoveryCode(Id, RecoveryCode.HashOf(code)));
         }
@@ -351,6 +361,21 @@ public sealed class LocalCredential : AggregateRoot<Guid>
         _recoveryCodes.Clear();
         SecurityStamp = NewStamp();
         Raise(new LocalCredentialChanged(Id, "totp_disabled"));
+    }
+
+    /// <summary>
+    /// Removes the authenticator, its recovery codes and every passkey. For when a password reset is what proves the email
+    /// address: whoever registered it before may have enrolled them.
+    /// </summary>
+    public void RemoveSecondFactorsAndPasskeys()
+    {
+        ProtectedTotpSecret = null;
+        TotpEnabled = false;
+        TotpLastStep = null;
+        _recoveryCodes.Clear();
+        _passkeys.Clear();
+        SecurityStamp = NewStamp();
+        Raise(new LocalCredentialChanged(Id, "second_factors_removed"));
     }
 
     // ---- Passkeys --------------------------------------------------------------------------------------------------------

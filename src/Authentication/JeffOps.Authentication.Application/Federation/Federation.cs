@@ -198,6 +198,29 @@ public sealed class FederationOptions
     /// </summary>
     public bool? OpenRegistration { get; set; }
 
+    /// <summary>
+    /// Whether the email-domain policy admits <paramref name="email"/>: with <see cref="AllowedEmailDomains"/>, only a verified
+    /// address in one of them; without, anyone when <see cref="OpenRegistration"/> is on (by default in Development only).
+    /// Applies to external sign-ins and to local self-registration alike.
+    /// </summary>
+    public bool AllowsEmailDomain(string? email, bool emailVerified, bool isDevelopment)
+    {
+        if (AllowedEmailDomains.Count == 0)
+        {
+            return OpenRegistration ?? isDevelopment;
+        }
+
+        // Only an address someone vouches for counts: an unverified one is whatever the user typed.
+        if (!emailVerified)
+        {
+            return false;
+        }
+
+        var domain = HomeRealm.DomainOf(email);
+        return domain is not null && AllowedEmailDomains.Any(allowed =>
+            string.Equals(allowed.Trim().TrimStart('@'), domain, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>Home realm discovery: email domain → provider name, e.g. <c>contoso.com</c> → <c>entra</c>.</summary>
     public IDictionary<string, string> DomainProviders { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 

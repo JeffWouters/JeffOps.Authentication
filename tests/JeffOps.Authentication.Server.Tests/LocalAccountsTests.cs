@@ -7,9 +7,11 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using JeffOps.Authentication.Application.DependencyInjection;
 using JeffOps.Authentication.LocalAccounts.Application;
+using JeffOps.Authentication.LocalAccounts.Application.Features.SignIn;
 using JeffOps.Authentication.LocalAccounts.Domain;
 using JeffOps.Authentication.LocalAccounts.Endpoints;
 using JeffOps.Authentication.LocalAccounts.Infrastructure;
+using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -54,8 +56,8 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
             (await LoginAsync(browser, "ada@example.com", "wrong password!")).ShouldContain("error=invalid_credentials");
         }
 
-        // The fourth failure locked the account for a while: even the right password waits.
-        (await LoginAsync(browser, "ada@example.com", Password)).ShouldContain("error=locked_out");
+        // The fourth failure locked the account for a while: even the right password waits, answered like a wrong one.
+        (await LoginAsync(browser, "ada@example.com", Password)).ShouldContain("error=invalid_credentials");
         host.Time.Advance(TimeSpan.FromSeconds(3));
         (await LoginAsync(browser, "ada@example.com", Password)).ShouldBe("/done");
     }
@@ -68,7 +70,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
         (await PostJsonAsync(host, "account/local/register", new { email = "ADA@example.com", password = "another password 1" })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
 
-        _email.Sent.ShouldContain(mail => mail.Email == "ada@example.com" && mail.Kind == "already-registered");
+        _email.WaitFor("ada@example.com", "already-registered");
         (await PostJsonAsync(host, "account/local/register", new { email = "bob@example.com", password = "short" })).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
     }
 
@@ -309,6 +311,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _email.Gate?.TrySetResult();
         if (_host is not null)
         {
             await _host.DisposeAsync();
@@ -324,23 +327,22 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     {
         var host = await StartAsync();
         await RegisterVerifiedAsync(host, "ada@example.com");
-        var browsers = Enumerable.Range(0, 12).Select(_ => new Browser(host)).ToList();
-        try
-        {
-            var outcomes = await Task.WhenAll(browsers.Select(browser => LoginAsync(browser, "ada@example.com", "a wrong passphrase guess")));
 
-            // A guess that was checked (invalid_credentials) was counted first; the rest were refused unchecked.
-            var checkedGuesses = outcomes.Count(location => location.Contains("error=invalid_credentials", StringComparison.Ordinal));
-            await using var scope = host.Services.CreateAsyncScope();
-            var accountId = (await scope.ServiceProvider.GetRequiredService<Application.Abstractions.IAccountRepository>().FindByEmailAsync("ada@example.com", TestContext.Current.CancellationToken))!.Id;
-            var credential = (await scope.ServiceProvider.GetRequiredService<ILocalCredentialRepository>().FindAsync(accountId, TestContext.Current.CancellationToken))!;
-            credential.FailedAttempts.ShouldBeGreaterThanOrEqualTo(checkedGuesses);
-            checkedGuesses.ShouldBeLessThanOrEqualTo(4, "the lockout stops the burst after a few checked guesses");
-        }
-        finally
+        // The login form answers a refused guess like a wrong one, so the burst runs against the handler, which tells them apart.
+        var outcomes = await Task.WhenAll(Enumerable.Range(0, 12).Select(async _ =>
         {
-            browsers.ForEach(browser => browser.Dispose());
-        }
+            await using var attempt = host.Services.CreateAsyncScope();
+            var handler = attempt.ServiceProvider.GetRequiredService<ICommandHandler<PasswordSignInCommand, LocalSignInResult>>();
+            return (await handler.HandleAsync(new PasswordSignInCommand("ada@example.com", "a wrong passphrase guess"), TestContext.Current.CancellationToken)).Value.Status;
+        }));
+
+        // A guess that was checked (Failed) was counted first; the rest were refused unchecked.
+        var checkedGuesses = outcomes.Count(status => status == LocalSignInStatus.Failed);
+        await using var scope = host.Services.CreateAsyncScope();
+        var accountId = (await scope.ServiceProvider.GetRequiredService<Application.Abstractions.IAccountRepository>().FindByEmailAsync("ada@example.com", TestContext.Current.CancellationToken))!.Id;
+        var credential = (await scope.ServiceProvider.GetRequiredService<ILocalCredentialRepository>().FindAsync(accountId, TestContext.Current.CancellationToken))!;
+        credential.FailedAttempts.ShouldBeGreaterThanOrEqualTo(checkedGuesses);
+        checkedGuesses.ShouldBeLessThanOrEqualTo(4, "the lockout stops the burst after a few checked guesses");
     }
 
     [Fact]
@@ -485,12 +487,183 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         response.StatusCode.ShouldBeOneOf([HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden], await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task A_locked_account_answers_like_an_unknown_email_and_the_answer_never_names_the_address()
+    {
+        // LA-7: locked_out told which addresses have accounts, and the redirect carried the address.
+        var host = await StartAsync();
+        using var browser = new Browser(host);
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            await LoginAsync(browser, "ada@example.com", "wrong password!");
+        }
+
+        var locked = await LoginAsync(browser, "ada@example.com", Password);
+        var unknown = await LoginAsync(browser, "nobody@example.com", Password);
+
+        locked.ShouldBe(unknown);
+        locked.ShouldNotContain("example.com", Case.Insensitive);
+        locked.ShouldNotContain("email=", Case.Insensitive);
+        host.Time.Advance(TimeSpan.FromSeconds(3));
+        (await LoginAsync(browser, "ada@example.com", Password)).ShouldBe("/done", "the lockout held, and lifted");
+    }
+
+    [Fact]
+    public async Task Requests_that_email_an_address_answer_without_waiting_for_the_mail_server()
+    {
+        // LA-7: sending happened during the request, so a slow answer meant the address has an account.
+        var host = await StartAsync();
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        _email.Gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var answers = await Task.WhenAll(
+            PostJsonAsync(host, "account/local/password/forgot", new { email = "ada@example.com" }),
+            PostJsonAsync(host, "account/local/register", new { email = "bea@example.com", password = Password }))
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        answers.ShouldAllBe(answer => answer.StatusCode == HttpStatusCode.Accepted);
+        _email.Sent.ShouldNotContain(mail => mail.Kind == "reset", "the mail server hasn't answered yet");
+        _email.Gate.SetResult();
+        _email.TokenFor("ada@example.com", "reset").ShouldNotBeNullOrEmpty();
+        _email.TokenFor("bea@example.com", "verification").ShouldNotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task Step_up_lapses_once_the_multi_factor_sign_in_is_older_than_the_maximum_age()
+    {
+        // LA-8: one multi-factor sign-in covered sensitive actions for the whole session.
+        var host = await StartAsync(new() { ["JeffOps:TokenServer:AccessTokenLifetime"] = "01:00:00" });
+        var accountId = await RegisterVerifiedAsync(host, "ada@example.com");
+        var tokens = await host.SignInAsync(accountId, multiFactor: true);
+        tokens.Claims("step_up").ShouldBe(["mfa"]);
+        (await host.SendAsync(HttpMethod.Post, "account/local/manage/passkeys/options", tokens.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        host.Time.Advance(TimeSpan.FromMinutes(16));
+
+        // The token still says step_up, but its sign-in is too old for the token server's own sensitive actions...
+        var stale = await host.SendAsync(HttpMethod.Post, "account/local/manage/passkeys/options", tokens.AccessToken);
+        stale.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        stale.Headers.WwwAuthenticate.ToString().ShouldContain("max_age=900");
+
+        // ...and tokens issued from now on don't say it at all.
+        var refreshed = await host.RefreshAsync(tokens.RefreshToken!);
+        refreshed.Status.ShouldBe(HttpStatusCode.OK, refreshed.Body.ToString());
+        refreshed.Claims("step_up").ShouldBeEmpty();
+        refreshed.Claims("amr").ShouldContain("mfa");
+    }
+
+    [Fact]
+    public async Task Local_registration_follows_the_email_domain_allow_list()
+    {
+        // LA-10: self-registration ignored AllowedEmailDomains and OpenRegistration.
+        var host = await StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Federation:OpenRegistration"] = "false",
+            ["JeffOps:TokenServer:Federation:AllowedEmailDomains:0"] = "example.com",
+        });
+
+        (await PostJsonAsync(host, "account/local/register", new { email = "ada@example.com", password = Password })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        var elsewhere = await PostJsonAsync(host, "account/local/register", new { email = "eve@elsewhere.test", password = Password });
+
+        elsewhere.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await elsewhere.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("code").GetString().ShouldBe("domain_not_allowed");
+        (await host.FindAccountAsync("eve@elsewhere.test")).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Local_registration_is_closed_outside_development_unless_opened()
+    {
+        var host = await StartAsync(new() { ["JeffOps:TokenServer:Federation:OpenRegistration"] = "false" });
+
+        var response = await PostJsonAsync(host, "account/local/register", new { email = "ada@example.com", password = Password });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("code").GetString().ShouldBe("registration_closed");
+    }
+
+    [Fact]
+    public async Task The_second_factor_cookie_is_host_only_and_a_password_reset_ends_the_pending_sign_in()
+    {
+        // LA-11: the cookie lacked __Host-, and a pending second-factor step outlived a password reset.
+        var host = await StartAsync();
+        var accountId = await RegisterVerifiedAsync(host, "ada@example.com");
+        var secret = await EnrolAuthenticatorAsync(host, (await host.SignInAsync(accountId)).AccessToken!);
+        using var browser = new Browser(host);
+
+        var login = await LoginResponseAsync(browser, "ada@example.com", Password);
+        login.Headers.Location!.OriginalString.ShouldStartWith("/account/login/code");
+        var cookie = login.Headers.GetValues("Set-Cookie").Single(header => header.Contains("jeffops-2fa", StringComparison.Ordinal));
+        cookie.ShouldStartWith("__Host-jeffops-2fa=");
+        cookie.ShouldContain("secure", Case.Insensitive);
+        cookie.ShouldContain("path=/;", Case.Insensitive);
+        cookie.ShouldNotContain("domain=", Case.Insensitive);
+
+        (await PostJsonAsync(host, "account/local/password/forgot", new { email = "ada@example.com" })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await PostJsonAsync(host, "account/local/password/reset", new { token = _email.TokenFor("ada@example.com", "reset"), newPassword = "a brand new passphrase" })).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        host.Time.Advance(TimeSpan.FromSeconds(30));
+
+        (await CodeAsync(browser, Totp.Code(secret, Totp.StepOf(host.Time.GetUtcNow())))).ShouldContain("error=signin_expired");
+        (await CredentialAsync(host, accountId)).TotpEnabled.ShouldBeTrue("a reset of a verified account keeps its authenticator");
+    }
+
+    [Fact]
+    public async Task A_reset_that_verifies_the_email_removes_what_was_enrolled_before()
+    {
+        // LA-12: whoever registered an address they don't own could enrol an authenticator and passkeys that outlived the
+        // owner's reset.
+        var host = await StartAsync(new()
+        {
+            ["JeffOps:LocalAccounts:RequireVerifiedEmail"] = "false",
+            ["JeffOps:LocalAccounts:PasskeyAllowedOrigins:0"] = "https://localhost",
+        });
+        (await PostJsonAsync(host, "account/local/register", new { email = "ada@example.com", password = Password })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        var accountId = (await host.FindAccountAsync("ada@example.com"))!.Id;
+        var accessToken = (await host.SignInAsync(accountId)).AccessToken!;
+        await EnrolAuthenticatorAsync(host, accessToken);
+        using var authenticator = new SoftwareAuthenticator();
+        await AddPasskeyAsync(host, accessToken, authenticator);
+        (await CredentialAsync(host, accountId)).Passkeys.Count.ShouldBe(1);
+
+        (await PostJsonAsync(host, "account/local/password/forgot", new { email = "ada@example.com" })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await PostJsonAsync(host, "account/local/password/reset", new { token = _email.TokenFor("ada@example.com", "reset"), newPassword = "a brand new passphrase" })).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+
+        var credential = await CredentialAsync(host, accountId);
+        credential.TotpEnabled.ShouldBeFalse();
+        credential.ProtectedTotpSecret.ShouldBeNull();
+        credential.RecoveryCodes.ShouldBeEmpty();
+        credential.Passkeys.ShouldBeEmpty();
+        (await host.FindAccountAsync("ada@example.com"))!.EmailVerified.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task A_passkey_doesn_t_sign_in_an_account_whose_email_is_unverified()
+    {
+        // LA-12: passkey sign-in ignored RequireVerifiedEmail.
+        var host = await StartAsync(new() { ["JeffOps:LocalAccounts:PasskeyAllowedOrigins:0"] = "https://localhost" });
+        var account = await host.CreateAccountAsync("ada@example.com", emailVerified: false);
+        using var authenticator = new SoftwareAuthenticator();
+        await AddPasskeyAsync(host, (await host.SignInAsync(account.Id)).AccessToken!, authenticator);
+
+        using var browser = new Browser(host);
+        var options = await browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, "account/local/passkey/login/options") { Content = JsonContent.Create(new { }) });
+        var assertion = authenticator.Get(await options.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), Encoding.UTF8.GetBytes(account.Id.ToString()));
+        var login = await browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, "account/local/passkey/login")
+        {
+            Content = new StringContent($$"""{"credential":{{assertion}},"returnUrl":"/done"}""", Encoding.UTF8, "application/json"),
+        });
+
+        login.StatusCode.ShouldBe(HttpStatusCode.Forbidden, await login.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        (await login.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("code").GetString().ShouldBe("email_not_verified");
+    }
+
     private async Task<TokenServerHost> StartAsync(Dictionary<string, string?>? overrides = null, bool enabled = true)
     {
         var settings = new Dictionary<string, string?>
         {
             ["JeffOps:LocalAccounts:HashIterations"] = "10000",
             ["JeffOps:LocalAccounts:PublicOrigin"] = "https://localhost/",
+            ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true",
         };
         if (enabled)
         {
@@ -526,11 +699,47 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         return (await scope.ServiceProvider.GetRequiredService<Application.Abstractions.IAccountRepository>().FindByEmailAsync(email, TestContext.Current.CancellationToken))!.Id;
     }
 
+    private static async Task<LocalCredential> CredentialAsync(TokenServerHost host, Guid accountId)
+    {
+        await using var scope = host.Services.CreateAsyncScope();
+        return (await scope.ServiceProvider.GetRequiredService<ILocalCredentialRepository>().FindAsync(accountId, TestContext.Current.CancellationToken))!;
+    }
+
+    /// <summary>Enrols an authenticator app with the session's access token; returns its secret.</summary>
+    private static async Task<byte[]> EnrolAuthenticatorAsync(TokenServerHost host, string accessToken)
+    {
+        var setup = await (await host.SendAsync(HttpMethod.Post, "account/local/manage/authenticator", accessToken)).Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        var secret = Base32Decode(setup.GetProperty("secret").GetString()!);
+        var confirm = await host.SendAsync(HttpMethod.Post, "account/local/manage/authenticator/confirm", accessToken, JsonContent.Create(new { code = Totp.Code(secret, Totp.StepOf(host.Time.GetUtcNow())) }));
+        confirm.StatusCode.ShouldBe(HttpStatusCode.OK, await confirm.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        return secret;
+    }
+
+    /// <summary>Registers a passkey of <paramref name="authenticator"/> with the (stepped-up) session's access token.</summary>
+    private static async Task AddPasskeyAsync(TokenServerHost host, string accessToken, SoftwareAuthenticator authenticator)
+    {
+        var creation = await host.SendAsync(HttpMethod.Post, "account/local/manage/passkeys/options", accessToken);
+        creation.StatusCode.ShouldBe(HttpStatusCode.OK, await creation.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var credential = authenticator.Create(await creation.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+        using var add = new HttpRequestMessage(HttpMethod.Post, "account/local/manage/passkeys")
+        {
+            Content = new StringContent($$"""{"credential":{{credential}},"name":"Laptop"}""", Encoding.UTF8, "application/json"),
+        };
+        add.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        add.Headers.Add("Cookie", StateCookie(creation));
+        var added = await host.Client.SendAsync(add, TestContext.Current.CancellationToken);
+        added.StatusCode.ShouldBe(HttpStatusCode.OK, await added.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
     private static Task<HttpResponseMessage> PostJsonAsync(TokenServerHost host, string path, object body) =>
         host.SendAsync(HttpMethod.Post, path, null, JsonContent.Create(body));
 
     /// <summary>Posts the hosted login form (with its antiforgery token) and returns where it redirects.</summary>
-    private static async Task<string> LoginAsync(Browser browser, string email, string password)
+    private static async Task<string> LoginAsync(Browser browser, string email, string password) =>
+        (await LoginResponseAsync(browser, email, password)).Headers.Location!.OriginalString;
+
+    private static async Task<HttpResponseMessage> LoginResponseAsync(Browser browser, string email, string password)
     {
         var page = await browser.GetAsync(null!, $"account/login?returnUrl=%2Fdone&email={Uri.EscapeDataString(email)}");
         var html = await page.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
@@ -544,7 +753,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
         var response = await browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, "account/local/login") { Content = new FormUrlEncodedContent(form) });
         response.StatusCode.ShouldBe(HttpStatusCode.Redirect, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
-        return response.Headers.Location!.OriginalString;
+        return response;
     }
 
     /// <summary>Opens a hosted page and submits its form (with the page's antiforgery token) to <paramref name="action"/>.</summary>
@@ -597,7 +806,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     }
 
     private static string StateCookie(HttpResponseMessage response) =>
-        response.Headers.GetValues("Set-Cookie").Single(cookie => cookie.StartsWith("jeffops-passkey=", StringComparison.Ordinal)).Split(';')[0];
+        response.Headers.GetValues("Set-Cookie").Single(cookie => cookie.StartsWith("__Host-jeffops-passkey=", StringComparison.Ordinal)).Split(';')[0];
 
     private static byte[] Base32Decode(string value)
     {
@@ -641,16 +850,26 @@ internal sealed class CapturingEmailSender
 
     public ConcurrentQueue<(string Email, string Code)> Codes { get; } = new();
 
+    /// <summary>While set, sending waits for it, as a slow mail server would.</summary>
+    public TaskCompletionSource? Gate { get; set; }
+
     public string TokenFor(string email, string kind) =>
-        TokenServerHost.QueryValue(Sent.Last(mail => mail.Email == email && mail.Kind == kind).Link!, "token")!;
+        TokenServerHost.QueryValue(WaitFor(email, kind).Link!, "token")!;
+
+    /// <summary>The last mail of <paramref name="kind"/> to <paramref name="email"/>, waiting for it: mail is sent in the background.</summary>
+    public (string Email, string Kind, Uri? Link) WaitFor(string email, string kind)
+    {
+        SpinWait.SpinUntil(() => Sent.Any(mail => mail.Email == email && mail.Kind == kind), TimeSpan.FromSeconds(10)).ShouldBeTrue($"no {kind} email to {email}");
+        return Sent.Last(mail => mail.Email == email && mail.Kind == kind);
+    }
 
     internal sealed class Scoped(CapturingEmailSender sender) : IAccountEmailSender
     {
-        public Task SendVerificationAsync(string email, Uri link, CancellationToken cancellationToken) => Add(email, "verification", link);
+        public Task SendVerificationAsync(string email, Uri link, CancellationToken cancellationToken) => Add(email, "verification", link, cancellationToken);
 
-        public Task SendPasswordResetAsync(string email, Uri link, CancellationToken cancellationToken) => Add(email, "reset", link);
+        public Task SendPasswordResetAsync(string email, Uri link, CancellationToken cancellationToken) => Add(email, "reset", link, cancellationToken);
 
-        public Task SendAlreadyRegisteredAsync(string email, CancellationToken cancellationToken) => Add(email, "already-registered", null);
+        public Task SendAlreadyRegisteredAsync(string email, CancellationToken cancellationToken) => Add(email, "already-registered", null, cancellationToken);
 
         public Task SendSignInCodeAsync(string email, string code, CancellationToken cancellationToken)
         {
@@ -658,10 +877,14 @@ internal sealed class CapturingEmailSender
             return Task.CompletedTask;
         }
 
-        private Task Add(string email, string kind, Uri? link)
+        private async Task Add(string email, string kind, Uri? link, CancellationToken cancellationToken)
         {
+            if (sender.Gate is { } gate)
+            {
+                await gate.Task.WaitAsync(cancellationToken);
+            }
+
             sender.Sent.Enqueue((email, kind, link));
-            return Task.CompletedTask;
         }
     }
 }

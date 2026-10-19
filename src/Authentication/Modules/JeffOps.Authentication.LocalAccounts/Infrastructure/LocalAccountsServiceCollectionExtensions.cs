@@ -84,6 +84,9 @@ public static class LocalAccountsServiceCollectionExtensions
         services.TryAddScoped<ILocalUnitOfWork, LocalUnitOfWork>();
         services.TryAddSingleton<ITotpSecretProtector, DataProtectionTotpProtector>();
         services.TryAddScoped<IAccountEmailSender, LoggingAccountEmailSender>();
+        services.TryAddSingleton<AccountMailQueue>();
+        services.TryAddSingleton<IAccountMailQueue>(provider => provider.GetRequiredService<AccountMailQueue>());
+        services.AddHostedService<AccountMailWorker>();
         services.TryAddScoped<CredentialChangeSessions>();
         services.TryAddScoped<Application.Features.SignIn.SignInCodes>();
         services.TryAddSingleton<INotifier, LoggingNotifier>();

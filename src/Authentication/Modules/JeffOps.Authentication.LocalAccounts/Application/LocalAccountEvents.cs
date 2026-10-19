@@ -27,6 +27,7 @@ public sealed class LocalAccountEvents(IAuditSink audit, INotifier notifier, Tim
             "passkey_added" => "A passkey was added to your account.",
             "passkey_removed" => "A passkey was removed from your account.",
             "recovery_code_used" => "A recovery code was used to sign in to your account.",
+            "second_factors_removed" => "Your email address was confirmed by a password reset, so the authenticator app and passkeys added before were removed.",
             _ => null,
         };
         if (message is not null)

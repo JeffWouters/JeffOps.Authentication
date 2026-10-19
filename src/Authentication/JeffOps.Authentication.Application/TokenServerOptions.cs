@@ -95,6 +95,14 @@ public sealed class MfaOptions
 
     /// <summary>Step-up-protected actions need a multi-factor sign-in.</summary>
     public bool RequireForSensitiveActions { get; set; } = true;
+
+    /// <summary>
+    /// How recent that multi-factor sign-in must be (RFC 9470 <c>max_age</c>). Tokens carry <c>step_up</c> only while the
+    /// sign-in (<c>auth_time</c>) is at most this old, and the token server's own step-up checks read <c>auth_time</c> too; after
+    /// that the user signs in again (<c>prompt=login</c> or <c>max_age</c>). Zero: one multi-factor sign-in covers the whole
+    /// session. Default: 15 minutes.
+    /// </summary>
+    public TimeSpan StepUpMaxAge { get; set; } = TimeSpan.FromMinutes(15);
 }
 
 /// <summary>Personal access tokens (docs/DESIGN.md §7.4).</summary>

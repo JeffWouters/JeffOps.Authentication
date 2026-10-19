@@ -69,7 +69,7 @@ public static class LocalAccountEndpointRouteBuilderExtensions
 
         var open = root.MapGroup(string.Empty).AllowAnonymous();
         open.MapPost("login", LoginAsync).DisableAntiforgery().ExcludeFromDescription()
-            .SignInLimited(context => BackToLogin(LocalOrRoot(context.Request.Form["returnUrl"].ToString()), context.Request.Form["email"].ToString(), "too_many_requests"));
+            .SignInLimited(context => BackToLogin(LocalOrRoot(context.Request.Form["returnUrl"].ToString()), "too_many_requests"));
         open.MapPost("login/code", CodeAsync).DisableAntiforgery().ExcludeFromDescription().SignInLimited();
         open.MapPost("login/code/resend", ResendCodeAsync).DisableAntiforgery().ExcludeFromDescription().MailLimited();
 
@@ -131,7 +131,7 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         var result = await handler.HandleAsync(new PasswordSignInCommand(email, form["password"].ToString()), context.RequestAborted).ConfigureAwait(false);
         if (result.IsFailure)
         {
-            return BackToLogin(returnUrl, email, "signin_failed");
+            return BackToLogin(returnUrl, "signin_failed");
         }
 
         switch (result.Value.Status)
@@ -143,19 +143,20 @@ public static class LocalAccountEndpointRouteBuilderExtensions
                 var settings = context.RequestServices.GetRequiredService<IOptions<LocalAccountOptions>>().Value;
                 var time = context.RequestServices.GetRequiredService<TimeProvider>();
                 var expires = time.GetUtcNow() + settings.SecondFactorWindow;
-                var payload = string.Create(CultureInfo.InvariantCulture, $"{result.Value.AccountId}|{expires.ToUnixTimeSeconds()}");
-                context.Response.Cookies.Append(SecondFactorCookie, Protector(context, SecondFactorCookie).Protect(payload), CookieOptions(context, expires));
+                // Bound to the credential's security stamp: a password change or reset meanwhile ends this pending sign-in.
+                var payload = string.Create(CultureInfo.InvariantCulture, $"{result.Value.AccountId}|{expires.ToUnixTimeSeconds()}|{result.Value.SecurityStamp}");
+                context.Response.Cookies.Append(CookieName(context, SecondFactorCookie), Protector(context, SecondFactorCookie).Protect(payload), CookieOptions(context, expires));
                 return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}&method={result.Value.SecondFactor ?? "authenticator"}");
-            case LocalSignInStatus.LockedOut:
-                return BackToLogin(returnUrl, email, "locked_out");
             case LocalSignInStatus.EmailNotVerified:
-                return BackToLogin(returnUrl, email, "email_not_verified");
+                return BackToLogin(returnUrl, "email_not_verified");
             case LocalSignInStatus.AccountInactive:
-                return BackToLogin(returnUrl, email, "account_inactive");
+                return BackToLogin(returnUrl, "account_inactive");
             case LocalSignInStatus.SsoRequired:
-                return BackToLogin(returnUrl, email, "sso_required");
+                return BackToLogin(returnUrl, "sso_required");
             default:
-                return BackToLogin(returnUrl, email, "invalid_credentials");
+                // A locked account answers like a wrong password (it still can't sign in): the answer never tells which
+                // addresses have accounts.
+                return BackToLogin(returnUrl, "invalid_credentials");
         }
     }
 
@@ -169,20 +170,26 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         var form = await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
         var returnUrl = LocalOrRoot(form["returnUrl"].ToString());
 
-        if (PendingAccount(context, time) is not { } accountId)
+        if (PendingAccount(context, time) is not { } pending)
         {
-            return BackToLogin(returnUrl, null, "signin_expired");
+            return BackToLogin(returnUrl, "signin_expired");
         }
 
         var recovery = !string.IsNullOrWhiteSpace(form["recoveryCode"].ToString());
         var code = recovery ? form["recoveryCode"].ToString() : form["code"].ToString();
-        var result = await handler.HandleAsync(new SecondFactorCommand(accountId, code, recovery), context.RequestAborted).ConfigureAwait(false);
+        var result = await handler.HandleAsync(new SecondFactorCommand(pending.AccountId, code, recovery, pending.SecurityStamp), context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsSuccess && result.Value.Status == LocalSignInStatus.SignedIn)
         {
-            context.Response.Cookies.Delete(SecondFactorCookie, CookieOptions(context, DateTimeOffset.UnixEpoch));
+            context.Response.Cookies.Delete(CookieName(context, SecondFactorCookie), CookieOptions(context, DateTimeOffset.UnixEpoch));
             await SignInAsync(context, result.Value).ConfigureAwait(false);
             return Results.Redirect(returnUrl);
+        }
+
+        if (result.IsFailure)
+        {
+            context.Response.Cookies.Delete(CookieName(context, SecondFactorCookie), CookieOptions(context, DateTimeOffset.UnixEpoch));
+            return BackToLogin(returnUrl, "signin_expired");
         }
 
         var error = result.IsSuccess && result.Value.Status == LocalSignInStatus.LockedOut ? "locked_out" : "invalid_code";
@@ -199,12 +206,12 @@ public static class LocalAccountEndpointRouteBuilderExtensions
 
         var form = await context.Request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
         var returnUrl = LocalOrRoot(form["returnUrl"].ToString());
-        if (PendingAccount(context, time) is not { } accountId)
+        if (PendingAccount(context, time) is not { } pending)
         {
-            return BackToLogin(returnUrl, null, "signin_expired");
+            return BackToLogin(returnUrl, "signin_expired");
         }
 
-        await handler.HandleAsync(new ResendSignInCodeCommand(accountId), context.RequestAborted).ConfigureAwait(false);
+        await handler.HandleAsync(new ResendSignInCodeCommand(pending.AccountId), context.RequestAborted).ConfigureAwait(false);
         return Results.Redirect($"{CodePage}?returnUrl={Uri.EscapeDataString(returnUrl)}&method=email&sent=1");
     }
 
@@ -296,6 +303,11 @@ public static class LocalAccountEndpointRouteBuilderExtensions
             return Problem(StatusCodes.Status403Forbidden, LocalAccountErrors.SsoRequired, "Your organization requires signing in with its identity provider.");
         }
 
+        if (result.IsSuccess && result.Value.Status == LocalSignInStatus.EmailNotVerified)
+        {
+            return Problem(StatusCodes.Status403Forbidden, LocalAccountErrors.EmailNotVerified, "Confirm your email address first: use the link we sent you.");
+        }
+
         if (result.IsFailure || result.Value.Status != LocalSignInStatus.SignedIn)
         {
             return Problem(StatusCodes.Status401Unauthorized, LocalAccountErrors.InvalidCredentials, "The passkey sign-in didn't work.");
@@ -356,9 +368,10 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         await context.SignInAsync(options.SignInScheme, principal).ConfigureAwait(false);
     }
 
-    private static Guid? PendingAccount(HttpContext context, TimeProvider time)
+    /// <summary>The account waiting for its second factor, with the security stamp its password step saw; null when none or expired.</summary>
+    private static (Guid AccountId, string SecurityStamp)? PendingAccount(HttpContext context, TimeProvider time)
     {
-        if (!context.Request.Cookies.TryGetValue(SecondFactorCookie, out var value) || string.IsNullOrEmpty(value))
+        if (!context.Request.Cookies.TryGetValue(CookieName(context, SecondFactorCookie), out var value) || string.IsNullOrEmpty(value))
         {
             return null;
         }
@@ -366,11 +379,12 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         try
         {
             var parts = Protector(context, SecondFactorCookie).Unprotect(value).Split('|');
-            return parts.Length == 2
+            return parts.Length == 3
                 && Guid.TryParse(parts[0], out var accountId)
                 && long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var expires)
                 && DateTimeOffset.FromUnixTimeSeconds(expires) > time.GetUtcNow()
-                    ? accountId
+                && parts[2].Length > 0
+                    ? (accountId, parts[2])
                     : null;
         }
         catch (System.Security.Cryptography.CryptographicException)
@@ -382,13 +396,13 @@ public static class LocalAccountEndpointRouteBuilderExtensions
     private static void SaveState(HttpContext context, string? state, TimeProvider time)
     {
         var expires = time.GetUtcNow().AddMinutes(5);
-        context.Response.Cookies.Append(PasskeyStateCookie, Protector(context, PasskeyStateCookie).Protect(state ?? string.Empty), CookieOptions(context, expires));
+        context.Response.Cookies.Append(CookieName(context, PasskeyStateCookie), Protector(context, PasskeyStateCookie).Protect(state ?? string.Empty), CookieOptions(context, expires));
     }
 
     private static string? TakeState(HttpContext context, TimeProvider time)
     {
-        context.Response.Cookies.Delete(PasskeyStateCookie, CookieOptions(context, DateTimeOffset.UnixEpoch));
-        if (!context.Request.Cookies.TryGetValue(PasskeyStateCookie, out var value) || string.IsNullOrEmpty(value))
+        context.Response.Cookies.Delete(CookieName(context, PasskeyStateCookie), CookieOptions(context, DateTimeOffset.UnixEpoch));
+        if (!context.Request.Cookies.TryGetValue(CookieName(context, PasskeyStateCookie), out var value) || string.IsNullOrEmpty(value))
         {
             return null;
         }
@@ -406,6 +420,12 @@ public static class LocalAccountEndpointRouteBuilderExtensions
     private static ITimeLimitedDataProtector Protector(HttpContext context, string purpose) =>
         context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector("JeffOps.LocalAccounts." + purpose).ToTimeLimitedDataProtector();
 
+    /// <summary>
+    /// A cookie's name: <c>__Host-</c> prefixed over HTTPS, so the browser keeps it only when Secure, for path <c>/</c> and this
+    /// host alone (a sibling subdomain can't set or overwrite it).
+    /// </summary>
+    private static string CookieName(HttpContext context, string name) => context.Request.IsHttps ? "__Host-" + name : name;
+
     private static CookieOptions CookieOptions(HttpContext context, DateTimeOffset expires) => new()
     {
         HttpOnly = true,
@@ -419,8 +439,9 @@ public static class LocalAccountEndpointRouteBuilderExtensions
     private static Guid AccountOf(HttpContext context) =>
         Guid.Parse(context.User.FindFirst((context.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default).Subject)!.Value);
 
-    private static IResult BackToLogin(string returnUrl, string? email, string error) =>
-        Results.Redirect($"{LoginPage}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={error}" + (string.IsNullOrEmpty(email) ? string.Empty : $"&email={Uri.EscapeDataString(email)}"));
+    /// <summary>Back to the login page with an error, never with the email address: URLs end up in logs, history and referrers.</summary>
+    private static IResult BackToLogin(string returnUrl, string error) =>
+        Results.Redirect($"{LoginPage}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={error}");
 
     internal static string LocalOrRoot(string? returnUrl) =>
         Abstractions.Http.LocalRedirect.OrRoot(returnUrl);
@@ -486,7 +507,10 @@ internal sealed class OwnSessionFilter : IEndpointFilter
     }
 }
 
-/// <summary>Adding or removing sign-in credentials needs a stepped-up session (RFC 9470 challenge).</summary>
+/// <summary>
+/// Adding or removing sign-in credentials needs a stepped-up session whose multi-factor sign-in is recent
+/// (<see cref="MfaOptions.StepUpMaxAge"/>; RFC 9470 challenge with <c>max_age</c>).
+/// </summary>
 internal sealed class StepUpFilter : IEndpointFilter
 {
     public ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
@@ -495,13 +519,17 @@ internal sealed class StepUpFilter : IEndpointFilter
         ArgumentNullException.ThrowIfNull(next);
 
         var http = context.HttpContext;
-        if (AccessContextReader.IsSteppedUp(http.User, http.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default))
+        var mfa = http.RequestServices.GetRequiredService<IOptions<TokenServerOptions>>().Value.Mfa;
+        var maxAge = mfa.RequireForSensitiveActions ? mfa.StepUpMaxAge : TimeSpan.Zero;
+        var now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        if (AccessContextReader.IsSteppedUp(http.User, http.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default, maxAge, now))
         {
             return next(context);
         }
 
         http.Response.Headers.WWWAuthenticate =
-            "Bearer error=\"insufficient_user_authentication\", error_description=\"A multi-factor sign-in is required.\"";
+            "Bearer error=\"insufficient_user_authentication\", error_description=\"A recent multi-factor sign-in is required.\""
+            + (maxAge > TimeSpan.Zero ? string.Create(CultureInfo.InvariantCulture, $", max_age={(long)maxAge.TotalSeconds}") : string.Empty);
         return ValueTask.FromResult<object?>(TypedResults.Problem(
             detail: "This change requires a multi-factor sign-in (step-up).",
             statusCode: StatusCodes.Status403Forbidden,

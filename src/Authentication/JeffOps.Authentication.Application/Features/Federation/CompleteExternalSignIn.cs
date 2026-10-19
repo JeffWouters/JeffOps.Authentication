@@ -188,23 +188,9 @@ public sealed class CompleteExternalSignInHandler(
         }
     }
 
-    private bool DomainAllowed(ExternalIdentity identity, FederationOptions settings)
-    {
-        if (settings.AllowedEmailDomains.Count == 0)
-        {
-            return settings.OpenRegistration ?? environment.IsDevelopment();
-        }
-
-        // Only an address the provider vouches for counts: an unverified one is whatever the user typed in their own directory.
-        if (!identity.EmailVerified)
-        {
-            return false;
-        }
-
-        var domain = HomeRealm.DomainOf(identity.Email);
-        return domain is not null && settings.AllowedEmailDomains.Any(allowed =>
-            string.Equals(allowed.Trim().TrimStart('@'), domain, StringComparison.OrdinalIgnoreCase));
-    }
+    // Only an address the provider vouches for counts: an unverified one is whatever the user typed in their own directory.
+    private bool DomainAllowed(ExternalIdentity identity, FederationOptions settings) =>
+        settings.AllowsEmailDomain(identity.Email, identity.EmailVerified, environment.IsDevelopment());
 
     private Task AuditRefusalAsync(ExternalIdentity identity, string reason, DateTimeOffset now, CancellationToken cancellationToken) =>
         audit.WriteAsync(

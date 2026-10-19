@@ -30,7 +30,8 @@ public sealed record AuthenticationStrength
 /// <summary>The platform's strong-authentication policy.</summary>
 /// <param name="RequireForSignIn">Refuse sign-ins (and refreshes of sessions) that were not multi-factor.</param>
 /// <param name="RequireForSensitiveActions">Sensitive actions need a multi-factor sign-in (step-up).</param>
-public sealed record MfaPolicy(bool RequireForSignIn, bool RequireForSensitiveActions)
+/// <param name="StepUpMaxAge">How old that multi-factor sign-in may be for step-up (RFC 9470 <c>max_age</c>); zero: any age.</param>
+public sealed record MfaPolicy(bool RequireForSignIn, bool RequireForSensitiveActions, TimeSpan StepUpMaxAge = default)
 {
     /// <summary>Whether a session of this strength may perform step-up-protected actions.</summary>
     public bool SatisfiesStepUp(AuthenticationStrength strength)
@@ -38,6 +39,14 @@ public sealed record MfaPolicy(bool RequireForSignIn, bool RequireForSensitiveAc
         ArgumentNullException.ThrowIfNull(strength);
         return !RequireForSensitiveActions || strength.IsMultiFactor;
     }
+
+    /// <summary>
+    /// Whether a session of this strength that signed in at <paramref name="signedInAt"/> may still perform step-up-protected
+    /// actions at <paramref name="now"/>: the multi-factor sign-in must be at most <see cref="StepUpMaxAge"/> old.
+    /// </summary>
+    public bool SatisfiesStepUp(AuthenticationStrength strength, DateTimeOffset signedInAt, DateTimeOffset now) =>
+        SatisfiesStepUp(strength)
+        && (!RequireForSensitiveActions || StepUpMaxAge <= TimeSpan.Zero || now - signedInAt <= StepUpMaxAge);
 
     public bool AllowsSignIn(AuthenticationStrength strength)
     {

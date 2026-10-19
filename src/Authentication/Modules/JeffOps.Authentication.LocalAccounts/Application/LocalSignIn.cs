@@ -25,5 +25,8 @@ public sealed record LocalSignInResult(LocalSignInStatus Status, Guid? AccountId
     /// <summary>The second factor that must follow: <c>authenticator</c> or <c>email</c>.</summary>
     public string? SecondFactor { get; init; }
 
+    /// <summary>With a second factor to follow: the credential's security stamp, which that step must still match.</summary>
+    public string? SecurityStamp { get; init; }
+
     public static LocalSignInResult Failed { get; } = new(LocalSignInStatus.Failed);
 }

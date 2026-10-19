@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Claims;
 using JeffOps.Authentication.Abstractions.Claims;
 
@@ -98,6 +99,28 @@ public static class AccessContextReader
         ArgumentNullException.ThrowIfNull(names);
 
         return user.HasClaim(claim => claim.Type == names.StepUp && string.Equals(claim.Value, names.StepUpSatisfied, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Whether the sign-in behind <paramref name="user"/> satisfied step-up and happened at most <paramref name="maxAge"/>
+    /// before <paramref name="now"/> (its <c>auth_time</c>, RFC 9470 <c>max_age</c>). A zero <paramref name="maxAge"/> accepts
+    /// any age; a token without <c>auth_time</c> is never recent.
+    /// </summary>
+    public static bool IsSteppedUp(ClaimsPrincipal user, ClaimNames names, TimeSpan maxAge, DateTimeOffset now)
+    {
+        if (!IsSteppedUp(user, names))
+        {
+            return false;
+        }
+
+        if (maxAge <= TimeSpan.Zero)
+        {
+            return true;
+        }
+
+        return long.TryParse(user.FindFirst(names.AuthenticationTime)?.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds)
+            && seconds >= DateTimeOffset.MinValue.ToUnixTimeSeconds() && seconds <= DateTimeOffset.MaxValue.ToUnixTimeSeconds()
+            && now - DateTimeOffset.FromUnixTimeSeconds(seconds) <= maxAge;
     }
 
     /// <summary>Every value of <paramref name="claimType"/>.</summary>
