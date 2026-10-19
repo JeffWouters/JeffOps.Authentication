@@ -31,7 +31,7 @@
   <PropertyGroup>
     <JeffOpsEngine Condition="$(MSBuildProjectName.EndsWith('.Domain')) Or $(MSBuildProjectName.EndsWith('.Application'))
       Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Delegation' Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.LocalAccounts'
-      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Enterprise'">true</JeffOpsEngine>
+      Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Enterprise' Or '$(MSBuildProjectName)' == 'JeffOps.Authentication.Tenancy'">true</JeffOpsEngine>
     <NoWarn Condition="'$(JeffOpsEngine)' != 'true'">$(NoWarn.Replace('CS1591', ''))</NoWarn>
   </PropertyGroup>
 

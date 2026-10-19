@@ -4,6 +4,8 @@ using JeffOps.Authentication.Enterprise.Infrastructure;
 using JeffOps.Authentication.Enterprise.SqlServer;
 using JeffOps.Authentication.LocalAccounts.Infrastructure;
 using JeffOps.Authentication.LocalAccounts.SqlServer;
+using JeffOps.Authentication.Tenancy.Infrastructure;
+using JeffOps.Authentication.Tenancy.SqlServer;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,6 +50,22 @@ internal static class TestModuleDatabases
 
         builder.Services.AddScoped<ILocalAccountsDatabaseInitializer, CreateLocalAccounts>();
         return builder.UseDatabase((_, options) => options.UseSqlite(sqliteFile));
+    }
+
+    public static TenancyBuilder UseTestDatabase(this TenancyBuilder builder, string sqliteFile)
+    {
+        if (TestDatabase.SqlServer)
+        {
+            return builder.AddSqlServerPersistence(migrateOnStartup: true);
+        }
+
+        builder.Services.AddScoped<ITenancyDatabaseInitializer, CreateTenancy>();
+        return builder.UseDatabase((_, options) => options.UseSqlite(sqliteFile));
+    }
+
+    private sealed class CreateTenancy(TenancyDbContext db) : ITenancyDatabaseInitializer
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken) => db.Database.EnsureCreatedAsync(cancellationToken);
     }
 
     private sealed class CreateDelegation(DelegationDbContext db) : IDelegationDatabaseInitializer

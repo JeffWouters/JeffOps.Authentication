@@ -8,6 +8,8 @@ using JeffOps.Authentication.Infrastructure.Persistence;
 using JeffOps.Authentication.LocalAccounts.Infrastructure;
 using JeffOps.Authentication.LocalAccounts.SqlServer;
 using JeffOps.Authentication.Persistence.SqlServer;
+using JeffOps.Authentication.Tenancy.Infrastructure;
+using JeffOps.Authentication.Tenancy.SqlServer;
 using JeffOps.Authentication.Tests.Shared;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -33,6 +35,7 @@ public sealed class MigrationTests
         modules.AddDelegation().AddSqlServerPersistence();
         modules.AddEnterprise().AddSqlServerPersistence();
         modules.AddLocalAccounts().AddSqlServerPersistence();
+        modules.AddTenancy().AddSqlServerPersistence();
 
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
@@ -42,6 +45,7 @@ public sealed class MigrationTests
             scope.ServiceProvider.GetRequiredService<DelegationDbContext>(),
             scope.ServiceProvider.GetRequiredService<EnterpriseDbContext>(),
             scope.ServiceProvider.GetRequiredService<LocalAccountsDbContext>(),
+            scope.ServiceProvider.GetRequiredService<TenancyDbContext>(),
         ];
 
         foreach (var context in contexts)

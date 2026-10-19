@@ -19,6 +19,8 @@
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.Delegation.SqlServer/JeffOps.Authentication.Delegation.SqlServer.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.Enterprise/JeffOps.Authentication.Enterprise.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.Enterprise.SqlServer/JeffOps.Authentication.Enterprise.SqlServer.csproj" />
+    <Project Path="src/Authentication/Modules/JeffOps.Authentication.Tenancy/JeffOps.Authentication.Tenancy.csproj" />
+    <Project Path="src/Authentication/Modules/JeffOps.Authentication.Tenancy.SqlServer/JeffOps.Authentication.Tenancy.SqlServer.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.LocalAccounts/JeffOps.Authentication.LocalAccounts.csproj" />
     <Project Path="src/Authentication/Modules/JeffOps.Authentication.LocalAccounts.SqlServer/JeffOps.Authentication.LocalAccounts.SqlServer.csproj" />
   </Folder>

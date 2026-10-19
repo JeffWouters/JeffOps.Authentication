@@ -742,6 +742,20 @@
       "jeffops.authentication.sharedkernel": {
         "type": "Project"
       },
+      "jeffops.authentication.tenancy": {
+        "type": "Project",
+        "dependencies": {
+          "JeffOps.Authentication.Application": "[0.1.0-alpha, )",
+          "Microsoft.EntityFrameworkCore.Relational": "[10.0.13, )"
+        }
+      },
+      "jeffops.authentication.tenancy.sqlserver": {
+        "type": "Project",
+        "dependencies": {
+          "JeffOps.Authentication.Tenancy": "[0.1.0-alpha, )",
+          "Microsoft.EntityFrameworkCore.SqlServer": "[10.0.13, )"
+        }
+      },
       "jeffops.authentication.testing": {
         "type": "Project",
         "dependencies": {
