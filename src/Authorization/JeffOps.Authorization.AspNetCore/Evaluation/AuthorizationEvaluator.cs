@@ -23,6 +23,9 @@ internal sealed class AuthorizationEvaluator(
     IOptions<PermissionAuthorizationOptions> options,
     TimeProvider time)
 {
+    private static readonly IReadOnlyDictionary<string, JsonElement> NoAttributes = new Dictionary<string, JsonElement>();
+    private static readonly JsonElement Null = JsonSerializer.SerializeToElement<string?>(null);
+
     public async Task<AuthorizationDecision> EvaluateAsync(
         ClaimsPrincipal user,
         AccessContext access,
@@ -50,15 +53,17 @@ internal sealed class AuthorizationEvaluator(
             }
         }
 
+        // Only attribute policies read the attribute context: without any, it isn't built (ten JSON values a decision).
+        var policies = await data.GetPoliciesAsync(cancellationToken).ConfigureAwait(false);
         var facts = new AuthorizationFacts
         {
             Action = action,
             ResourceType = request.ResourceType,
-            Attributes = BuildAttributes(user, action, request.Resource, now),
+            Attributes = policies.Count > 0 ? BuildAttributes(user, action, request.Resource, now) : NoAttributes,
             IsRoot = access.IsRoot,
             HasRoleGrant = hasRoleGrant,
             ServicePermissions = access.IsRoot ? [] : AccessContextReader.ValuesOf(user, names.ServicePermission),
-            Policies = await data.GetPoliciesAsync(cancellationToken).ConfigureAwait(false),
+            Policies = policies,
             PatCeiling = AccessContextReader.ValuesOf(user, names.PatCeiling),
             DelegationScopes = AccessContextReader.ValuesOf(user, names.DelegationScope),
             IsImpersonation = AccessContextReader.IsImpersonation(user, names),
@@ -103,7 +108,7 @@ internal sealed class AuthorizationEvaluator(
         return context;
     }
 
-    private static JsonElement Text(string? value) => JsonSerializer.SerializeToElement(value);
+    private static JsonElement Text(string? value) => value is null ? Null : JsonSerializer.SerializeToElement(value);
 }
 
 /// <summary>The <see cref="IAuthorizer"/> for the current HTTP request.</summary>
