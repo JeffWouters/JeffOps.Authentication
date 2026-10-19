@@ -174,7 +174,7 @@ public sealed class SamlTests : IAsyncDisposable
         await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
 
         // Signing out at the token server sends the browser to the provider with a LogoutRequest this server signed.
-        var signOut = await browser.GetAsync(null!, "connect/endsession");
+        var signOut = await browser.NavigateAsync("connect/endsession");
         signOut.StatusCode.ShouldBe(HttpStatusCode.Redirect);
         var toProvider = signOut.Headers.Location!;
         toProvider.GetLeftPart(UriPartial.Path).ShouldBe("https://idp.test/slo");

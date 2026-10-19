@@ -16,6 +16,9 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
 {
     private const int MinimumSecretLength = 32;
 
+    /// <summary>Words that mark a secret copied from a sample or development configuration (such as the reference host's).</summary>
+    private static readonly string[] PlaceholderMarkers = ["development", "replace", "changeme", "change-me", "placeholder", "example"];
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await using var scope = services.CreateAsyncScope();
@@ -128,6 +131,12 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
             {
                 throw new InvalidOperationException(
                     $"The secret of client '{client.ClientId}' is shorter than {MinimumSecretLength} characters. Outside Development, use a generated secret from the secret store.");
+            }
+
+            if (!environment.IsDevelopment() && PlaceholderMarkers.Any(marker => client.ClientSecret.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"The secret of client '{client.ClientId}' is a placeholder from a sample or development configuration. Outside Development, use a generated secret from the secret store.");
             }
 
             descriptor.ClientSecret = client.ClientSecret;

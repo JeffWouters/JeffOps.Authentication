@@ -213,4 +213,10 @@ public sealed class FederatedCredential
 
     /// <summary>The audience the external token must carry. Default: this server's issuer.</summary>
     public string? Audience { get; set; }
+
+    /// <summary>
+    /// The longest lifetime (<c>exp</c> − <c>iat</c>) accepted for the external token: a stolen one is usable that long at
+    /// most. Default: 2 hours (CI tokens live minutes, Kubernetes service account tokens an hour).
+    /// </summary>
+    public TimeSpan MaxTokenLifetime { get; set; } = TimeSpan.FromHours(2);
 }

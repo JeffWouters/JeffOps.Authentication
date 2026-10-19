@@ -109,6 +109,8 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddSingleton<DatabaseKeyStore>();
         services.TryAddSingleton<ClientSnapshots>();
         services.TryAddSingleton<ITokenKeyProvider>(provider => provider.GetRequiredService<DatabaseKeyStore>());
+        // Migrations and seeding first: hosted services start in order, and the background loops below need the schema.
+        services.AddHostedService<AuthenticationStartup>();
         services.AddHostedService<KeyRotationService>();
         services.AddHostedService<StoreMaintenance>();
 
@@ -137,6 +139,13 @@ public static class AuthenticationServiceCollectionExtensions
                     .AllowRefreshTokenFlow()
                     .AllowClientCredentialsFlow()
                     .AllowDeviceAuthorizationFlow();
+
+                // PKCE with S256 only: plain (or a challenge without a method, which means plain) is refused (§16).
+                server.Configure(options =>
+                {
+                    options.CodeChallengeMethods.Clear();
+                    options.CodeChallengeMethods.Add(CodeChallengeMethods.Sha256);
+                });
 
                 server.RegisterScopes(Scopes.OpenId, Scopes.Profile, Scopes.Email, Scopes.OfflineAccess);
                 server.DisableAccessTokenEncryption();
@@ -184,6 +193,7 @@ public static class AuthenticationServiceCollectionExtensions
                 BoundAccessTokens.Register(server);
                 PushedAuthorizationDpop.Register(server);
                 ProtocolRateLimits.Register(server);
+                ClientAssertionReplay.Register(server);
                 server.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()
                     .EnableTokenEndpointPassthrough()
@@ -217,7 +227,6 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddSingleton<IOptionsChangeTokenSource<OpenIddictServerOptions>, KeysChangeTokenSource<OpenIddictServerOptions>>();
         services.AddSingleton<IOptionsChangeTokenSource<OpenIddict.Validation.OpenIddictValidationOptions>, KeysChangeTokenSource<OpenIddict.Validation.OpenIddictValidationOptions>>();
 
-        services.AddHostedService<AuthenticationStartup>();
         services.AddHttpClient(BackchannelLogoutNotifier.HttpClientName);
         services.AddHttpClient(ExternalTokenValidator.HttpClientName);
         services.TryAddSingleton<Application.Features.Grants.WorkloadIdentity.IExternalTokenValidator, ExternalTokenValidator>();

@@ -199,7 +199,7 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
         using var browser = new Browser(_host);
         await SignInThroughAsync(browser, "account/login/discover?email=jo%40contoso.com&returnUrl=%2Fdone", "jo@contoso.com");
 
-        var signOut = await browser.GetAsync(null!, "connect/endsession");
+        var signOut = await browser.NavigateAsync("connect/endsession");
         signOut.StatusCode.ShouldBe(HttpStatusCode.Redirect);
         var toProvider = signOut.Headers.Location!;
         toProvider.GetLeftPart(UriPartial.Path).ShouldBe($"{Issuer}/logout");

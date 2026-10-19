@@ -281,6 +281,12 @@ internal static class ProtocolEndpoints
             return Results.Forbid(new AuthenticationProperties { RedirectUri = $"{Page}?result=denied" }, [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme]);
         }
 
+        // As at the authorize endpoint: a client limited to some providers gets only sign-ins that came through one of them.
+        if (!ClientProviders.Allows(ClientProviders.Find(options.Value, code.GetClaim(Claims.ClientId)), SignInPrincipal.ProviderOf(signedIn.Principal)))
+        {
+            return Results.Redirect($"{Page}?error={ClientProvidersError}");
+        }
+
         var strength = new AuthenticationStrength(signedIn.Principal!.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var session = await startSession.HandleAsync(
             new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names)),
@@ -330,11 +336,23 @@ internal static class ProtocolEndpoints
         HttpContext context,
         ICommandHandler<EndSessionCommand> endSession,
         IEnumerable<Application.Federation.IExternalSignOut> externalSignOuts,
+        Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery,
         ClaimNames names,
         IOptions<TokenServerOptions> options)
     {
-        // End this sign-in session everywhere it reached: its refresh tokens stop working and clients are told (sid).
         var signedIn = await context.AuthenticateAsync(options.Value.SignInScheme).ConfigureAwait(false);
+
+        // Another site mustn't be able to sign the user out with a link: unless the request proves it knows this session,
+        // the user confirms first.
+        if (signedIn.Succeeded && !await SignOutIntendedAsync(context, signedIn.Principal, antiforgery, names).ConfigureAwait(false))
+        {
+            return Results.Redirect("/account/logout" + QueryString.Create(
+                (context.Request.HasFormContentType ? context.Request.Form.AsEnumerable() : context.Request.Query.AsEnumerable())
+                    .Where(pair => pair.Key is not ("__RequestVerificationToken" or "confirm"))
+                    .SelectMany(pair => pair.Value.Select(value => KeyValuePair.Create(pair.Key, value)))));
+        }
+
+        // End this sign-in session everywhere it reached: its refresh tokens stop working and clients are told (sid).
         if (signedIn.Succeeded && Guid.TryParse(signedIn.Principal.FindFirst(names.Subject)?.Value, out var accountId)
             && SignInPrincipal.SessionId(signedIn.Principal, names) is { } sessionId)
         {
@@ -364,6 +382,34 @@ internal static class ProtocolEndpoints
 
         // OpenIddict redirects to the validated post_logout_redirect_uri, or to the RedirectUri below without one.
         return Results.SignOut(new AuthenticationProperties { RedirectUri = "/" }, [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme]);
+    }
+
+    private const string ClientProvidersError = "provider_not_allowed";
+
+    /// <summary>
+    /// Whether the end-session request is the user's own: an <c>id_token_hint</c> for this very session (the client knows
+    /// it), a navigation from this site itself (<c>Sec-Fetch-Site</c>), or the confirmation form posted back.
+    /// </summary>
+    private static async Task<bool> SignOutIntendedAsync(HttpContext context, System.Security.Claims.ClaimsPrincipal signedIn, Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery, ClaimNames names)
+    {
+        if (context.Request.Headers["Sec-Fetch-Site"].ToString() is "same-origin" or "none")
+        {
+            return true;
+        }
+
+        if (HttpMethods.IsPost(context.Request.Method) && context.Request.HasFormContentType
+            && string.Equals(context.Request.Form["confirm"], "yes", StringComparison.Ordinal)
+            && await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        // OpenIddict has validated the hint (signature, issuer); it must name this user and this session.
+        var hint = (await context.AuthenticateAsync(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme).ConfigureAwait(false)).Principal;
+        return hint is not null
+            && string.Equals(hint.FindFirst(names.Subject)?.Value, signedIn.FindFirst(names.Subject)?.Value, StringComparison.Ordinal)
+            && SignInPrincipal.SessionId(signedIn, names) is { } session
+            && string.Equals(hint.FindFirst(names.SessionId)?.Value, session, StringComparison.Ordinal);
     }
 
     /// <summary>A parameter of the authorize request as the browser sent it (query or form), when given once.</summary>
@@ -417,6 +463,13 @@ internal static class ProtocolEndpoints
             if (!string.Equals(actor.GetClaim(Claims.ClientId), request.ClientId, StringComparison.Ordinal))
             {
                 return Error.Unauthorized(GrantErrors.TokenInvalid, "The actor token was issued to another client.");
+            }
+
+            // The user signed out of the session the actor token belongs to: it mints nothing more.
+            if (actor.FindFirst(context.RequestServices.GetRequiredService<ClaimNames>().SessionId)?.Value is { Length: > 0 } session
+                && await context.RequestServices.GetRequiredService<Application.Abstractions.IEndedSessions>().IsEndedAsync(session, context.RequestAborted).ConfigureAwait(false))
+            {
+                return Error.Unauthorized(GrantErrors.SessionRevoked, "The actor token's session has ended.");
             }
 
             var held = actor.GetScopes();

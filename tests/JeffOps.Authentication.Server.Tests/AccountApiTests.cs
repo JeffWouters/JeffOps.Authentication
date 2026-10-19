@@ -281,6 +281,28 @@ public sealed class StartupTests
         }));
 
     [Fact]
+    public async Task The_schema_is_ready_before_the_background_loops_start()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+
+        // Hosted services start in order: migrations and seeding before key rotation and store maintenance use the tables.
+        var started = server.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Select(service => service.GetType().Name).ToList();
+        started.IndexOf("AuthenticationStartup").ShouldBeLessThan(started.IndexOf("KeyRotationService"));
+        started.IndexOf("AuthenticationStartup").ShouldBeLessThan(started.IndexOf("StoreMaintenance"));
+    }
+
+    [Fact]
+    public async Task A_placeholder_client_secret_fails_startup_outside_development()
+    {
+        var exception = await Should.ThrowAsync<InvalidOperationException>(() => TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Clients:1:ClientSecret"] = "development-only-secret-replace-in-user-secrets",
+        }));
+
+        exception.Message.ShouldContain("placeholder");
+    }
+
+    [Fact]
     public async Task A_key_ring_kept_in_memory_fails_startup_outside_development()
     {
         var exception = await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(

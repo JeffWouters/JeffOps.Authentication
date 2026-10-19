@@ -60,6 +60,10 @@ internal sealed class ExternalTokenValidator(IHttpClientFactory http, TimeProvid
             return null;
         }
 
-        return new ExternalToken(issuer, jwt.Subject, [.. jwt.Audiences]);
+        return new ExternalToken(issuer, jwt.Subject, [.. jwt.Audiences])
+        {
+            IssuedAt = jwt.TryGetPayloadValue<long>("iat", out var issuedAt) ? DateTimeOffset.FromUnixTimeSeconds(issuedAt) : null,
+            ExpiresAt = new DateTimeOffset(jwt.ValidTo, TimeSpan.Zero),
+        };
     }
 }

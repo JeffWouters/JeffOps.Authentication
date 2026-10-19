@@ -6,7 +6,14 @@ using Microsoft.Extensions.Options;
 namespace JeffOps.Authentication.Application.Features.Grants.WorkloadIdentity;
 
 /// <summary>An external token, validated against its issuer's published keys.</summary>
-public sealed record ExternalToken(Uri Issuer, string Subject, IReadOnlyList<string> Audiences);
+public sealed record ExternalToken(Uri Issuer, string Subject, IReadOnlyList<string> Audiences)
+{
+    /// <summary>When the token was issued (<c>iat</c>), if it says.</summary>
+    public DateTimeOffset? IssuedAt { get; init; }
+
+    /// <summary>When the token expires (<c>exp</c>).</summary>
+    public DateTimeOffset ExpiresAt { get; init; }
+}
 
 /// <summary>
 /// Validates a token from an external issuer (a CI system, Kubernetes, a cloud) by its OpenID Connect discovery document and
@@ -61,6 +68,13 @@ public sealed class WorkloadIdentityGrantHandler(
             if (token is null || !string.Equals(token.Subject, credential.Subject, StringComparison.Ordinal))
             {
                 continue;
+            }
+
+            // Platform tokens are presented again until they expire (a workload re-exchanges its token), so they aren't
+            // one-time; how long one can be used is capped instead.
+            if (token.ExpiresAt - (token.IssuedAt ?? time.GetUtcNow()) > credential.MaxTokenLifetime)
+            {
+                return Error.Unauthorized(GrantErrors.TokenInvalid, "The assertion is valid for longer than this client accepts.");
             }
 
             await audit.WriteAsync(new AuditRecord("workload.signed_in", "client", client.ClientId)

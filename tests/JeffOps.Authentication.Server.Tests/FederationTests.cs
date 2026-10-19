@@ -433,6 +433,14 @@ internal sealed class Browser : IDisposable
 
     public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request) => _client.SendAsync(request, TestContext.Current.CancellationToken);
 
+    /// <summary>The user goes to <paramref name="pathAndQuery"/> from this site itself (a link or the address bar).</summary>
+    public async Task<HttpResponseMessage> NavigateAsync(string pathAndQuery)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(pathAndQuery.TrimStart('/'), UriKind.Relative));
+        request.Headers.Add("Sec-Fetch-Site", "same-origin");
+        return await _client.SendAsync(request, TestContext.Current.CancellationToken);
+    }
+
     /// <summary>Gives <paramref name="other"/> this browser's cookies, as an attacker who stole them would hold them.</summary>
     public void CopyCookiesTo(Browser other)
     {

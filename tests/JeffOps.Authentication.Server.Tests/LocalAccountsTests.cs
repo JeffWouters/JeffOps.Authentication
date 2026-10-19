@@ -221,7 +221,8 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         laptopSession.ShouldNotBe(phoneSession, "each sign-in is its own session");
         onLaptop.Access.GetClaim("sid").Value.ShouldBe(laptopSession);
 
-        await laptop.GetAsync(null!, "connect/endsession");
+        // The client signs the laptop out, naming the session with its ID token.
+        await laptop.GetAsync(null!, "connect/endsession?id_token_hint=" + Uri.EscapeDataString(onLaptop.IdToken!));
 
         // The client is told which session ended, so it drops that one only.
         var logout = new JsonWebToken(_backchannel.LogoutTokens.ShouldHaveSingleItem());
@@ -361,6 +362,52 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         var accountId = (await scope.ServiceProvider.GetRequiredService<Application.Abstractions.IAccountRepository>().FindByEmailAsync("ada@example.com", TestContext.Current.CancellationToken))!.Id;
         var credential = (await scope.ServiceProvider.GetRequiredService<ILocalCredentialRepository>().FindAsync(accountId, TestContext.Current.CancellationToken))!;
         credential.FailedAttempts.ShouldBeGreaterThan(0, "the attempts stand until the emailed code is entered");
+    }
+
+    [Fact]
+    public async Task After_signing_out_the_session_s_access_tokens_no_longer_reach_the_account_apis()
+    {
+        var host = await StartAsync();
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        using var browser = new Browser(host);
+        await LoginAsync(browser, "ada@example.com", Password);
+        var tokens = await AuthorizeAsync(host, browser, "openid account");
+        (await host.SendAsync(HttpMethod.Get, "account/pats", tokens.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        await browser.GetAsync(null!, "connect/endsession?id_token_hint=" + Uri.EscapeDataString(tokens.IdToken!));
+
+        // The access token hasn't expired, but its session is over: no new personal access tokens from it, nothing else either.
+        (await host.SendAsync(HttpMethod.Get, "account/pats", tokens.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task A_sign_out_link_from_another_site_asks_first()
+    {
+        var host = await StartAsync();
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        using var browser = new Browser(host);
+        await LoginAsync(browser, "ada@example.com", Password);
+        var tokens = await AuthorizeAsync(host, browser, "openid offline_access");
+
+        // A link or image on another site: nothing ends, the user is asked.
+        var asked = await browser.GetAsync(null!, "connect/endsession?state=xyz");
+        asked.Headers.Location!.OriginalString.ShouldStartWith("/account/logout?");
+        (await host.RefreshAsync(tokens.RefreshToken!)).Status.ShouldBe(HttpStatusCode.OK);
+
+        // The user confirms on the page: signed out.
+        var page = await (await browser.GetAsync(null!, asked.Headers.Location.OriginalString)).Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        page.ShouldContain("name=\"state\" value=\"xyz\"");
+        var confirmed = await browser.SendAsync(new HttpRequestMessage(HttpMethod.Post, "connect/endsession")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = AntiforgeryToken().Match(page).Groups[1].Value,
+                ["state"] = "xyz",
+                ["confirm"] = "yes",
+            }),
+        });
+        confirmed.Headers.Location!.OriginalString.ShouldNotStartWith("/account/logout");
+        (await host.RefreshAsync(tokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
     }
 
     [Fact]

@@ -1,0 +1,17 @@
+@page "/account/logout"
+
+<PageTitle>Sign out</PageTitle>
+
+<main class="jo-login">
+    <h1>Sign out?</h1>
+    <p>An application asked to sign you out. Only continue if you meant to sign out.</p>
+    <form method="post" action="/connect/endsession" class="jo-logout">
+        <AntiforgeryToken />
+        @foreach (var (name, value) in Parameters)
+        {
+            <input type="hidden" name="@name" value="@value" />
+        }
+        <button type="submit" name="confirm" value="yes">Sign out</button>
+    </form>
+    <p><a href="/">Stay signed in</a></p>
+</main>

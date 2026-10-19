@@ -52,6 +52,7 @@ public sealed partial class Device
             ("approved", _) => "Done. You can go back to your device.",
             ("denied", _) => "Denied. The device was not connected.",
             (_, "invalid_code") => "That code is not valid or has expired. Check the device and try again.",
+            (_, "provider_not_allowed") => "This application needs another way of signing in. Sign out, sign in with one of its options, and try again.",
             (_, not null) => "That didn't work. Try again.",
             _ => null,
         };

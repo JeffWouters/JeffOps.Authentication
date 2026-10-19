@@ -132,6 +132,24 @@ public sealed class AuthorizationCodeTests
         location.OriginalString.ShouldStartWith("/login?returnUrl=");
     }
 
+    [Theory]
+    [InlineData("&code_challenge_method=plain")]
+    [InlineData("")]
+    public async Task Pkce_without_s256_is_refused(string method)
+    {
+        // Plain PKCE, or a challenge with no method (which means plain), is refused.
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+        var query = $"connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
+            $"&scope=openid&code_challenge=a-plain-challenge-that-is-long-enough-to-be-accepted-1234567890{method}&state=xyz";
+        using var request = new HttpRequestMessage(HttpMethod.Get, query);
+        request.Headers.Add(HeaderSignIn.Header, $"{account.Id}|pwd,mfa|{server.Time.GetUtcNow().ToUnixTimeSeconds()}");
+
+        var response = await server.Client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        (response.Headers.Location?.ToString() ?? await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).ShouldNotContain("code=");
+    }
+
     [Fact]
     public async Task Prompt_none_without_a_sign_in_answers_login_required()
     {

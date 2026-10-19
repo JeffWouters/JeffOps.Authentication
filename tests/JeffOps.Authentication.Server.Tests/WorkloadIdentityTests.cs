@@ -45,6 +45,17 @@ public sealed class WorkloadIdentityTests : IDisposable
         (await ExchangeAsync(host, Token(_ciKey, Branch, Audience), clientId: TokenServerHost.GatewayClient, secret: TokenServerHost.GatewaySecret)).Error.ShouldNotBeNull();
     }
 
+    [Fact]
+    public async Task A_platform_token_valid_for_longer_than_the_client_accepts_is_refused()
+    {
+        await using var host = await StartAsync();
+
+        (await ExchangeAsync(host, Token(_ciKey, Branch, Audience, expires: DateTime.UtcNow.AddMinutes(100), issuedAt: DateTime.UtcNow.AddMinutes(-10))))
+            .Status.ShouldBe(HttpStatusCode.OK, "within two hours");
+        (await ExchangeAsync(host, Token(_ciKey, Branch, Audience, expires: DateTime.UtcNow.AddDays(30), issuedAt: DateTime.UtcNow.AddMinutes(-1))))
+            .Code.ShouldBe("token_invalid");
+    }
+
     public void Dispose() => _ciKey.Dispose();
 
     private Task<TokenServerHost> StartAsync() => TokenServerHost.StartAsync(
@@ -72,14 +83,14 @@ public sealed class WorkloadIdentityTests : IDisposable
         return host.TokenAsync(form);
     }
 
-    private static string Token(RSA key, string subject, string audience, DateTime? expires = null) =>
+    private static string Token(RSA key, string subject, string audience, DateTime? expires = null, DateTime? issuedAt = null) =>
         new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Issuer = Ci,
             Audience = audience,
             Subject = new ClaimsIdentity([new Claim("sub", subject)]),
-            NotBefore = (expires ?? DateTime.UtcNow.AddMinutes(5)).AddMinutes(-10),
-            IssuedAt = (expires ?? DateTime.UtcNow.AddMinutes(5)).AddMinutes(-10),
+            NotBefore = issuedAt ?? (expires ?? DateTime.UtcNow.AddMinutes(5)).AddMinutes(-10),
+            IssuedAt = issuedAt ?? (expires ?? DateTime.UtcNow.AddMinutes(5)).AddMinutes(-10),
             Expires = expires ?? DateTime.UtcNow.AddMinutes(5),
             SigningCredentials = new SigningCredentials(new RsaSecurityKey(key) { KeyId = "ci-1" }, SecurityAlgorithms.RsaSha256),
         });

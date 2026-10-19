@@ -47,6 +47,26 @@ public sealed partial class HardeningTests
     }
 
     [Fact]
+    public async Task A_client_assertion_authenticates_one_request_only()
+    {
+        using var key = RSA.Create(2048);
+        await using var host = await StartAsync(JwksOf(key));
+        var assertion = Assertion(key, "https://localhost/");
+        Dictionary<string, string> Request(string clientAssertion) => new()
+        {
+            ["grant_type"] = "client_credentials",
+            ["client_id"] = JwtClient,
+            ["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ["client_assertion"] = clientAssertion,
+            ["scope"] = "api",
+        };
+
+        (await host.TokenAsync(Request(assertion))).Status.ShouldBe(HttpStatusCode.OK);
+        (await host.TokenAsync(Request(assertion))).Error.ShouldBe("invalid_client", "replayed");
+        (await host.TokenAsync(Request(Assertion(key, "https://localhost/", jti: null)))).Error.ShouldBe("invalid_client", "no jti to remember it by");
+    }
+
+    [Fact]
     public async Task A_client_that_requires_par_must_push_its_authorization_requests()
     {
         await using var host = await StartAsync();
@@ -178,6 +198,33 @@ public sealed partial class HardeningTests
     }
 
     [Fact]
+    public async Task A_device_client_limited_to_some_providers_isn_t_approved_with_another_sign_in()
+    {
+        await using var host = await StartAsync(extra: new() { ["JeffOps:TokenServer:Clients:3:Providers:0"] = "corp" });
+        var account = await host.CreateAccountAsync();
+        var started = await PostFormAsync(host, "connect/device", new() { ["client_id"] = DeviceClient, ["scope"] = "openid api" });
+        var deviceCode = started.GetProperty("device_code").GetString()!;
+        var userCode = started.GetProperty("user_code").GetString()!;
+
+        // Signed in on the phone some other way than through "corp".
+        using var phone = new Browser(host);
+        var signIn = $"{account.Id}|pwd,mfa|{host.Time.GetUtcNow().ToUnixTimeSeconds()}";
+        var verify = await SendAsync(phone, HttpMethod.Get, $"connect/verify?user_code={Uri.EscapeDataString(userCode)}", signIn);
+        var page = await (await SendAsync(phone, HttpMethod.Get, verify.Headers.Location!.OriginalString, signIn)).Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var approve = await SendAsync(phone, HttpMethod.Post, "connect/verify", signIn, new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = AntiforgeryToken().Match(page).Groups[1].Value,
+            ["user_code"] = userCode,
+            ["consent"] = System.Net.WebUtility.HtmlDecode(ConsentField().Match(page).Groups[1].Value),
+            ["decision"] = "approve",
+        }));
+
+        approve.Headers.Location!.OriginalString.ShouldContain("error=provider_not_allowed");
+        (await host.TokenAsync(new() { ["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code", ["device_code"] = deviceCode, ["client_id"] = DeviceClient }))
+            .Error.ShouldBe("authorization_pending");
+    }
+
+    [Fact]
     public async Task The_device_confirmation_names_only_the_code_s_own_client()
     {
         await using var host = await StartAsync();
@@ -207,7 +254,7 @@ public sealed partial class HardeningTests
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
-    private static Task<TokenServerHost> StartAsync(string? jwks = null)
+    private static Task<TokenServerHost> StartAsync(string? jwks = null, Dictionary<string, string?>? extra = null)
     {
         var settings = new Dictionary<string, string?>
         {
@@ -233,6 +280,11 @@ public sealed partial class HardeningTests
             settings["JeffOps:TokenServer:Clients:5:Scopes:0"] = "api";
         }
 
+        foreach (var (key, value) in extra ?? [])
+        {
+            settings[key] = value;
+        }
+
         return TokenServerHost.StartAsync(settings);
     }
 
@@ -242,12 +294,14 @@ public sealed partial class HardeningTests
         return JsonSerializer.Serialize(new { keys = new[] { new { kty = jwk.Kty, kid = jwk.Kid, n = jwk.N, e = jwk.E, use = "sig", alg = "RS256" } } });
     }
 
-    private static string Assertion(RSA key, string audience) =>
+    private static string Assertion(RSA key, string audience, string? jti = "") =>
         new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
         {
             Issuer = JwtClient,
             Audience = audience,
-            Subject = new ClaimsIdentity([new Claim("sub", JwtClient), new Claim("jti", Guid.NewGuid().ToString())]),
+            Subject = new ClaimsIdentity(jti is null
+                ? [new Claim("sub", JwtClient)]
+                : [new Claim("sub", JwtClient), new Claim("jti", jti.Length == 0 ? Guid.NewGuid().ToString() : jti)]),
             Expires = DateTime.UtcNow.AddMinutes(2),
             SigningCredentials = new SigningCredentials(new RsaSecurityKey(key) { KeyId = "k1" }, SecurityAlgorithms.RsaSha256),
             TokenType = "client-authentication+jwt",
