@@ -59,6 +59,8 @@ public sealed class EnterpriseDbContext(DbContextOptions<EnterpriseDbContext> op
             domain.Property(entity => entity.Status).HasConversion<string>().HasMaxLength(20);
             domain.HasIndex(entity => new { entity.TenantId, entity.Domain }).IsUnique();
             domain.HasIndex(entity => new { entity.Domain, entity.Status });
+            // One verifying tenant per domain, enforced by the store too (two verifications racing can't both win).
+            domain.HasIndex(entity => entity.Domain).IsUnique().HasFilter("[Status] = 'Verified'").HasDatabaseName("IX_TenantDomains_Domain_Verified");
             domain.Ignore(entity => entity.DomainEvents);
         });
 
@@ -183,6 +185,13 @@ internal sealed class TenantDomainRepository(EnterpriseDbContext db) : ITenantDo
     public Task<TenantDomain?> FindVerifiedAsync(string domain, CancellationToken cancellationToken) =>
         db.Domains.FirstOrDefaultAsync(candidate => candidate.Domain == domain && candidate.Status == DomainStatus.Verified, cancellationToken);
 
+    public async Task<IReadOnlyList<TenantDomain>> ListVerifiedCheckedBeforeAsync(DateTimeOffset checkedBefore, int take, CancellationToken cancellationToken) =>
+        await db.Domains
+            .Where(domain => domain.Status == DomainStatus.Verified && (domain.LastCheckedAt == null || domain.LastCheckedAt < checkedBefore))
+            .OrderBy(domain => domain.LastCheckedAt)
+            .Take(take)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
     public void Add(TenantDomain domain) => db.Domains.Add(domain);
 
     public void Remove(TenantDomain domain) => db.Domains.Remove(domain);
@@ -252,6 +261,20 @@ internal sealed class EnterpriseUnitOfWork(EnterpriseDbContext db, IDomainEventD
             return true;
         }
         catch (DbUpdateConcurrencyException)
+        {
+            db.ChangeTracker.Clear();
+            return false;
+        }
+    }
+
+    public async Task<bool> TrySaveUniqueAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (DbUpdateException)
         {
             db.ChangeTracker.Clear();
             return false;
@@ -511,12 +534,15 @@ public static class EnterpriseServiceCollectionExtensions
         services.AddScoped<IHomeRealmDirectory, EnterpriseHomeRealms>();
         services.AddScoped<IProvisionedAccountDirectory, ScimProvisionedAccounts>();
         services.AddScoped<ITenantProviderDirectory, EnterpriseTenantProviders>();
+        services.AddHostedService<DomainRecheckService>();
 
         services
             .AddHandler<ClaimDomainHandler>()
             .AddHandler<VerifyDomainHandler>()
             .AddHandler<ListDomainsHandler>()
             .AddHandler<RemoveDomainHandler>()
+            .AddHandler<RevokeDomainHandler>()
+            .AddHandler<RecheckDomainsHandler>()
             .AddHandler<GetSsoPolicyHandler>()
             .AddHandler<SetSsoPolicyHandler>()
             .AddHandler<ListTenantProvidersHandler>()
@@ -558,4 +584,48 @@ internal sealed class EnterpriseStartup(IServiceProvider services) : IHostedServ
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+/// <summary>Re-checks verified domains' DNS proof every hour, for the domains due (<see cref="EnterpriseOptions.DomainRecheckInterval"/>).</summary>
+internal sealed partial class DomainRecheckService(IServiceScopeFactory scopes, IOptions<EnterpriseOptions> options, TimeProvider time, ILogger<DomainRecheckService> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        if (!options.Value.RecheckDomains)
+        {
+            return;
+        }
+
+        // One delay at a time (not a periodic timer): after a long pause, one pass catches up.
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await Task.Delay(TimeSpan.FromHours(1), time, stoppingToken).ConfigureAwait(false);
+            try
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                var dropped = await scope.ServiceProvider.GetRequiredService<JeffOps.Authentication.SharedKernel.Handlers.ICommandHandler<RecheckDomainsCommand, int>>()
+                    .HandleAsync(new RecheckDomainsCommand(), stoppingToken).ConfigureAwait(false);
+                if (dropped.IsSuccess && dropped.Value > 0)
+                {
+                    LogDropped(logger, dropped.Value);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+#pragma warning disable CA1031 // A failed pass is logged and retried at the next tick.
+            catch (Exception exception)
+#pragma warning restore CA1031
+            {
+                LogFailed(logger, exception);
+            }
+        }
+    }
+
+    [LoggerMessage(EventId = 8901, Level = LogLevel.Warning, Message = "{Count} verified domains lost their DNS proof and stopped counting.")]
+    private static partial void LogDropped(ILogger logger, int count);
+
+    [LoggerMessage(EventId = 8902, Level = LogLevel.Error, Message = "Re-checking verified domains failed; retrying at the next pass.")]
+    private static partial void LogFailed(ILogger logger, Exception exception);
 }

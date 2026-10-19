@@ -45,6 +45,9 @@ public sealed class TenantDomain : AggregateRoot<Guid>
 
     public DateTimeOffset? LastCheckedAt { get; private set; }
 
+    /// <summary>Since when a verified domain's DNS proof has been missing at re-checks; null while it is in place.</summary>
+    public DateTimeOffset? ProofMissingSince { get; private set; }
+
     public static TenantDomain Claim(Guid tenantId, string domain, DateTimeOffset now) =>
         Normalize(domain) is { } normalized
             ? new TenantDomain(tenantId, normalized, now)
@@ -71,8 +74,43 @@ public sealed class TenantDomain : AggregateRoot<Guid>
 
         Status = DomainStatus.Verified;
         VerifiedAt = now;
+        ProofMissingSince = null;
         Raise(new TenantDomainVerified(TenantId, Domain));
         return true;
+    }
+
+    /// <summary>
+    /// Re-checks a verified domain's DNS proof, so a domain that changed hands stops counting for the tenant that lost it. A
+    /// missing proof is tolerated for <paramref name="grace"/> (DNS mistakes happen); after that the domain drops back to
+    /// pending and the tenant has to verify it again. Answers whether the domain still counts.
+    /// </summary>
+    public bool Recheck(IEnumerable<string> values, string prefix, DateTimeOffset now, TimeSpan grace)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        LastCheckedAt = now;
+        if (Status != DomainStatus.Verified)
+        {
+            return false;
+        }
+
+        var expected = ExpectedValue(prefix);
+        if (values.Any(value => string.Equals(value.Trim().Trim('"'), expected, StringComparison.Ordinal)))
+        {
+            ProofMissingSince = null;
+            return true;
+        }
+
+        ProofMissingSince ??= now;
+        if (now - ProofMissingSince.Value < grace)
+        {
+            return true;
+        }
+
+        Status = DomainStatus.Pending;
+        VerifiedAt = null;
+        ProofMissingSince = null;
+        Raise(new TenantDomainUnverified(TenantId, Domain));
+        return false;
     }
 
     /// <summary>
@@ -108,6 +146,8 @@ public sealed class TenantDomain : AggregateRoot<Guid>
 }
 
 public sealed record TenantDomainVerified(Guid TenantId, string Domain) : IDomainEvent;
+
+public sealed record TenantDomainUnverified(Guid TenantId, string Domain) : IDomainEvent;
 
 /// <summary>
 /// A tenant's single sign-on policy: which configured identity provider its members (by verified email domain) sign in with,

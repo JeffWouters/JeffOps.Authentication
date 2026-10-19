@@ -28,6 +28,7 @@ public sealed partial class Login
         ["email_not_verified"] = "Confirm your email address first: use the link we sent you.",
         ["signin_expired"] = "That took too long. Sign in again.",
         ["sso_required"] = "Your organization requires signing in with its identity provider.",
+        ["link_required"] = "You already have an account. Sign in the way you usually do once, and your organization's sign-in will be linked to it.",
         ["provider_not_allowed"] = "Sign in with one of the options below for this application.",
     };
 

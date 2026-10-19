@@ -111,7 +111,7 @@ public sealed class AuthorizationCodeTests
         var account = await server.CreateAccountAsync();
         var tenant = server.Tenants.AddMembership(account.Id);
 
-        var tokens = await server.SignInAsync(account.Id);
+        var tokens = await server.SignInAsync(account.Id, scope: "openid profile email offline_access api");
 
         tokens.Status.ShouldBe(HttpStatusCode.OK, tokens.Body.ToString());
         tokens.RefreshToken.ShouldNotBeNull();

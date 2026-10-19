@@ -117,9 +117,9 @@ internal static partial class ActingEndpoints
             var session = await derived.EndAsync(id, context.RequestAborted).ConfigureAwait(false);
             if (session is { Kind: DerivedSessionManager.Impersonation, GrantId: { } grantId } && OwnerId(context, settings) is { } owner
                 && DerivedSessionManager.BelongsTo(session, owner)
-                && await sessions.GetFreshAsync(owner, readOnlyRequest: false, context.RequestAborted).ConfigureAwait(false) is { } own)
+                && await sessions.GetAccountTokenAsync(owner, context.RequestAborted).ConfigureAwait(false) is { } accountToken)
             {
-                await EndGrantAsync(http, settings, grantId, own.AccessToken, loggers.CreateLogger("JeffOps.Authentication.Bff.Acting"), context.RequestAborted).ConfigureAwait(false);
+                await EndGrantAsync(http, settings, grantId, accountToken, loggers.CreateLogger("JeffOps.Authentication.Bff.Acting"), context.RequestAborted).ConfigureAwait(false);
             }
         }
 
@@ -127,7 +127,10 @@ internal static partial class ActingEndpoints
         return TypedResults.Ok(new { acting = (string?)null });
     }
 
-    /// <summary>Ends the impersonation grant at the token server, so the target sees it end too. Best effort.</summary>
+    /// <summary>
+    /// Ends the impersonation grant at the token server, so the target sees it end too, with the own session's account token
+    /// (the token server's own APIs accept nothing else). Best effort.
+    /// </summary>
     internal static async Task EndGrantAsync(IHttpClientFactory http, BffOptions settings, string grantId, string accessToken, ILogger logger, CancellationToken cancellationToken)
     {
         try

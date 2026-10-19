@@ -44,6 +44,7 @@ internal static class AccountEndpoints
         // Services only: a service principal holding the lookup permission (I8). Users can't enumerate accounts.
         var directory = endpoints.MapGroup("directory/accounts")
             .WithTags("Account directory")
+            .RequireAuthorization(Callers.TokenPolicy)
             .RequireAuthorization(new AuthorizationPolicyBuilder(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme)
                 .RequireAuthenticatedUser()
                 .RequireAssertion(context => Callers.IsServiceWithPermission(

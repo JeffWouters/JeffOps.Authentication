@@ -75,6 +75,11 @@ public static class BffServiceCollectionExtensions
                 registration.Scopes.Add(scope);
             }
 
+            if (settings.UsesAccountApi)
+            {
+                registration.Scopes.Add(settings.AccountScope);
+            }
+
             client.AddRegistration(registration);
         }
 
@@ -103,6 +108,7 @@ public static class BffServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(endpoints);
         BffEndpoints.Map(endpoints);
+        AccountApiEndpoints.Map(endpoints);
         if (endpoints.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<BffOptions>>().Value.Delegation.Enabled)
         {
             ActingEndpoints.Map(endpoints);

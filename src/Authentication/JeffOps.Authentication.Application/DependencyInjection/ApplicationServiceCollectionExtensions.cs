@@ -31,6 +31,8 @@ public static class ApplicationServiceCollectionExtensions
         services.TryAddSingleton<ITenantDirectory, NoTenantDirectory>();
         services.TryAddScoped<Federation.IHomeRealmDirectory, Federation.NoHomeRealms>();
         services.TryAddScoped<Federation.IProvisionedAccountDirectory, Federation.NoProvisionedAccounts>();
+        services.TryAddScoped<Federation.IAccountCredentials, Federation.NoAccountCredentials>();
+        services.TryAddScoped<Federation.IPendingLinks, Federation.NoPendingLinks>();
         services.TryAddScoped<Federation.ITenantProviderDirectory, Federation.NoTenantProviders>();
         services.TryAddScoped<SessionBuilder>();
         services.TryAddScoped<ServiceIdentity>();
@@ -39,6 +41,7 @@ public static class ApplicationServiceCollectionExtensions
 
         services
             .AddHandler<StartSessionHandler>()
+            .AddHandler<Features.Federation.ConfirmPendingLink.ConfirmPendingLinkHandler>()
             .AddHandler<RefreshSessionHandler>()
             .AddHandler<EndSessionHandler>()
             .AddHandler<ClientCredentialsHandler>()

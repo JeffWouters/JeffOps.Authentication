@@ -6,10 +6,13 @@ using JeffOps.Authentication.SharedKernel.Results;
 namespace JeffOps.Authentication.Delegation.Application;
 
 /// <summary>The user calling a delegation use case, read from their validated access token.</summary>
-public sealed record DelegationCaller(Guid UserId, Guid? TenantId, Guid? OrganizationId, bool IsRoot, bool IsImpersonation, bool IsDelegated)
+public sealed record DelegationCaller(Guid UserId, Guid? TenantId, Guid? OrganizationId, bool IsRoot, bool IsImpersonation, bool IsDelegated, bool IsPatDerived = false)
 {
-    /// <summary>Whether the caller is in their own session: not impersonating anyone and not switched into another tenant.</summary>
-    public bool IsHomeSession => !IsImpersonation && !IsDelegated;
+    /// <summary>
+    /// Whether the caller is in their own session: not impersonating anyone, not switched into another tenant, and not using a
+    /// token from a personal access token (a script's credential never consents to or starts delegation).
+    /// </summary>
+    public bool IsHomeSession => !IsImpersonation && !IsDelegated && !IsPatDerived;
 
     /// <summary>The caller, or null for a service principal or an unidentifiable token.</summary>
     public static DelegationCaller? From(ClaimsPrincipal user, ClaimNames names)
@@ -29,7 +32,8 @@ public sealed record DelegationCaller(Guid UserId, Guid? TenantId, Guid? Organiz
             access.OrganizationId,
             access.IsRoot,
             AccessContextReader.IsImpersonation(user, names),
-            access.IsDelegated || user.HasClaim(claim => claim.Type == names.DelegationScope));
+            access.IsDelegated || user.HasClaim(claim => claim.Type == names.DelegationScope),
+            AccessContextReader.IsPatDerived(user, names));
     }
 }
 

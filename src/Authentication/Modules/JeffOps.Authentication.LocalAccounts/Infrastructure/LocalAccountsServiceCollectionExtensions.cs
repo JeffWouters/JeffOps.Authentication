@@ -77,6 +77,7 @@ public static class LocalAccountsServiceCollectionExtensions
 
         services.AddOptions<LocalAccountOptions>().Bind(configuration.GetSection(LocalAccountOptions.SectionName));
         services.TryAddScoped<ILocalCredentialRepository, LocalCredentialRepository>();
+        services.Replace(ServiceDescriptor.Scoped<JeffOps.Authentication.Application.Federation.IAccountCredentials, LocalAccountCredentials>());
         services.TryAddScoped<IAccountTokenRepository, AccountTokenRepository>();
         services.TryAddScoped<ILocalUnitOfWork, LocalUnitOfWork>();
         services.TryAddSingleton<ITotpSecretProtector, DataProtectionTotpProtector>();
@@ -214,4 +215,12 @@ internal sealed partial class LoggingNotifier(ILogger<LoggingNotifier> logger) :
 
     [LoggerMessage(EventId = 6411, Level = LogLevel.Warning, Message = "Notification {Kind} for user {UserId} has no delivery channel; register an INotifier.")]
     private static partial void Log(ILogger logger, string kind, Guid userId);
+}
+
+/// <summary>Whether an account has a password, passkeys or an authenticator here (so a tenant's provider can't claim it unconfirmed).</summary>
+internal sealed class LocalAccountCredentials(ILocalCredentialRepository credentials) : JeffOps.Authentication.Application.Federation.IAccountCredentials
+{
+    public async Task<bool> HasLocalCredentialsAsync(Guid accountId, CancellationToken cancellationToken) =>
+        await credentials.FindAsync(accountId, cancellationToken).ConfigureAwait(false) is { } credential
+        && (credential.PasswordHash is not null || credential.Passkeys.Count > 0 || credential.TotpEnabled);
 }

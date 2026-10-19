@@ -14,14 +14,16 @@ namespace JeffOps.Authentication.Application.Features.PersonalAccessTokens;
 /// <param name="IsImpersonation">The caller is impersonating someone.</param>
 /// <param name="IsDelegated">The caller acts on a managed tenant.</param>
 /// <param name="IsPatDerived">The caller's token came from a PAT.</param>
+/// <param name="IsRoot">The caller is a platform administrator (Root level).</param>
 /// <param name="IsSteppedUp">The caller's sign-in satisfied step-up.</param>
-public sealed record PatCaller(Guid AccountId, Guid? TenantId, bool IsImpersonation, bool IsDelegated, bool IsPatDerived, bool IsSteppedUp);
+public sealed record PatCaller(Guid AccountId, Guid? TenantId, bool IsImpersonation, bool IsDelegated, bool IsPatDerived, bool IsSteppedUp, bool IsRoot = false);
 
 public static class PatErrors
 {
     public const string NotWhileImpersonating = "pat_not_while_impersonating";
     public const string NotWhileDelegated = "pat_not_while_delegated";
     public const string NotFromPat = "pat_not_from_pat";
+    public const string NotForPlatformAdministrators = "pat_not_for_platform_administrators";
     public const string StepUpRequired = "step_up_required";
     public const string SensitivePatsDisabled = "pat_sensitive_disabled";
     public const string NotFound = "pat_not_found";
@@ -87,6 +89,12 @@ public sealed class CreatePatHandler(
         if (caller.IsPatDerived)
         {
             return Error.Forbidden(PatErrors.NotFromPat, "A personal access token cannot create another personal access token.");
+        }
+
+        // Platform administration happens interactively, with MFA and audit; a script's credential never carries Root.
+        if (caller.IsRoot)
+        {
+            return Error.Forbidden(PatErrors.NotForPlatformAdministrators, "Platform administrators can't create personal access tokens.");
         }
 
         if (settings.Mfa.RequireForSensitiveActions && !caller.IsSteppedUp)

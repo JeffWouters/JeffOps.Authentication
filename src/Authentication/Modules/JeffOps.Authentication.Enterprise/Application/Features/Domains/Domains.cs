@@ -18,7 +18,7 @@ internal static class DomainMapping
 /// <summary>Claims a domain for the caller's tenant; answers the TXT record to publish.</summary>
 public sealed record ClaimDomainCommand(EnterpriseCaller Caller, string Domain);
 
-public sealed class ClaimDomainHandler(ITenantDomainRepository domains, IEnterpriseUnitOfWork unitOfWork, IOptions<EnterpriseOptions> options, TimeProvider time)
+public sealed class ClaimDomainHandler(ITenantDomainRepository domains, IEnterpriseUnitOfWork unitOfWork, IAuditSink audit, IOptions<EnterpriseOptions> options, TimeProvider time)
     : ICommandHandler<ClaimDomainCommand, TenantDomainDto>
 {
     public async Task<Result<TenantDomainDto>> HandleAsync(ClaimDomainCommand command, CancellationToken cancellationToken)
@@ -49,6 +49,13 @@ public sealed class ClaimDomainHandler(ITenantDomainRepository domains, IEnterpr
         var claimed = TenantDomain.Claim(command.Caller.TenantId, normalized, time.GetUtcNow());
         domains.Add(claimed);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await audit.WriteAsync(new AuditRecord("tenant_domain.claimed", "tenant_domain", claimed.Id.ToString())
+        {
+            ActorId = command.Caller.UserId,
+            TenantId = claimed.TenantId,
+            OccurredAt = claimed.CreatedAt,
+            Details = new Dictionary<string, string?> { ["domain"] = claimed.Domain },
+        }, cancellationToken).ConfigureAwait(false);
         return claimed.ToDto(options);
     }
 }
@@ -98,7 +105,11 @@ public sealed class VerifyDomainHandler(
         }
 
         var verified = domain.CheckTxtRecords(records, options.Value.ChallengeValuePrefix, now);
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (!await unitOfWork.TrySaveUniqueAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Conflict(EnterpriseErrors.DomainTaken, "Another organization has verified this domain.");
+        }
+
         if (!verified)
         {
             return Error.Failure(EnterpriseErrors.NotVerified, $"The TXT record {options.ChallengeName(domain)} doesn't contain the expected value yet. DNS changes can take a while.");
@@ -151,5 +162,86 @@ public sealed class RemoveDomainHandler(ITenantDomainRepository domains, IEnterp
             Details = new Dictionary<string, string?> { ["domain"] = domain.Domain },
         }, cancellationToken).ConfigureAwait(false);
         return Result.Success();
+    }
+}
+
+/// <summary>A platform operator takes a verified domain away from the tenant holding it (for example after it changed hands).</summary>
+public sealed record RevokeDomainCommand(Guid OperatorId, string Domain);
+
+public sealed class RevokeDomainHandler(ITenantDomainRepository domains, IEnterpriseUnitOfWork unitOfWork, IAuditSink audit, TimeProvider time) : ICommandHandler<RevokeDomainCommand>
+{
+    public async Task<Result> HandleAsync(RevokeDomainCommand command, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (TenantDomain.Normalize(command.Domain) is not { } normalized
+            || await domains.FindVerifiedAsync(normalized, cancellationToken).ConfigureAwait(false) is not { } domain)
+        {
+            return Error.NotFound(EnterpriseErrors.NotFound, "No tenant has verified that domain.");
+        }
+
+        domains.Remove(domain);
+        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await audit.WriteAsync(new AuditRecord("tenant_domain.revoked", "tenant_domain", domain.Id.ToString())
+        {
+            ActorId = command.OperatorId,
+            TenantId = domain.TenantId,
+            OccurredAt = time.GetUtcNow(),
+            Severity = AuditSeverity.Warning,
+            Details = new Dictionary<string, string?> { ["domain"] = domain.Domain },
+        }, cancellationToken).ConfigureAwait(false);
+        return Result.Success();
+    }
+}
+
+/// <summary>
+/// One pass of the DNS proof re-check (<see cref="EnterpriseOptions.DomainRecheckInterval"/>): verified domains not checked
+/// for an interval are looked up again; one whose proof stayed missing past the grace period drops back to pending. A DNS
+/// outage changes nothing. Answers how many domains stopped counting.
+/// </summary>
+public sealed record RecheckDomainsCommand(int BatchSize = 100);
+
+public sealed class RecheckDomainsHandler(
+    ITenantDomainRepository domains,
+    IDnsTxtResolver dns,
+    IEnterpriseUnitOfWork unitOfWork,
+    IAuditSink audit,
+    IOptions<EnterpriseOptions> options,
+    TimeProvider time) : ICommandHandler<RecheckDomainsCommand, int>
+{
+    public async Task<Result<int>> HandleAsync(RecheckDomainsCommand command, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        var settings = options.Value;
+        var now = time.GetUtcNow();
+        var dropped = 0;
+        foreach (var domain in await domains.ListVerifiedCheckedBeforeAsync(now - settings.DomainRecheckInterval, command.BatchSize, cancellationToken).ConfigureAwait(false))
+        {
+            IReadOnlyList<string> records;
+            try
+            {
+                records = await dns.ResolveTxtAsync(options.ChallengeName(domain), cancellationToken).ConfigureAwait(false);
+            }
+#pragma warning disable CA1031 // An outage is not a missing proof: try again at the next pass.
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+#pragma warning restore CA1031
+            {
+                continue;
+            }
+
+            if (!domain.Recheck(records, settings.ChallengeValuePrefix, now, settings.DomainProofGracePeriod))
+            {
+                dropped++;
+                await audit.WriteAsync(new AuditRecord("tenant_domain.unverified", "tenant_domain", domain.Id.ToString())
+                {
+                    TenantId = domain.TenantId,
+                    OccurredAt = now,
+                    Severity = AuditSeverity.Warning,
+                    Details = new Dictionary<string, string?> { ["domain"] = domain.Domain, ["reason"] = "dns_proof_missing" },
+                }, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return dropped;
     }
 }

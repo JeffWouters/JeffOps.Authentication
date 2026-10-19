@@ -47,7 +47,7 @@ public sealed partial class BffTests
         }
     }
 
-    private static async Task<Stack> StartAsync(string accessTokenLifetime = "00:15:00", DelegationSetup? delegation = null, bool tokenMediating = false)
+    private static async Task<Stack> StartAsync(string accessTokenLifetime = "00:15:00", DelegationSetup? delegation = null, bool tokenMediating = false, bool accountApi = false)
     {
         var routes = new RoutingHandler();
         var tokenServerSettings = new Dictionary<string, string?>
@@ -64,6 +64,7 @@ public sealed partial class BffTests
                 ["JeffOps:TokenServer:Clients:3:Scopes:2"] = "email",
                 ["JeffOps:TokenServer:Clients:3:Scopes:3"] = "offline_access",
                 ["JeffOps:TokenServer:Clients:3:Scopes:4"] = "api",
+                ["JeffOps:TokenServer:Clients:3:Scopes:5"] = "account",
             };
         if (delegation is not null)
         {
@@ -114,6 +115,7 @@ public sealed partial class BffTests
             ["JeffOps:Bff:Scopes:2"] = "api",
             ["JeffOps:Bff:Delegation:Enabled"] = delegation is null ? "false" : "true",
             ["JeffOps:Bff:TokenMediating"] = tokenMediating ? "true" : "false",
+            ["JeffOps:Bff:AccountApi"] = accountApi ? "true" : "false",
         });
         if (delegation is not null)
         {
@@ -127,11 +129,9 @@ public sealed partial class BffTests
             .LoadFromMemory(
                 [
                     new RouteConfig { RouteId = "api", ClusterId = "api", Match = new RouteMatch { Path = "/api/{**rest}" } },
-                    new RouteConfig { RouteId = "delegation", ClusterId = "auth", Match = new RouteMatch { Path = "/delegation/{**rest}" } },
                 ],
                 [
                     new ClusterConfig { ClusterId = "api", Destinations = new Dictionary<string, DestinationConfig> { ["api"] = new() { Address = "https://api.test/" } } },
-                    new ClusterConfig { ClusterId = "auth", Destinations = new Dictionary<string, DestinationConfig> { ["auth"] = new() { Address = "https://localhost/" } } },
                 ])
             .AddBffTransforms();
         bffBuilder.Services.AddSingleton<IForwarderHttpClientFactory>(new TestForwarderFactory(routes));
@@ -178,6 +178,28 @@ public sealed partial class BffTests
         var whoami = await stack.Browser.GetFromJsonAsync<JsonElement>(new Uri("api/whoami", UriKind.Relative), TestContext.Current.CancellationToken);
         whoami.GetProperty("user").GetString().ShouldBe(accountId.ToString());
         whoami.GetProperty("cookie").GetString().ShouldBeEmpty("the session cookie never reaches the backend");
+    }
+
+    [Fact]
+    public async Task The_token_server_s_own_apis_are_reached_through_the_bff_with_an_account_token_only()
+    {
+        await using var stack = await StartAsync(accountApi: true);
+        await SignInAsync(stack);
+
+        // The session's API token is meant for APIs; the account API needs the account token the BFF fetches for it.
+        var pats = await stack.Browser.GetAsync(new Uri("bff/account/account/pats", UriKind.Relative), TestContext.Current.CancellationToken);
+        pats.StatusCode.ShouldBe(HttpStatusCode.OK, await pats.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        (await stack.Browser.GetFromJsonAsync<JsonElement>(new Uri("api/whoami", UriKind.Relative), TestContext.Current.CancellationToken))
+            .GetProperty("user").GetString().ShouldNotBeNull("the API still gets its own token after the narrowing refresh");
+
+        // Only the token server's own API paths, and nothing that leaves them.
+        foreach (var path in new[] { "bff/account/connect/token", "bff/account/account/..%2F..%2Fconnect%2Ftoken", "bff/account/.well-known/openid-configuration" })
+        {
+            (await stack.Browser.GetAsync(new Uri(path, UriKind.Relative), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.NotFound, path);
+        }
+
+        using var post = new HttpRequestMessage(HttpMethod.Post, "bff/account/account/sessions/revoke");
+        (await stack.Browser.SendAsync(post, TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.Forbidden, "the CSRF header applies");
     }
 
     [Fact]

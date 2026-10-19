@@ -45,6 +45,34 @@ public sealed class PersonalAccessTokenTests
     }
 
     [Fact]
+    public async Task Platform_administrators_get_no_personal_access_tokens()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var admin = await server.CreateAccountAsync("admin@example.com");
+        server.Tenants.AddMembership(admin.Id, JeffOps.Authentication.Abstractions.Access.AccessLevel.Root);
+        var session = await server.SignInAsync(admin.Id);
+
+        var response = await server.SendAsync(HttpMethod.Post, "account/pats", session.AccessToken, JsonContent.Create(new CreatePersonalAccessTokenRequest("ci", 7, ["reports.read"])));
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        (await ProblemCodeAsync(response)).ShouldBe("pat_not_for_platform_administrators");
+    }
+
+    [Fact]
+    public async Task A_pat_stops_exchanging_once_its_owner_is_a_platform_administrator()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+        var tenant = server.Tenants.AddMembership(account.Id);
+        var pat = await CreatePatAsync(server, (await server.SignInAsync(account.Id)).AccessToken!, new("ci", 7, ["reports.read"]));
+        (await server.ExchangePatAsync(pat.Secret)).Status.ShouldBe(HttpStatusCode.OK);
+
+        server.Tenants.Memberships[account.Id] = [new(tenant, null, null, JeffOps.Authentication.Abstractions.Access.AccessLevel.Root)];
+
+        (await server.ExchangePatAsync(pat.Secret)).Status.ShouldNotBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task A_pat_for_sensitive_actions_is_stepped_up()
     {
         await using var server = await TokenServerHost.StartAsync();
@@ -121,7 +149,7 @@ public sealed class PersonalAccessTokenTests
         var account = await server.CreateAccountAsync();
         var session = await server.SignInAsync(account.Id);
         var pat = await CreatePatAsync(server, session.AccessToken!, new("ci", AllowSensitiveActions: true));
-        var derived = await server.ExchangePatAsync(pat.Secret);
+        var derived = await server.ExchangePatAsync(pat.Secret, scope: "account");
 
         var response = await server.SendAsync(HttpMethod.Post, "account/pats", derived.AccessToken, JsonContent.Create(new CreatePersonalAccessTokenRequest("again")));
 
@@ -161,7 +189,7 @@ public sealed class DirectoryAndAdministrationTests
     {
         await using var server = await TokenServerHost.StartAsync();
         var account = await server.CreateAccountAsync();
-        var service = await server.ClientCredentialsAsync();
+        var service = await server.ClientCredentialsAsync(scope: "account");
 
         var byId = await server.SendAsync(HttpMethod.Get, $"directory/accounts/{account.Id}", service.AccessToken);
         var byEmail = await server.SendAsync(HttpMethod.Get, "directory/accounts?email=ADA@example.com", service.AccessToken);
@@ -246,11 +274,52 @@ public sealed class StartupTests
     }
 
     [Fact]
+    public async Task The_account_scope_and_audience_are_reserved() =>
+        await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:ApiScopes:account:0"] = "billing",
+        }));
+
+    [Fact]
     public async Task A_missing_issuer_fails_startup_outside_development() =>
         await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
         {
             ["JeffOps:TokenServer:Issuer"] = null,
         }));
+}
+
+public sealed class AccountAudienceTests
+{
+    [Fact]
+    public async Task Api_tokens_never_carry_the_account_audience_and_a_narrowing_refresh_gets_it_alone()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+
+        var session = await server.SignInAsync(account.Id, scope: "openid offline_access api account");
+        session.Access.Audiences.ShouldBe(["api"], "an API token, though the account scope was granted");
+
+        var forAccount = await server.AccountTokenAsync(session.RefreshToken!);
+        forAccount.Status.ShouldBe(HttpStatusCode.OK, forAccount.Body.ToString());
+        forAccount.Access.Audiences.ShouldBe(["jeffops-account"]);
+        (await server.SendAsync(HttpMethod.Get, "account/pats", forAccount.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await server.SendAsync(HttpMethod.Get, "account/pats", session.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+
+        // The rotated refresh token still carries every granted scope.
+        var again = await server.RefreshAsync(forAccount.RefreshToken!);
+        again.Status.ShouldBe(HttpStatusCode.OK, again.Body.ToString());
+        again.Access.Audiences.ShouldBe(["api"]);
+    }
+
+    [Fact]
+    public async Task A_service_token_for_an_api_can_t_use_the_account_directory()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        await server.CreateAccountAsync("ada@example.com");
+        var forApi = await server.ClientCredentialsAsync();
+
+        (await server.SendAsync(HttpMethod.Get, "directory/accounts?email=ada@example.com", forApi.AccessToken)).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+    }
 }
 
 public sealed class SessionRevocationTests

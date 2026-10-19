@@ -118,9 +118,10 @@ internal static partial class BffEndpoints
             {
                 var acting = await store.GetAsync(actingId, context.RequestAborted).ConfigureAwait(false);
                 await store.DeleteAsync(actingId, acting?.Subject, context.RequestAborted).ConfigureAwait(false);
-                if (acting is { Kind: DerivedSessionManager.Impersonation, GrantId: { } grantId } && own is not null && DerivedSessionManager.BelongsTo(acting, id))
+                if (acting is { Kind: DerivedSessionManager.Impersonation, GrantId: { } grantId } && own is not null && DerivedSessionManager.BelongsTo(acting, id)
+                    && await sessions.GetAccountTokenAsync(id, context.RequestAborted).ConfigureAwait(false) is { } accountToken)
                 {
-                    await ActingEndpoints.EndGrantAsync(http, options.Value, grantId, own.AccessToken, loggers.CreateLogger("JeffOps.Authentication.Bff.Acting"), context.RequestAborted).ConfigureAwait(false);
+                    await ActingEndpoints.EndGrantAsync(http, options.Value, grantId, accountToken, loggers.CreateLogger("JeffOps.Authentication.Bff.Acting"), context.RequestAborted).ConfigureAwait(false);
                 }
             }
 

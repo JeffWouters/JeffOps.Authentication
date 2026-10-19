@@ -24,6 +24,18 @@ public sealed class EnterpriseOptions
 
     public int MaxDomainsPerTenant { get; set; } = 20;
 
+    /// <summary>Whether this host re-checks verified domains' DNS proof in the background (one host is enough). Default: true.</summary>
+    public bool RecheckDomains { get; set; } = true;
+
+    /// <summary>How often each verified domain's DNS proof is checked again. Default: daily.</summary>
+    public TimeSpan DomainRecheckInterval { get; set; } = TimeSpan.FromDays(1);
+
+    /// <summary>
+    /// How long a verified domain's DNS proof may be missing before the domain drops back to pending (the tenant then has to
+    /// verify it again, and its users' sign-ins stop depending on it). Default: 7 days.
+    /// </summary>
+    public TimeSpan DomainProofGracePeriod { get; set; } = TimeSpan.FromDays(7);
+
     /// <summary>How many of its own identity providers a tenant may register. Default: 5.</summary>
     public int MaxProvidersPerTenant { get; set; } = 5;
 
@@ -49,6 +61,9 @@ public interface ITenantDomainRepository
     Task<IReadOnlyList<TenantDomain>> ListForTenantAsync(Guid tenantId, CancellationToken cancellationToken);
 
     Task<TenantDomain?> FindVerifiedAsync(string domain, CancellationToken cancellationToken);
+
+    /// <summary>Verified domains last checked before <paramref name="checkedBefore"/>, oldest check first.</summary>
+    Task<IReadOnlyList<TenantDomain>> ListVerifiedCheckedBeforeAsync(DateTimeOffset checkedBefore, int take, CancellationToken cancellationToken);
 
     void Add(TenantDomain domain);
 
@@ -99,6 +114,12 @@ public interface IEnterpriseUnitOfWork
 
     /// <summary>Saves, or answers false (saving nothing) when another request changed a versioned resource meanwhile.</summary>
     Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Saves, or answers false (saving nothing) when the store refuses the change, for example a uniqueness constraint another
+    /// request satisfied first.
+    /// </summary>
+    Task<bool> TrySaveUniqueAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>Reads TXT records. The default uses DNS over HTTPS.</summary>
@@ -186,12 +207,12 @@ public sealed class EnterpriseTenantProviders(
 /// <summary>The accounts a tenant's SCIM provisioning created or linked, by email.</summary>
 public sealed class ScimProvisionedAccounts(IAccountRepository accounts, IScimUserRepository users) : IProvisionedAccountDirectory
 {
-    public async Task<Guid?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken)
+    public async Task<ProvisionedAccount?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(email);
         return await accounts.FindByEmailAsync(email, cancellationToken).ConfigureAwait(false) is { } account
-            && await users.FindAsync(tenantId, account.Id, cancellationToken).ConfigureAwait(false) is not null
-            ? account.Id
+            && await users.FindAsync(tenantId, account.Id, cancellationToken).ConfigureAwait(false) is { } user
+            ? new ProvisionedAccount(account.Id, user.CreatedAccount)
             : null;
     }
 }

@@ -195,11 +195,13 @@ internal sealed class TokenServerHost : IAsyncDisposable
             ["JeffOps:TokenServer:Clients:0:Scopes:2"] = "email",
             ["JeffOps:TokenServer:Clients:0:Scopes:3"] = "offline_access",
             ["JeffOps:TokenServer:Clients:0:Scopes:4"] = "api",
+            ["JeffOps:TokenServer:Clients:0:Scopes:5"] = "account",
 
             ["JeffOps:TokenServer:Clients:1:ClientId"] = ServiceClient,
             ["JeffOps:TokenServer:Clients:1:ClientSecret"] = ServiceSecret,
             ["JeffOps:TokenServer:Clients:1:GrantTypes:0"] = "client_credentials",
             ["JeffOps:TokenServer:Clients:1:Scopes:0"] = "api",
+            ["JeffOps:TokenServer:Clients:1:Scopes:1"] = "account",
             ["JeffOps:TokenServer:Clients:1:ServicePermissions:0"] = "auth.accounts.lookup",
             ["JeffOps:TokenServer:Clients:1:ServicePermissions:1"] = "reports.*",
 
@@ -208,6 +210,7 @@ internal sealed class TokenServerHost : IAsyncDisposable
             ["JeffOps:TokenServer:Clients:2:GrantTypes:0"] = "urn:jeffops:grant-type:pat",
             ["JeffOps:TokenServer:Clients:2:GrantTypes:1"] = "client_credentials",
             ["JeffOps:TokenServer:Clients:2:Scopes:0"] = "api",
+            ["JeffOps:TokenServer:Clients:2:Scopes:1"] = "account",
         };
 
         foreach (var (key, value) in overrides ?? [])
@@ -242,7 +245,8 @@ internal sealed class TokenServerHost : IAsyncDisposable
     }
 
     /// <summary>Runs the authorization code flow with PKCE as a signed-in user and returns the token response.</summary>
-    public async Task<TokenResponse> SignInAsync(Guid accountId, bool multiFactor = true, string scope = "openid profile email offline_access api", string? tenantHint = null)
+    /// <remarks>The default scope asks for the account audience (the token server's own APIs); pass <c>api</c> for a resource API token.</remarks>
+    public async Task<TokenResponse> SignInAsync(Guid accountId, bool multiFactor = true, string scope = "openid profile email offline_access account", string? tenantHint = null)
     {
         var (location, verifier) = await AuthorizeAsync(accountId, multiFactor, scope, tenantHint);
         location.ToString().ShouldStartWith(BffRedirect, customMessage: location.ToString());
@@ -286,14 +290,18 @@ internal sealed class TokenServerHost : IAsyncDisposable
         return new TokenResponse(response.StatusCode, JsonDocument.Parse(body).RootElement.Clone());
     }
 
-    public Task<TokenResponse> ClientCredentialsAsync(string clientId = ServiceClient, string secret = ServiceSecret) =>
-        TokenAsync(new() { ["grant_type"] = "client_credentials", ["client_id"] = clientId, ["client_secret"] = secret, ["scope"] = "api" });
+    public Task<TokenResponse> ClientCredentialsAsync(string clientId = ServiceClient, string secret = ServiceSecret, string scope = "api") =>
+        TokenAsync(new() { ["grant_type"] = "client_credentials", ["client_id"] = clientId, ["client_secret"] = secret, ["scope"] = scope });
 
     public Task<TokenResponse> RefreshAsync(string refreshToken) =>
         TokenAsync(new() { ["grant_type"] = "refresh_token", ["refresh_token"] = refreshToken, ["client_id"] = BffClient, ["client_secret"] = BffSecret });
 
-    public Task<TokenResponse> ExchangePatAsync(string pat) =>
-        TokenAsync(new() { ["grant_type"] = "urn:jeffops:grant-type:pat", ["pat"] = pat, ["client_id"] = GatewayClient, ["client_secret"] = GatewaySecret, ["scope"] = "api" });
+    public Task<TokenResponse> ExchangePatAsync(string pat, string scope = "api") =>
+        TokenAsync(new() { ["grant_type"] = "urn:jeffops:grant-type:pat", ["pat"] = pat, ["client_id"] = GatewayClient, ["client_secret"] = GatewaySecret, ["scope"] = scope });
+
+    /// <summary>Narrows a refresh to the account audience: an access token for the token server's own APIs.</summary>
+    public Task<TokenResponse> AccountTokenAsync(string refreshToken) =>
+        TokenAsync(new() { ["grant_type"] = "refresh_token", ["refresh_token"] = refreshToken, ["client_id"] = BffClient, ["client_secret"] = BffSecret, ["scope"] = "account" });
 
     public async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, string? accessToken, HttpContent? content = null)
     {

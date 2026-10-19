@@ -114,17 +114,50 @@ public sealed class DelegationTests : IAsyncLifetime
         var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
         var (other, _) = await UserAsync("other@example.com", CustomerTenant, CustomerOrganization);
         var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
-        var impersonating = (await MintImpersonationAsync(grantId, supportToken)).AccessToken!;
+        var impersonating = (await MintImpersonationAsync(grantId, supportToken, scope: "account")).AccessToken!;
+
+        // An impersonation token for an API doesn't reach the token server's own APIs at all.
+        var forApi = (await MintImpersonationAsync(grantId, supportToken)).AccessToken!;
+        (await _host.SendAsync(HttpMethod.Post, "delegation/impersonation", forApi, JsonContent.Create(new { targetUserId = other }))).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
 
         var chained = await _host.SendAsync(HttpMethod.Post, "delegation/impersonation", impersonating, JsonContent.Create(new { targetUserId = other }));
         chained.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
         (await CodeAsync(chained)).ShouldBe("home_session_required");
 
-        (await MintImpersonationAsync(grantId, impersonating)).Code.ShouldBe("home_session_required");
+        (await MintImpersonationAsync(grantId, impersonating, scope: "account")).Code.ShouldBe("home_session_required");
 
         var ended = await _host.SendAsync(HttpMethod.Post, $"delegation/impersonation/{grantId}/end", impersonating);
         ended.StatusCode.ShouldBe(HttpStatusCode.OK);
         (await MintImpersonationAsync(grantId, supportToken)).Error.ShouldBe("invalid_grant");
+    }
+
+    [Fact]
+    public async Task A_personal_access_token_never_requests_or_consents_to_delegation()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var created = await _host.SendAsync(HttpMethod.Post, "account/pats", customerToken,
+            JsonContent.Create(new JeffOps.Authentication.Abstractions.Contracts.CreatePersonalAccessTokenRequest("integration", AllowSensitiveActions: true)));
+        created.StatusCode.ShouldBe(HttpStatusCode.OK, await created.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var secret = (await created.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("secret").GetString()!;
+        var fromPat = (await _host.ExchangePatAsync(secret, scope: "account")).AccessToken.ShouldNotBeNull();
+        var grantId = (await PostAsync<JsonElement>(supportToken, "delegation/impersonation", new { targetUserId = customer })).GetProperty("id").GetString()!;
+
+        foreach (var (method, path) in new[]
+        {
+            (HttpMethod.Post, $"delegation/impersonation/{grantId}/approve"),
+            (HttpMethod.Post, $"delegation/impersonation/{grantId}/deny"),
+            (HttpMethod.Post, $"delegation/impersonation/{grantId}/revoke"),
+            (HttpMethod.Get, "delegation/impersonation"),
+            (HttpMethod.Get, "delegation/tenant-access"),
+        })
+        {
+            var response = await _host.SendAsync(method, path, fromPat);
+            response.StatusCode.ShouldBe(HttpStatusCode.Forbidden, path);
+            (await CodeAsync(response)).ShouldBe("home_session_required", path);
+        }
+
+        (await MintImpersonationAsync(grantId, supportToken)).Error.ShouldNotBeNull("the grant was never approved");
     }
 
     [Fact]
@@ -307,7 +340,7 @@ public sealed class DelegationTests : IAsyncLifetime
         var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
         var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
         var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
-        var asCustomer = (await MintImpersonationAsync(grantId, supportToken)).AccessToken!;
+        var asCustomer = (await MintImpersonationAsync(grantId, supportToken, scope: "account")).AccessToken!;
 
         var listed = await _host.SendAsync(HttpMethod.Get, "delegation/tenant-access", asCustomer);
         listed.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
@@ -376,13 +409,21 @@ public sealed class DelegationTests : IAsyncLifetime
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// A signed-in user and the access token their client uses for the token server's own APIs (the account audience). The
+    /// same sign-in's API token, which the client presents as <c>actor_token</c> when minting, is kept in <see cref="_apiTokens"/>.
+    /// </summary>
     private async Task<(Guid Id, string AccessToken)> UserAsync(string email, Guid tenant, Guid? organization, AccessLevel level = AccessLevel.Tenant, bool multiFactor = true)
     {
         var account = await _host.CreateAccountAsync(email);
         _host.Tenants.Memberships.GetOrAdd(account.Id, _ => []).Add(new TenantMembership(tenant, organization, null, level));
-        var tokens = await _host.SignInAsync(account.Id, multiFactor);
-        return (account.Id, tokens.AccessToken.ShouldNotBeNull(tokens.Body.ToString()));
+        var tokens = await _host.SignInAsync(account.Id, multiFactor, scope: "openid profile email offline_access api account");
+        var accountToken = (await _host.AccountTokenAsync(tokens.RefreshToken!)).AccessToken.ShouldNotBeNull();
+        _apiTokens[accountToken] = tokens.AccessToken.ShouldNotBeNull(tokens.Body.ToString());
+        return (account.Id, accountToken);
     }
+
+    private readonly ConcurrentDictionary<string, string> _apiTokens = new(StringComparer.Ordinal);
 
     private async Task<string> ApprovedImpersonationAsync(string actorToken, Guid target, string targetToken)
     {
@@ -391,11 +432,11 @@ public sealed class DelegationTests : IAsyncLifetime
         return grantId;
     }
 
-    private Task<TokenResponse> MintImpersonationAsync(string grantId, string? actorToken) => _host.TokenAsync(WithActor(new()
+    private Task<TokenResponse> MintImpersonationAsync(string grantId, string? actorToken, string scope = "api") => _host.TokenAsync(WithActor(new()
     {
         ["grant_type"] = ImpersonationGrant,
         ["grant_id"] = grantId,
-    }, actorToken));
+    }, actorToken, scope));
 
     private Task<TokenResponse> MintTenantSwitchAsync(Guid tenant, string? actorToken) => _host.TokenAsync(WithActor(new()
     {
@@ -403,14 +444,14 @@ public sealed class DelegationTests : IAsyncLifetime
         ["target_tenant"] = tenant.ToString(),
     }, actorToken));
 
-    private static Dictionary<string, string> WithActor(Dictionary<string, string> form, string? actorToken)
+    private Dictionary<string, string> WithActor(Dictionary<string, string> form, string? actorToken, string scope = "api")
     {
         form["client_id"] = TokenServerHost.BffClient;
         form["client_secret"] = TokenServerHost.BffSecret;
-        form["scope"] = "api";
+        form["scope"] = scope;
         if (actorToken is not null)
         {
-            form["actor_token"] = actorToken;
+            form["actor_token"] = _apiTokens.GetValueOrDefault(actorToken, actorToken);
             form["actor_token_type"] = "urn:ietf:params:oauth:token-type:access_token";
         }
 

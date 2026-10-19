@@ -68,6 +68,7 @@ public sealed class PasskeySignInHandler(
     ILocalCredentialRepository credentials,
     IAccountRepository accounts,
     IHomeRealmDirectory realms,
+    IPendingLinks pendingLinks,
     ILocalUnitOfWork unitOfWork,
     TimeProvider time)
     : ICommandHandler<PasskeySignInCommand, LocalSignInResult>
@@ -93,7 +94,8 @@ public sealed class PasskeySignInHandler(
         }
 
         if (HomeRealm.DomainOf(account.Email) is { } domain
-            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true })
+            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true } realm
+            && !pendingLinks.Confirms(account.Id, realm))
         {
             return new LocalSignInResult(LocalSignInStatus.SsoRequired);
         }

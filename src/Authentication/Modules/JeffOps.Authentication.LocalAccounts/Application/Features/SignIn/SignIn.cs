@@ -17,6 +17,7 @@ public sealed record PasswordSignInCommand(string Email, string Password);
 public sealed class PasswordSignInHandler(
     IAccountRepository accounts,
     IHomeRealmDirectory realms,
+    IPendingLinks pendingLinks,
     ILocalCredentialRepository credentials,
     SignInCodes codes,
     ILocalUnitOfWork unitOfWork,
@@ -29,13 +30,15 @@ public sealed class PasswordSignInHandler(
         var settings = options.Value;
         var now = time.GetUtcNow();
 
+        var account = string.IsNullOrWhiteSpace(command.Email) ? null : await accounts.FindByEmailAsync(command.Email, cancellationToken).ConfigureAwait(false);
+
+        // SSO-only refuses passwords, except to confirm a login the domain's own provider asked this account's owner to link.
         if (HomeRealm.DomainOf(command.Email) is { } domain
-            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true })
+            && await realms.FindByDomainAsync(domain, cancellationToken).ConfigureAwait(false) is { SsoOnly: true } realm
+            && !pendingLinks.Confirms(account?.Id, realm))
         {
             return new LocalSignInResult(LocalSignInStatus.SsoRequired);
         }
-
-        var account = string.IsNullOrWhiteSpace(command.Email) ? null : await accounts.FindByEmailAsync(command.Email, cancellationToken).ConfigureAwait(false);
         var credential = account is null ? null : await credentials.FindAsync(account.Id, cancellationToken).ConfigureAwait(false);
         if (account is null || credential is null)
         {

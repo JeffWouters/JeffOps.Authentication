@@ -18,16 +18,19 @@ internal static class TokenIssuance
     public const string CodeParameter = "code";
 
     /// <summary>
-    /// Signs <paramref name="issued"/> in with OpenIddict. The token's resources (audiences) come from
+    /// Signs <paramref name="issued"/> in with OpenIddict. The access token's resources (audiences) come from
     /// <see cref="Application.TokenServerOptions.ApiScopes"/>, the configuration the scope store is seeded from at startup, so no
-    /// request reads the scope store for them.
+    /// request reads the scope store for them; the account audience only ever stands alone (<see cref="Application.AccountApi"/>).
+    /// <paramref name="requestedScopes"/>, when not empty, narrows the audiences to those scopes (a refresh asking for
+    /// <c>scope=account</c>) while the refresh token keeps every granted scope.
     /// </summary>
     public static IResult SignIn(
         IssuedIdentity issued,
         ClaimNames names,
         Application.TokenServerOptions options,
         TimeProvider time,
-        AuthenticationProperties? properties = null)
+        AuthenticationProperties? properties = null,
+        IReadOnlyCollection<string>? requestedScopes = null)
     {
         var scopes = issued.AllowRefresh
             ? issued.Scopes.ToImmutableArray()
@@ -36,11 +39,7 @@ internal static class TokenIssuance
         var identity = new ClaimsIdentity(issued.Claims, OpenIddictServerAspNetCoreDefaults.AuthenticationScheme, names.Name, "role");
         identity.SetScopes(scopes);
 
-        var resources = scopes
-            .SelectMany(scope => options.ApiScopes.TryGetValue(scope, out var audiences) ? audiences : [])
-            .Where(audience => !string.IsNullOrWhiteSpace(audience))
-            .Distinct(StringComparer.Ordinal);
-        identity.SetResources(resources);
+        identity.SetResources(Application.AccountApi.AudiencesOf(requestedScopes is { Count: > 0 } ? requestedScopes : scopes, options));
         identity.SetDestinations(claim => DestinationsOf(claim, names, scopes));
 
         var principal = new ClaimsPrincipal(identity);

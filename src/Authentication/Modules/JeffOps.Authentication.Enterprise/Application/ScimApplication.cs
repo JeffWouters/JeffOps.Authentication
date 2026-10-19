@@ -1,3 +1,4 @@
+using JeffOps.Authentication.Abstractions.Auditing;
 using JeffOps.Authentication.Abstractions.Messaging;
 using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.Abstractions;
@@ -153,6 +154,7 @@ public sealed class ScimProvisioning(
     ITenantDomainRepository domains,
     ITenantMembershipProvisioner memberships,
     IEventPublisher events,
+    IAuditSink audit,
     TimeProvider time)
 {
     public async Task<Result<ScimUser>> CreateAsync(Guid tenantId, ScimUserData data, CancellationToken cancellationToken)
@@ -204,6 +206,17 @@ public sealed class ScimProvisioning(
 
         await accountUnitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         users.Add(user);
+        if (!created)
+        {
+            // An existing account the tenant now provisions: never claimable by its provider without the owner (docs §8.2).
+            await audit.WriteAsync(new AuditRecord("scim.account_linked", "account", account.Id.ToString())
+            {
+                TenantId = tenantId,
+                OccurredAt = now,
+                Severity = AuditSeverity.Warning,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
         return user;
     }
 

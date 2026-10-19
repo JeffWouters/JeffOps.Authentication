@@ -180,7 +180,7 @@ internal sealed class Stack : IAsyncDisposable
             }
         }
 
-        Client(0, BffClient, BffSecret, ["authorization_code", "refresh_token"], ["openid", "profile", "email", "offline_access", "api"], redirect: BffRedirect);
+        Client(0, BffClient, BffSecret, ["authorization_code", "refresh_token"], ["openid", "profile", "email", "offline_access", "api", "account"], redirect: BffRedirect);
         Client(1, LoadClient, LoadSecret, ["client_credentials"], ["api"], ["reports.read"]);
         Client(2, DpopClient, DpopSecret, ["client_credentials"], ["api"], ["orders.read"]);
         Client(3, ApiServiceClient, ApiServiceSecret, ["client_credentials"], ["api"], ["authorization.decisions.read"]);
@@ -405,7 +405,7 @@ internal sealed class Stack : IAsyncDisposable
         var challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         using var authorize = new HttpRequestMessage(HttpMethod.Get,
             $"connect/authorize?client_id={BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(BffRedirect)}" +
-            $"&scope={Uri.EscapeDataString("openid profile email offline_access api")}&code_challenge={challenge}&code_challenge_method=S256&state=xyz");
+            $"&scope={Uri.EscapeDataString("openid profile email offline_access api account")}&code_challenge={challenge}&code_challenge_method=S256&state=xyz");
         authorize.Headers.Add(HeaderSignIn.Header, $"{accountId}|pwd,mfa|{TimeProvider.System.GetUtcNow().ToUnixTimeSeconds()}");
         using var response = await Client.SendAsync(authorize);
         if (response.StatusCode != HttpStatusCode.Redirect || response.Headers.Location is null)
@@ -453,7 +453,16 @@ internal sealed class Stack : IAsyncDisposable
     private async Task<string> CreateScimTokenAsync()
     {
         var admin = await CreateUserAsync($"scim-admin-{Guid.NewGuid():N}@contoso.com");
-        var access = (await SignInAsync(admin)).GetProperty("access_token").GetString()!;
+        // The token server's own APIs take only an account token: narrow a refresh to the account scope.
+        var refreshToken = (await SignInAsync(admin)).GetProperty("refresh_token").GetString()!;
+        var access = (await TokenAsync(new()
+        {
+            ["grant_type"] = "refresh_token",
+            ["refresh_token"] = refreshToken,
+            ["client_id"] = BffClient,
+            ["client_secret"] = BffSecret,
+            ["scope"] = "account",
+        })).GetProperty("access_token").GetString()!;
         using var request = new HttpRequestMessage(HttpMethod.Post, EnterpriseEndpointRouteBuilderExtensions.ScimTokenRoutes)
         {
             Content = System.Net.Http.Json.JsonContent.Create(new { name = "load" }),

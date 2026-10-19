@@ -60,6 +60,83 @@ public sealed partial class BffSessionManager(
         }
     }
 
+    /// <summary>
+    /// An access token for the token server's own APIs for own session <paramref name="id"/>: the cached one while fresh,
+    /// otherwise one fetched by refreshing with only the account scope (the access token's audience narrows to the token
+    /// server; the rotated refresh token keeps every granted scope). Null when there is no own session or no refresh token,
+    /// or the token server refuses (the session then ends, as for any refused refresh).
+    /// </summary>
+    public async Task<string?> GetAccountTokenAsync(string id, CancellationToken cancellationToken)
+    {
+        var settings = options.Value;
+        var session = await store.GetAsync(id, cancellationToken).ConfigureAwait(false);
+        if (session is null || session.IsDerived || !settings.UsesAccountApi)
+        {
+            return null;
+        }
+
+        if (session.AccountAccessToken is { } cached && session.AccountAccessExpiresAt > time.GetUtcNow() + settings.RefreshBeforeExpiry)
+        {
+            return cached;
+        }
+
+        // The same gate as access-token refreshes: two rotations of one refresh token at once would look like reuse.
+        var gate = RefreshStripes[(uint)StringComparer.Ordinal.GetHashCode(id) % (uint)RefreshStripes.Length];
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            session = await store.GetAsync(id, cancellationToken).ConfigureAwait(false);
+            if (session is null)
+            {
+                return null;
+            }
+
+            if (session.AccountAccessToken is { } fresh && session.AccountAccessExpiresAt > time.GetUtcNow() + settings.RefreshBeforeExpiry)
+            {
+                return fresh;
+            }
+
+            if (session.RefreshToken is not { Length: > 0 } refreshToken)
+            {
+                return null;
+            }
+
+            RefreshTokenAuthenticationResult result;
+            try
+            {
+                result = await client.AuthenticateWithRefreshTokenAsync(new RefreshTokenAuthenticationRequest
+                {
+                    Issuer = settings.Authority,
+                    RefreshToken = refreshToken,
+                    Scopes = [settings.AccountScope],
+                    DisableUserInfo = true,
+                    CancellationToken = cancellationToken,
+                }).ConfigureAwait(false);
+            }
+            catch (OpenIddict.Abstractions.OpenIddictExceptions.ProtocolException exception) when (IsRefusal(exception))
+            {
+                LogRefreshRefused(logger, exception.Error);
+                await store.DeleteAsync(id, session.Subject, cancellationToken).ConfigureAwait(false);
+                Forget(id);
+                return null;
+            }
+
+            var updated = session with
+            {
+                RefreshToken = result.RefreshToken ?? session.RefreshToken,
+                AccountAccessToken = result.AccessToken,
+                AccountAccessExpiresAt = result.AccessTokenExpirationDate ?? time.GetUtcNow().AddMinutes(5),
+            };
+            await store.UpdateAsync(id, updated, cancellationToken).ConfigureAwait(false);
+            Remember(id, updated);
+            return result.AccessToken;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     /// <summary>Ends the session: revokes its refresh token at the token server (best effort) and deletes it.</summary>
     public async Task EndAsync(string id, CancellationToken cancellationToken)
     {

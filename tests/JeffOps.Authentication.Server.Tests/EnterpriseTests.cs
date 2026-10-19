@@ -161,6 +161,107 @@ public sealed class EnterpriseTests : IAsyncDisposable
         signedIn.Value.AccountId.ShouldNotBe(selfRegistered.Id);
     }
 
+    [Fact]
+    public async Task An_existing_account_the_tenant_only_linked_is_attached_after_its_owner_confirms()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = true });
+        var (cfo, _) = await UserAsync("cfo@contoso.com", Fabrikam);
+        await ProvisionAsync("cfo@contoso.com", Contoso, existingAccount: cfo);
+
+        await using (var scope = _host.Services.CreateAsyncScope())
+        {
+            var refused = await ExternalSignInAsync(CorporateProvider, "cfo@contoso.com", subject: "cfo-at-idp", scope);
+            refused.Error.Code.ShouldBe("link_required", "the tenant's provider doesn't take over an account it didn't create");
+            var pending = scope.ServiceProvider.GetRequiredService<IPendingLinks>().Current.ShouldNotBeNull();
+            pending.AccountId.ShouldBe(cfo);
+
+            // The owner confirms by signing in the usual way (not through the tenant's provider); SSO-only doesn't stop that.
+            var confirm = scope.ServiceProvider.GetRequiredService<ICommandHandler<Application.Features.Federation.ConfirmPendingLink.ConfirmPendingLinkCommand, bool>>();
+            (await confirm.HandleAsync(new(cfo, CorporateProvider), TestContext.Current.CancellationToken)).Value.ShouldBeFalse("signing in through the asking provider proves nothing");
+            (await confirm.HandleAsync(new(cfo, null), TestContext.Current.CancellationToken)).Value.ShouldBeTrue();
+        }
+
+        (await ExternalSignInAsync(CorporateProvider, "cfo@contoso.com", subject: "cfo-at-idp")).Value.AccountId.ShouldBe(cfo);
+    }
+
+    [Fact]
+    public async Task A_pending_link_is_only_confirmed_by_its_own_account()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = false });
+        var (victim, _) = await UserAsync("victim@contoso.com", Fabrikam);
+        await ProvisionAsync("victim@contoso.com", Contoso, existingAccount: victim);
+        var (someoneElse, _) = await UserAsync("mallory@contoso.com", Contoso);
+
+        await using (var scope = _host.Services.CreateAsyncScope())
+        {
+            (await ExternalSignInAsync(CorporateProvider, "victim@contoso.com", subject: "mallory-at-idp", scope)).Error.Code.ShouldBe("link_required");
+            var confirm = scope.ServiceProvider.GetRequiredService<ICommandHandler<Application.Features.Federation.ConfirmPendingLink.ConfirmPendingLinkCommand, bool>>();
+            (await confirm.HandleAsync(new(someoneElse, null), TestContext.Current.CancellationToken)).Value.ShouldBeFalse();
+            scope.ServiceProvider.GetRequiredService<IPendingLinks>().Current.ShouldBeNull("another account's sign-in drops it");
+        }
+
+        (await ExternalSignInAsync(CorporateProvider, "victim@contoso.com", subject: "mallory-at-idp")).Error.Code.ShouldBe("link_required");
+    }
+
+    [Fact]
+    public async Task An_account_provisioning_created_is_claimed_only_while_it_has_nothing_else()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = false });
+        var provisioned = await ProvisionAsync("sam@contoso.com", Contoso);
+        _host.Tenants.Memberships.GetOrAdd(provisioned, _ => []).Add(new TenantMembership(Fabrikam, null, null, AccessLevel.Tenant));
+
+        (await ExternalSignInAsync(CorporateProvider, "sam@contoso.com")).Error.Code.ShouldBe("link_required", "a member of another tenant too");
+    }
+
+    [Fact]
+    public async Task A_verified_domain_whose_dns_proof_disappears_stops_counting_after_the_grace_period()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await PutAsync(admin, "enterprise/sso", new { provider = CorporateProvider, ssoOnly = true });
+        _dns.Records.Clear();
+
+        _host.Time.Advance(TimeSpan.FromDays(2));
+        (await RecheckAsync()).ShouldBe(0, "within the grace period");
+        (await ExternalSignInAsync("other-idp", "jo@contoso.com")).Error.Code.ShouldBe("sso_required");
+
+        _host.Time.Advance(TimeSpan.FromDays(8));
+        (await RecheckAsync()).ShouldBe(1);
+        (await ExternalSignInAsync("other-idp", "jo@contoso.com")).Error?.Code.ShouldNotBe("sso_required", "the domain no longer belongs to the tenant here");
+    }
+
+    [Fact]
+    public async Task Only_operators_take_a_verified_domain_away_from_a_tenant()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+
+        (await _host.SendAsync(HttpMethod.Post, "enterprise/admin/domains/contoso.com/revoke", admin)).StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+
+        await using var scope = _host.Services.CreateAsyncScope();
+        var revoke = scope.ServiceProvider.GetRequiredService<ICommandHandler<Enterprise.Application.Features.Domains.RevokeDomainCommand>>();
+        (await revoke.HandleAsync(new(Guid.NewGuid(), "CONTOSO.com"), TestContext.Current.CancellationToken)).IsSuccess.ShouldBeTrue();
+        (await scope.ServiceProvider.GetRequiredService<IHomeRealmDirectory>().FindByDomainAsync("contoso.com", TestContext.Current.CancellationToken)).ShouldBeNull();
+    }
+
+    private async Task<int> RecheckAsync()
+    {
+        await using var scope = _host.Services.CreateAsyncScope();
+        return (await scope.ServiceProvider.GetRequiredService<ICommandHandler<Enterprise.Application.Features.Domains.RecheckDomainsCommand, int>>()
+            .HandleAsync(new(), TestContext.Current.CancellationToken)).Value;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_host is not null)
@@ -182,6 +283,7 @@ public sealed class EnterpriseTests : IAsyncDisposable
                 ["JeffOps:LocalAccounts:Enabled"] = "true",
                 ["JeffOps:LocalAccounts:HashIterations"] = "10000",
                 ["JeffOps:TokenServer:Federation:OpenRegistration"] = "false",
+                ["JeffOps:Enterprise:RecheckDomains"] = "false",
             },
             configure: builder =>
             {
@@ -224,22 +326,31 @@ public sealed class EnterpriseTests : IAsyncDisposable
         await PostAsync(admin, $"enterprise/domains/{claimed.GetProperty("id").GetString()}/verify");
     }
 
-    private async Task<Result<ExternalSignInResult>> ExternalSignInAsync(string provider, string email, string? subject = null)
+    private async Task<Result<ExternalSignInResult>> ExternalSignInAsync(string provider, string email, string? subject = null, AsyncServiceScope? inScope = null)
     {
-        await using var scope = _host.Services.CreateAsyncScope();
         var identity = new ExternalIdentity(provider, new ExternalLoginKey("https://idp.test/", subject ?? Guid.NewGuid().ToString()), email, true, "Jo", AuthenticationStrength.Password);
+        if (inScope is { } given)
+        {
+            return await given.ServiceProvider.GetRequiredService<ICommandHandler<CompleteExternalSignInCommand, ExternalSignInResult>>()
+                .HandleAsync(new CompleteExternalSignInCommand(identity), TestContext.Current.CancellationToken);
+        }
+
+        await using var scope = _host.Services.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<ICommandHandler<CompleteExternalSignInCommand, ExternalSignInResult>>()
             .HandleAsync(new CompleteExternalSignInCommand(identity), TestContext.Current.CancellationToken);
     }
 
-    /// <summary>An account the tenant's SCIM provisioning created, as the SCIM endpoints would record it.</summary>
-    private async Task<Guid> ProvisionAsync(string email, Guid tenant)
+    /// <summary>
+    /// An account the tenant's SCIM provisioning created, as the SCIM endpoints would record it; or, with
+    /// <paramref name="existingAccount"/>, an existing account it only linked.
+    /// </summary>
+    private async Task<Guid> ProvisionAsync(string email, Guid tenant, Guid? existingAccount = null)
     {
-        var account = await _host.CreateAccountAsync(email);
+        var accountId = existingAccount ?? (await _host.CreateAccountAsync(email)).Id;
         await using var scope = _host.Services.CreateAsyncScope();
-        scope.ServiceProvider.GetRequiredService<IScimUserRepository>().Add(Enterprise.Domain.ScimUser.Provision(tenant, account.Id, createdAccount: true, _host.Time.GetUtcNow()));
+        scope.ServiceProvider.GetRequiredService<IScimUserRepository>().Add(Enterprise.Domain.ScimUser.Provision(tenant, accountId, createdAccount: existingAccount is null, _host.Time.GetUtcNow()));
         await scope.ServiceProvider.GetRequiredService<IEnterpriseUnitOfWork>().SaveChangesAsync(TestContext.Current.CancellationToken);
-        return account.Id;
+        return accountId;
     }
 
     private async Task<JsonElement> PostAsync(string token, string path, object? body = null) =>

@@ -22,6 +22,15 @@ public sealed record BffSession(
     DateTimeOffset AccessExpiresAt,
     DateTimeOffset SessionEndsAt)
 {
+    /// <summary>
+    /// The access token for the token server's own APIs (audience: the token server only), when one was fetched; never sent
+    /// to APIs (<see cref="BffOptions.AccountApi"/>).
+    /// </summary>
+    public string? AccountAccessToken { get; init; }
+
+    /// <summary>When <see cref="AccountAccessToken"/> expires.</summary>
+    public DateTimeOffset? AccountAccessExpiresAt { get; init; }
+
     /// <summary>For a derived session: <c>impersonation</c> or <c>tenant-switch</c>; null for an own session.</summary>
     public string? Kind { get; init; }
 

@@ -14,7 +14,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using OpenIddict.Validation.AspNetCore;
 
 namespace JeffOps.Authentication.Enterprise.Endpoints;
 
@@ -38,6 +37,9 @@ public static class EnterpriseEndpointRouteBuilderExtensions
 
     public const string OperatorProviderRoute = "enterprise/admin/tenants/{tenantId:guid}/custom-providers";
 
+    /// <summary>Operators take a verified domain away from the tenant holding it (POST).</summary>
+    public const string OperatorRevokeDomainRoute = "enterprise/admin/domains/{domain}/revoke";
+
     /// <summary>
     /// Maps tenant administration of verified domains (<c>enterprise/domains</c>: list, claim, verify, remove), the
     /// single sign-on policy (<c>enterprise/sso</c>: get, set) and SCIM tokens (<c>enterprise/scim-tokens</c>: list, create,
@@ -47,7 +49,8 @@ public static class EnterpriseEndpointRouteBuilderExtensions
     public static IEndpointRouteBuilder MapJeffOpsEnterprise(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
-        var tokenPolicy = new AuthorizationPolicyBuilder(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme).RequireAuthenticatedUser().Build();
+        // Only access tokens issued for the token server's own APIs (the account audience), never a token meant for an API.
+        const string tokenPolicy = JeffOps.Authentication.Application.AccountApi.PolicyName;
 
         var root = endpoints.MapGroup(string.Empty).WithTags("Enterprise").RequireAuthorization(tokenPolicy).AddEndpointFilter<TenantAdministratorFilter>();
 
@@ -155,6 +158,18 @@ public static class EnterpriseEndpointRouteBuilderExtensions
             .AddEndpointFilter<OperatorFilter>()
             .AddEndpointFilter<StepUpFilter>();
 
+        // Platform operators: take a verified domain away from a tenant (it changed hands, or was claimed in error).
+        endpoints.MapPost(OperatorRevokeDomainRoute, async (string domain, HttpContext context, ICommandHandler<RevokeDomainCommand> handler) =>
+        {
+            var operatorId = AccessContextReader.Read(context.User, Names(context)).UserId!.Value;
+            var result = await handler.HandleAsync(new RevokeDomainCommand(operatorId, domain), context.RequestAborted).ConfigureAwait(false);
+            return result.IsSuccess ? TypedResults.NoContent() : Problem(result.Error);
+        })
+            .WithTags("Enterprise")
+            .RequireAuthorization(tokenPolicy)
+            .AddEndpointFilter<OperatorFilter>()
+            .AddEndpointFilter<StepUpFilter>();
+
         return endpoints;
     }
 
@@ -193,9 +208,7 @@ internal sealed class TenantAdministratorFilter : IEndpointFilter
         var http = context.HttpContext;
         var names = EnterpriseEndpointRouteBuilderExtensions.Names(http);
         var access = AccessContextReader.Read(http.User, names);
-        var ownSession = AccessContextReader.IsInteractiveUser(http.User, names) && access.TenantId is not null
-            && !AccessContextReader.IsImpersonation(http.User, names) && !access.IsDelegated
-            && !http.User.HasClaim(claim => claim.Type == names.PatCeiling || claim.Type == names.DelegationScope);
+        var ownSession = AccessContextReader.IsOwnSession(http.User, names) && access.TenantId is not null;
         if (!ownSession)
         {
             return TypedResults.Problem(detail: "Only a tenant administrator in their own session can do this.", statusCode: StatusCodes.Status403Forbidden,
@@ -225,9 +238,7 @@ internal sealed class OperatorFilter : IEndpointFilter
         var http = context.HttpContext;
         var names = EnterpriseEndpointRouteBuilderExtensions.Names(http);
         var access = AccessContextReader.Read(http.User, names);
-        var ownSession = AccessContextReader.IsInteractiveUser(http.User, names) && access.UserId is not null
-            && !AccessContextReader.IsImpersonation(http.User, names) && !access.IsDelegated
-            && !http.User.HasClaim(claim => claim.Type == names.PatCeiling || claim.Type == names.DelegationScope);
+        var ownSession = AccessContextReader.IsOwnSession(http.User, names) && access.UserId is not null;
         // A host that doesn't define the operator policy has no operators (fail closed).
         var policy = http.RequestServices.GetRequiredService<IOptions<EnterpriseOptions>>().Value.OperatorPolicy;
         var defined = await http.RequestServices.GetRequiredService<IAuthorizationPolicyProvider>().GetPolicyAsync(policy).ConfigureAwait(false);

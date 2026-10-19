@@ -11,7 +11,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using OpenIddict.Validation.AspNetCore;
 
 namespace JeffOps.Authentication.Delegation.Endpoints;
 
@@ -35,9 +34,10 @@ public static class DelegationEndpointRouteBuilderExtensions
     public static IEndpointRouteBuilder MapJeffOpsDelegation(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
-        var tokenPolicy = new AuthorizationPolicyBuilder(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme).RequireAuthenticatedUser().Build();
+        // Only access tokens issued for the token server's own APIs (the account audience), never a token meant for an API.
+        const string tokenPolicy = JeffOps.Authentication.Application.AccountApi.PolicyName;
 
-        var impersonation = endpoints.MapGroup(ImpersonationRoutes).WithTags("Impersonation").RequireAuthorization(tokenPolicy);
+        var impersonation = endpoints.MapGroup(ImpersonationRoutes).WithTags("Impersonation").RequireAuthorization(tokenPolicy).AddEndpointFilter<NotFromPatFilter>();
         impersonation.MapPost("/", RequestImpersonationAsync).AddEndpointFilter<StepUpFilter>().WithName("RequestImpersonation");
         impersonation.MapGet("/", ListImpersonationsAsync).AddEndpointFilter<HomeSessionFilter>().WithName("ListImpersonations");
         impersonation.MapGet("/{grantId:guid}", GetImpersonationAsync).AddEndpointFilter<HomeSessionFilter>().WithName("GetImpersonation");
@@ -51,7 +51,7 @@ public static class DelegationEndpointRouteBuilderExtensions
             EndImpersonationAsync(grantId, revoke: true, context, handler)).WithName("RevokeImpersonation");
 
         // Someone acting as another user can't use that user's lockbox grants (only end the impersonation itself, above).
-        var access = endpoints.MapGroup(TenantAccessRoutes).WithTags("Tenant access").RequireAuthorization(tokenPolicy).AddEndpointFilter<HomeSessionFilter>();
+        var access = endpoints.MapGroup(TenantAccessRoutes).WithTags("Tenant access").RequireAuthorization(tokenPolicy).AddEndpointFilter<NotFromPatFilter>().AddEndpointFilter<HomeSessionFilter>();
         access.MapPost("/", RequestTenantAccessAsync).AddEndpointFilter<StepUpFilter>().WithName("RequestTenantAccess");
         access.MapGet("/", ListTenantAccessAsync).WithName("ListTenantAccess");
         access.MapPost("/{grantId:guid}/approve", (Guid grantId, HttpContext context, ICommandHandler<DecideTenantAccessCommand, TenantAccessGrantDto> handler) =>
@@ -240,6 +240,28 @@ internal sealed class HomeSessionFilter : IEndpointFilter
             ? next(context)
             : ValueTask.FromResult<object?>(TypedResults.Problem(
                 detail: "This needs your own session, not one acting as someone else.",
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = DelegationErrors.HomeSessionRequired }));
+    }
+}
+
+/// <summary>
+/// Refuses tokens exchanged from a personal access token on every delegation route: a script's credential never requests,
+/// consents to, ends or revokes delegated access.
+/// </summary>
+internal sealed class NotFromPatFilter : IEndpointFilter
+{
+    public ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+
+        var http = context.HttpContext;
+        var names = http.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default;
+        return !AccessContextReader.IsPatDerived(http.User, names)
+            ? next(context)
+            : ValueTask.FromResult<object?>(TypedResults.Problem(
+                detail: "Delegated access is managed in your own session, not with a personal access token.",
                 statusCode: StatusCodes.Status403Forbidden,
                 extensions: new Dictionary<string, object?> { ["code"] = DelegationErrors.HomeSessionRequired }));
     }

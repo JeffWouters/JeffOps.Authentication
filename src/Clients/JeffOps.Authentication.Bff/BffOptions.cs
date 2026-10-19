@@ -55,6 +55,24 @@ public sealed class BffOptions
     /// </summary>
     public bool TokenMediating { get; set; }
 
+    /// <summary>
+    /// Access to the token server's own APIs (account, personal access tokens, credentials, delegation, enterprise). The BFF
+    /// requests <see cref="AccountScope"/> and keeps a second access token whose only audience is the token server, fetched by
+    /// narrowing a refresh, so the token it sends to APIs can't be used there. <c>/bff/account/{path}</c> forwards to the token
+    /// server with it, for paths under <see cref="AccountApiPaths"/> and from the user's own session only (never an acting
+    /// one). On automatically with derived sessions, which end grants there. The client must be allowed the scope. Off by default.
+    /// </summary>
+    public bool AccountApi { get; set; }
+
+    /// <summary>The scope that gets an access token for the token server's own APIs. Default: <c>account</c>.</summary>
+    public string AccountScope { get; set; } = "account";
+
+    /// <summary>The token server paths <c>/bff/account/{path}</c> may reach. Default: <c>account/</c>, <c>delegation/</c>, <c>enterprise/</c>.</summary>
+    public IList<string> AccountApiPaths { get; } = ["account/", "delegation/", "enterprise/"];
+
+    /// <summary>Whether the session holds an account token: <see cref="AccountApi"/>, or derived sessions.</summary>
+    internal bool UsesAccountApi => AccountApi || Delegation.Enabled;
+
     /// <summary>The claims of the access token returned by <c>/bff/me</c>.</summary>
     public IList<string> UserClaims { get; } = ["sub", "email", "name", "tid", "org", "lvl", "amr", "step_up", "act_tid", "dlg_scope", "act_kind", "grant_id"];
 

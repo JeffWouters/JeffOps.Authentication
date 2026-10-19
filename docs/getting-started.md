@@ -99,7 +99,7 @@ Configuration (`appsettings.json`; keep secrets in user secrets or a vault):
           "RedirectUris": [ "https://app.example.com/bff/callback" ],
           "PostLogoutRedirectUris": [ "https://app.example.com/" ],
           "BackchannelLogoutUri": "https://app.example.com/bff/backchannel-logout",
-          "Scopes": [ "openid", "profile", "email", "offline_access", "api" ]
+          "Scopes": [ "openid", "profile", "email", "offline_access", "api", "account" ]
         }
       ]
     }
@@ -237,6 +237,11 @@ From the SPA: navigate to `/bff/login` to sign in, call `/bff/me` for the user, 
 with the header `X-JeffOps-Csrf: 1`. Signing out at the token server ends the BFF session through back-channel logout.
 For an API the BFF can't proxy, `JeffOps:Bff:TokenMediating: true` lets the app fetch a short-lived access token from
 `/bff/token` (with the same header); the refresh token stays in the BFF.
+
+The token server's own APIs (personal access tokens, credentials, sign-out everywhere, delegation, enterprise settings) only
+accept tokens issued for them, never the token your API gets. With `JeffOps:Bff:AccountApi: true` (on automatically with
+`Delegation:Enabled`) the BFF requests the `account` scope, which the client must be allowed, and the SPA calls those APIs
+through `/bff/account/…`, for example `GET /bff/account/account/pats`.
 
 ## 4. Service-to-service calls
 

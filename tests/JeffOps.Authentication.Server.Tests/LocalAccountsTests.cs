@@ -193,8 +193,8 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         using var phone = new Browser(host);
         await LoginAsync(laptop, "ada@example.com", Password);
         await LoginAsync(phone, "ada@example.com", Password);
-        var onLaptop = await AuthorizeAsync(host, laptop, "openid offline_access api");
-        var onPhone = await AuthorizeAsync(host, phone, "openid offline_access api");
+        var onLaptop = await AuthorizeAsync(host, laptop, "openid offline_access account");
+        var onPhone = await AuthorizeAsync(host, phone, "openid offline_access account");
 
         var changed = await host.SendAsync(HttpMethod.Post, "account/local/manage/password", onLaptop.AccessToken,
             JsonContent.Create(new { currentPassword = Password, newPassword = "a completely new passphrase" }));
@@ -213,8 +213,8 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         using var phone = new Browser(host);
         await LoginAsync(laptop, "ada@example.com", Password);
         await LoginAsync(phone, "ada@example.com", Password);
-        var onLaptop = await AuthorizeAsync(host, laptop, "openid offline_access api");
-        var onPhone = await AuthorizeAsync(host, phone, "openid offline_access api");
+        var onLaptop = await AuthorizeAsync(host, laptop, "openid offline_access account");
+        var onPhone = await AuthorizeAsync(host, phone, "openid offline_access account");
 
         var laptopSession = new JsonWebToken(onLaptop.IdToken!).GetClaim("sid").Value;
         var phoneSession = new JsonWebToken(onPhone.IdToken!).GetClaim("sid").Value;
@@ -318,6 +318,43 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
+    // ---- Security review proofs (docs/security-review.md) ---------------------------------------------------------------
+
+    [Fact]
+    public async Task A_token_exchanged_from_a_pat_can_t_manage_the_accounts_credentials()
+    {
+        // LA-1: a PAT without a ceiling yields a token with cred=pat but no pat_perm; it must not count as the user's session.
+        var host = await StartAsync(new() { ["JeffOps:TokenServer:Mfa:RequireForSensitiveActions"] = "false" });
+        using var browser = new Browser(host);
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        await LoginAsync(browser, "ada@example.com", Password);
+        var session = (await AuthorizeAsync(host, browser)).AccessToken!;
+        var created = await host.SendAsync(HttpMethod.Post, "account/pats", session, JsonContent.Create(new JeffOps.Authentication.Abstractions.Contracts.CreatePersonalAccessTokenRequest("ci")));
+        created.StatusCode.ShouldBe(HttpStatusCode.OK, await created.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var secret = (await created.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("secret").GetString()!;
+        var fromPat = (await host.ExchangePatAsync(secret, scope: "account")).AccessToken!;
+
+        var enroll = await host.SendAsync(HttpMethod.Post, "account/local/manage/authenticator", fromPat);
+
+        enroll.StatusCode.ShouldBe(HttpStatusCode.Forbidden, await enroll.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task The_account_apis_refuse_an_access_token_issued_for_another_audience()
+    {
+        // LA-2 / DEL-2: a token whose only audience is a resource API ("api") was meant for that API, not the token server.
+        var host = await StartAsync(new() { ["JeffOps:TokenServer:Mfa:RequireForSensitiveActions"] = "false" });
+        using var browser = new Browser(host);
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        await LoginAsync(browser, "ada@example.com", Password);
+        var forApi = await AuthorizeAsync(host, browser, scope: "api");
+        forApi.Access.Audiences.ShouldBe(["api"]);
+
+        var response = await host.SendAsync(HttpMethod.Post, "account/pats", forApi.AccessToken!, JsonContent.Create(new JeffOps.Authentication.Abstractions.Contracts.CreatePersonalAccessTokenRequest("ci")));
+
+        response.StatusCode.ShouldBeOneOf([HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden], await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
     private async Task<TokenServerHost> StartAsync(Dictionary<string, string?>? overrides = null, bool enabled = true)
     {
         var settings = new Dictionary<string, string?>
@@ -406,7 +443,7 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     }
 
     /// <summary>Runs the code flow with PKCE in the signed-in browser and redeems the code.</summary>
-    private static async Task<TokenResponse> AuthorizeAsync(TokenServerHost host, Browser browser, string scope = "openid api")
+    private static async Task<TokenResponse> AuthorizeAsync(TokenServerHost host, Browser browser, string scope = "openid account")
     {
         var verifier = SoftwareAuthenticator.Base64Url(RandomNumberGenerator.GetBytes(32));
         var challenge = SoftwareAuthenticator.Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));

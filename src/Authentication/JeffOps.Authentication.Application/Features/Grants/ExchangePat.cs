@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Claims;
+using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Application.Sessions;
@@ -56,6 +57,12 @@ public sealed class ExchangePatHandler(
         if (standing.IsFailure)
         {
             return standing.Error;
+        }
+
+        // Never a Root token from a PAT, also for a PAT created before its owner became a platform administrator.
+        if (standing.Value.Membership?.Level == AccessLevel.Root)
+        {
+            return Error.Forbidden(Features.PersonalAccessTokens.PatErrors.NotForPlatformAdministrators, "Personal access tokens can't act as a platform administrator.");
         }
 
         var claims = new List<Claim>

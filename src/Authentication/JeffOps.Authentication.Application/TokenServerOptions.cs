@@ -16,6 +16,13 @@ public sealed class TokenServerOptions
     public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
+    /// The audience of access tokens for the token server's own APIs, issued for the <see cref="AccountApi.Scope"/> scope only
+    /// (never together with an API audience). Clients that call these APIs must be allowed that scope. Default:
+    /// <c>jeffops-account</c>.
+    /// </summary>
+    public string AccountAudience { get; set; } = "jeffops-account";
+
+    /// <summary>
     /// How long a refresh token that was just redeemed may be redeemed again, so two concurrent refreshes don't sign the user
     /// out. Outside this window, reusing a refresh token revokes the whole token chain. Zero disables the leeway.
     /// </summary>

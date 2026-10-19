@@ -58,6 +58,39 @@ public static class AccessContextReader
         return user.Claims.Any(claim => names.ImpersonationMarkers.Contains(claim.Type, StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// Whether <paramref name="user"/>'s token was exchanged from a personal access token (<c>cred=pat</c>, or a PAT ceiling):
+    /// a script's credential, never the user's own session.
+    /// </summary>
+    public static bool IsPatDerived(ClaimsPrincipal user, ClaimNames names)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentNullException.ThrowIfNull(names);
+
+        return user.HasClaim(claim => (claim.Type == names.CredentialType && string.Equals(claim.Value, PatCredential, StringComparison.Ordinal))
+            || claim.Type == names.PatCeiling);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="user"/> is in their own interactive session: an interactive user who isn't impersonating anyone,
+    /// isn't switched into another tenant (no acting tenant, no delegation scope) and isn't using a token from a personal
+    /// access token. Managing credentials, PATs, delegation consent and similar account actions need this.
+    /// </summary>
+    public static bool IsOwnSession(ClaimsPrincipal user, ClaimNames names)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentNullException.ThrowIfNull(names);
+
+        return IsInteractiveUser(user, names)
+            && !IsImpersonation(user, names)
+            && !Read(user, names).IsDelegated
+            && !user.HasClaim(claim => claim.Type == names.DelegationScope)
+            && !IsPatDerived(user, names);
+    }
+
+    /// <summary>The <c>cred</c> value of tokens exchanged from a personal access token.</summary>
+    public const string PatCredential = "pat";
+
     /// <summary>Whether the sign-in behind <paramref name="user"/> satisfied step-up.</summary>
     public static bool IsSteppedUp(ClaimsPrincipal user, ClaimNames names)
     {

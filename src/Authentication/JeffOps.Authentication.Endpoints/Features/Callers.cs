@@ -2,17 +2,14 @@ using System.Security.Claims;
 using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Application.Features.PersonalAccessTokens;
-using Microsoft.AspNetCore.Authorization;
-using OpenIddict.Validation.AspNetCore;
 
 namespace JeffOps.Authentication.Endpoints.Features;
 
 /// <summary>Reads facts about the caller's own credential from its validated access token.</summary>
 internal static class Callers
 {
-    /// <summary>Requires a valid access token issued by this server.</summary>
-    public static AuthorizationPolicy TokenPolicy { get; } =
-        new AuthorizationPolicyBuilder(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme).RequireAuthenticatedUser().Build();
+    /// <summary>Requires a valid access token issued by this server for its own APIs (<see cref="Application.AccountApi"/>).</summary>
+    public const string TokenPolicy = Application.AccountApi.PolicyName;
 
     /// <summary>The caller as an interactive user, or null for a service principal or an unidentifiable token.</summary>
     public static PatCaller? AsUser(ClaimsPrincipal user, ClaimNames names)
@@ -28,8 +25,9 @@ internal static class Callers
             access.TenantId,
             IsImpersonation: AccessContextReader.IsImpersonation(user, names),
             IsDelegated: access.IsDelegated || user.HasClaim(claim => claim.Type == names.DelegationScope),
-            IsPatDerived: user.HasClaim(names.CredentialType, "pat") || user.HasClaim(claim => claim.Type == names.PatCeiling),
-            IsSteppedUp: AccessContextReader.IsSteppedUp(user, names));
+            IsPatDerived: AccessContextReader.IsPatDerived(user, names),
+            IsSteppedUp: AccessContextReader.IsSteppedUp(user, names),
+            IsRoot: access.IsRoot);
     }
 
     /// <summary>

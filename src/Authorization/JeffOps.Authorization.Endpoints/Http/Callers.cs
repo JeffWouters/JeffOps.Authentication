@@ -20,7 +20,9 @@ internal static class Callers
         var isService = access.Level == AccessLevel.Service;
         return new ManagementCaller(
             access.UserId,
-            IsRoot: access.IsRoot,
+            // A token from a personal access token is never Root here, whatever level it claims (defence in depth: the token
+            // server doesn't issue Root PATs).
+            IsRoot: access.IsRoot && !AccessContextReader.IsPatDerived(user, names),
             IsService: isService,
             ServiceName: isService ? user.FindFirst(names.Subject)?.Value : null,
             access.TenantId,

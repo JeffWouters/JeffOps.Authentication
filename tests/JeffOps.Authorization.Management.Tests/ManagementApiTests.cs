@@ -269,6 +269,20 @@ public sealed class ManagementApiTests
         catalog.ShouldContain(entry => entry.Code == "authorization.roles.write");
     }
 
+    [Fact]
+    public async Task A_platform_administrators_pat_is_held_to_its_ceiling_in_management()
+    {
+        // AUTHZ-1 (docs/security-review.md): a Root member's PAT, limited to reading invoices, must not administer access.
+        await using var host = await StartAsync();
+        var pat = Principal(("sub", Root.ToString()), ("tid", TenantA.ToString()), ("lvl", "Root"), ("step_up", "mfa"),
+            ("cred", "pat"), ("pat_perm", "billing.invoices.read"));
+        var roleId = await RoleIdAsync(host, TenantAdmin);
+
+        var response = await host.SendAsync(pat, HttpMethod.Post, ManagementRoutes.Assignments, new AssignRoleRequest(Alice, roleId, TenantA));
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
     private static async Task AssignAsync(ManagementHost host, System.Security.Claims.ClaimsPrincipal caller, Guid userId, string roleName, DateTimeOffset? expiresAt = null)
     {
         var roleId = await RoleIdAsync(host, roleName);

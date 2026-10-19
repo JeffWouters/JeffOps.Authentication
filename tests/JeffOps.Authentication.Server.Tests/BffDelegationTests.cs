@@ -30,7 +30,7 @@ public sealed partial class BffTests
         var (customer, customerToken) = await DirectUserAsync(stack, "customer@example.com", CustomerTenant, CustomerOrganization);
         var support = await SignInAsync(stack, "support@example.com", id => Member(stack, id, PlatformTenant, null, AccessLevel.Root));
 
-        var grantId = (await BrowserPostAsync(stack, "delegation/impersonation", new { targetUserId = customer })).GetProperty("id").GetString()!;
+        var grantId = (await BrowserPostAsync(stack, "bff/account/delegation/impersonation", new { targetUserId = customer })).GetProperty("id").GetString()!;
         (await stack.TokenServer.SendAsync(HttpMethod.Post, $"delegation/impersonation/{grantId}/approve", customerToken)).StatusCode.ShouldBe(HttpStatusCode.OK);
 
         var started = await BrowserPostAsync(stack, $"bff/impersonation/{grantId}/start");
@@ -57,7 +57,7 @@ public sealed partial class BffTests
         delegation.Seed(stack.TokenServer);
         var (customer, customerToken) = await DirectUserAsync(stack, "customer@example.com", CustomerTenant, CustomerOrganization);
         var support = await SignInAsync(stack, "support@example.com", id => Member(stack, id, PlatformTenant, null, AccessLevel.Root));
-        var grantId = (await BrowserPostAsync(stack, "delegation/impersonation", new { targetUserId = customer })).GetProperty("id").GetString()!;
+        var grantId = (await BrowserPostAsync(stack, "bff/account/delegation/impersonation", new { targetUserId = customer })).GetProperty("id").GetString()!;
         await stack.TokenServer.SendAsync(HttpMethod.Post, $"delegation/impersonation/{grantId}/approve", customerToken);
         await BrowserPostAsync(stack, $"bff/impersonation/{grantId}/start");
 

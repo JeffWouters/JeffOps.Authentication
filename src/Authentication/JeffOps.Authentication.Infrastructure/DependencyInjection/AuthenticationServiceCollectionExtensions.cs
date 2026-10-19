@@ -85,6 +85,13 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddDataProtection();
         services.AddMemoryCache();
         services.AddAuthorization(); // The endpoints require it; idempotent when the host adds its own policies.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, AccountAudienceHandler>());
+        services.AddHttpContextAccessor();
+        services.Replace(ServiceDescriptor.Scoped<Application.Federation.IPendingLinks, CookiePendingLinks>());
+        services.AddAuthorizationBuilder().AddPolicy(AccountApi.PolicyName, policy => policy
+            .AddAuthenticationSchemes(OpenIddict.Validation.AspNetCore.OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme)
+            .RequireAuthenticatedUser()
+            .AddRequirements(new AccountAudienceRequirement()));
         // One-time values (DPoP proofs, SAML assertions) are remembered in the database, so they count once across instances.
         services.TryAddSingleton<Abstractions.Replay.IReplayCache, DatabaseReplayCache>();
         services.TryAddSingleton<DatabaseKeyStore>();
@@ -226,6 +233,8 @@ public static class AuthenticationServiceCollectionExtensions
         {
             server.Scopes.Add(scope);
         }
+
+        server.Scopes.Add(AccountApi.Scope);
     }
 
     private sealed class TokenServerOptionsValidator(IHostEnvironment environment) : IValidateOptions<TokenServerOptions>
@@ -247,6 +256,13 @@ public static class AuthenticationServiceCollectionExtensions
             if (options.SessionLifetime <= TimeSpan.Zero || options.AccessTokenLifetime <= TimeSpan.Zero)
             {
                 failures.Add("Session and access-token lifetimes must be positive.");
+            }
+
+            if (string.IsNullOrWhiteSpace(options.AccountAudience)
+                || options.ApiScopes.ContainsKey(AccountApi.Scope)
+                || options.ApiScopes.Values.Any(audiences => audiences.Contains(options.AccountAudience, StringComparer.Ordinal)))
+            {
+                failures.Add($"The '{AccountApi.Scope}' scope and the account audience '{options.AccountAudience}' are reserved for the token server's own APIs; no API scope may use them.");
             }
 
             if (options.PruneAfter < TimeSpan.Zero || options.PruneInterval < TimeSpan.Zero)

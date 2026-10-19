@@ -16,7 +16,6 @@ using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
@@ -24,7 +23,6 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using OpenIddict.Validation.AspNetCore;
 
 namespace JeffOps.Authentication.LocalAccounts.Endpoints;
 
@@ -91,7 +89,8 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         open.MapPost("passkey/login/options", PasskeyLoginOptionsAsync);
         open.MapPost("passkey/login", PasskeyLoginAsync);
 
-        var tokenPolicy = new AuthorizationPolicyBuilder(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme).RequireAuthenticatedUser().Build();
+        // Only access tokens issued for the token server's own APIs (the account audience), never a token meant for an API.
+        const string tokenPolicy = JeffOps.Authentication.Application.AccountApi.PolicyName;
         var manage = root.MapGroup("manage").RequireAuthorization(tokenPolicy).AddEndpointFilter<OwnSessionFilter>();
         manage.MapPost("password", async (ChangePasswordRequest request, ICommandHandler<ChangePasswordCommand> handler, HttpContext context) =>
             NoContent(await handler.HandleAsync(new ChangePasswordCommand(AccountOf(context), request.CurrentPassword, request.NewPassword), context.RequestAborted).ConfigureAwait(false)));
@@ -477,11 +476,7 @@ internal sealed class OwnSessionFilter : IEndpointFilter
 
         var user = context.HttpContext.User;
         var names = context.HttpContext.RequestServices.GetService<ClaimNames>() ?? ClaimNames.Default;
-        var own = AccessContextReader.IsInteractiveUser(user, names)
-            && !AccessContextReader.IsImpersonation(user, names)
-            && !AccessContextReader.Read(user, names).IsDelegated
-            && !user.HasClaim(claim => claim.Type == names.PatCeiling || claim.Type == names.DelegationScope);
-        return own
+        return AccessContextReader.IsOwnSession(user, names)
             ? next(context)
             : ValueTask.FromResult<object?>(TypedResults.Problem(
                 detail: "Credentials can only be managed in your own session.",

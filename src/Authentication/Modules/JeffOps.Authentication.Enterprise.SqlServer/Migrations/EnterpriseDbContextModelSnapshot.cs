@@ -211,6 +211,9 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
                     b.Property<DateTimeOffset?>("LastCheckedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("ProofMissingSince")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -228,6 +231,11 @@ namespace JeffOps.Authentication.Enterprise.SqlServer.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Domain")
+                        .IsUnique()
+                        .HasDatabaseName("IX_TenantDomains_Domain_Verified")
+                        .HasFilter("[Status] = 'Verified'");
 
                     b.HasIndex("Domain", "Status");
 

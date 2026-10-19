@@ -217,19 +217,89 @@ public sealed class FederationOptions
 /// <param name="SsoOnly">Whether every other sign-in method (passwords, passkeys, other providers) is refused for the domain.</param>
 public sealed record RealmPolicy(Guid TenantId, string? Provider, bool SsoOnly);
 
+/// <summary>An account a tenant's provisioning (SCIM) holds, and whether provisioning created it (rather than linking an existing one).</summary>
+public sealed record ProvisionedAccount(Guid AccountId, bool CreatedByProvisioning);
+
 /// <summary>
 /// The accounts a tenant's provisioning (SCIM) created or linked. On the first sign-in through the tenant's own SSO provider,
-/// such an account is claimed instead of a second one being created. The Enterprise module provides one; the default knows none.
+/// an account provisioning created is claimed instead of a second one being created; an existing account it only linked needs
+/// its owner's confirmation first (<see cref="IPendingLinks"/>). The Enterprise module provides one; the default knows none.
 /// </summary>
 public interface IProvisionedAccountDirectory
 {
     /// <summary>The account the tenant provisioned for <paramref name="email"/>, or null.</summary>
-    Task<Guid?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken);
+    Task<ProvisionedAccount?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken);
 }
 
 public sealed class NoProvisionedAccounts : IProvisionedAccountDirectory
 {
-    public Task<Guid?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken) => Task.FromResult<Guid?>(null);
+    public Task<ProvisionedAccount?> FindAsync(Guid tenantId, string email, CancellationToken cancellationToken) => Task.FromResult<ProvisionedAccount?>(null);
+}
+
+/// <summary>
+/// Whether an account has sign-in credentials of its own besides external logins (a password, passkeys, an authenticator).
+/// LocalAccounts provides one; the default knows none.
+/// </summary>
+public interface IAccountCredentials
+{
+    Task<bool> HasLocalCredentialsAsync(Guid accountId, CancellationToken cancellationToken);
+}
+
+public sealed class NoAccountCredentials : IAccountCredentials
+{
+    public Task<bool> HasLocalCredentialsAsync(Guid accountId, CancellationToken cancellationToken) => Task.FromResult(false);
+}
+
+/// <summary>
+/// A login waiting for its account owner's confirmation: an external login that would be attached to an existing account
+/// the owner didn't create through that provider. It is attached when the same account next signs in another way, within
+/// <see cref="ExpiresAt"/>.
+/// </summary>
+public sealed record PendingLink(Guid AccountId, string Issuer, string Subject, string Provider, DateTimeOffset ExpiresAt);
+
+/// <summary>
+/// The browser's pending link (at most one), kept by the host (the token server keeps it in a Data-Protected cookie). The
+/// default keeps none, so nothing is linked without confirmation.
+/// </summary>
+public interface IPendingLinks
+{
+    /// <summary>Records <paramref name="link"/> for this browser, replacing any earlier one.</summary>
+    void Set(PendingLink link);
+
+    /// <summary>This browser's unexpired pending link, if any.</summary>
+    PendingLink? Current { get; }
+
+    /// <summary>Drops this browser's pending link.</summary>
+    void Clear();
+}
+
+/// <summary>The SSO-only exception for confirming a pending link (docs/DESIGN.md §8.2).</summary>
+public static class PendingLinkConfirmation
+{
+    /// <summary>
+    /// Whether signing in to <paramref name="accountId"/> now confirms a login the domain's own provider asked to link: SSO-only
+    /// doesn't stand in the way of that one sign-in.
+    /// </summary>
+    public static bool Confirms(this IPendingLinks pendingLinks, Guid? accountId, RealmPolicy realm)
+    {
+        ArgumentNullException.ThrowIfNull(pendingLinks);
+        ArgumentNullException.ThrowIfNull(realm);
+        return accountId is { } id && pendingLinks.Current is { } pending && pending.AccountId == id
+            && string.Equals(pending.Provider, realm.Provider, StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+public sealed class NoPendingLinks : IPendingLinks
+{
+    public void Set(PendingLink link)
+    {
+    }
+
+    public PendingLink? Current => null;
+
+    public void Clear()
+    {
+    }
 }
 
 /// <summary>Tenants' verified email domains and their sign-in policy. The Enterprise module provides one; the default knows none.</summary>

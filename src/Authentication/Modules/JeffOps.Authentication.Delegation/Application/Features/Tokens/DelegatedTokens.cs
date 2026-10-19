@@ -34,7 +34,7 @@ internal static class ActorTokens
         if (AccessContextReader.IsImpersonation(actor, names)
             || access.IsDelegated
             || actor.HasClaim(claim => claim.Type == names.DelegationScope)
-            || actor.HasClaim(claim => claim.Type == names.PatCeiling || (claim.Type == names.CredentialType && claim.Value == "pat")))
+            || AccessContextReader.IsPatDerived(actor, names))
         {
             return Error.Unauthorized(DelegationErrors.HomeSessionRequired, "Delegated tokens can only be minted from the actor's own interactive session.");
         }

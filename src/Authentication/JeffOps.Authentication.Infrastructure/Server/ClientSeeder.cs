@@ -37,7 +37,10 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
 
     private async Task SeedScopesAsync(IOpenIddictScopeManager scopes, CancellationToken cancellationToken)
     {
-        foreach (var (name, audiences) in options.Value.ApiScopes)
+        var scopesToSeed = options.Value.ApiScopes
+            .Select(pair => (pair.Key, (IEnumerable<string>)pair.Value))
+            .Append((AccountApi.Scope, [options.Value.AccountAudience]));
+        foreach (var (name, audiences) in scopesToSeed)
         {
             var descriptor = new OpenIddictScopeDescriptor { Name = name, DisplayName = name };
             foreach (var audience in audiences.Where(audience => !string.IsNullOrWhiteSpace(audience)))

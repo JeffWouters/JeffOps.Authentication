@@ -196,4 +196,7 @@ public static class BffPaths
     public const string SwitchTenant = "/bff/tenants/{tenantId}/switch";
     /// <summary>Ends the derived session, and an impersonation grant at the token server (POST).</summary>
     public const string StopActing = "/bff/acting/stop";
+
+    /// <summary>Forwards to the token server's own APIs with the own session's account token (<see cref="BffOptions.AccountApi"/>).</summary>
+    public const string Account = "/bff/account/{**path}";
 }

@@ -26,6 +26,12 @@ First public preview (`0.1.0-alpha`).
 
 ### Security
 
+- **Hardening from a full security review (2026-10):** the token server's own APIs accept only tokens issued for them
+  (`account` scope, audience `jeffops-account`; the BFF fetches one for `/bff/account/*`); tokens from personal access tokens
+  never act as the user's own session; platform administrators get no personal access tokens; a tenant's provider claims
+  only accounts its provisioning created, other existing accounts are linked after their owner confirms; verified domains are
+  re-checked daily and operators can revoke them.
+
 Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
 details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the
 signed assertion (rewrapped assertions were accepted); SCIM can only provision addresses in the tenant's verified domains;

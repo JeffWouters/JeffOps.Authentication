@@ -174,7 +174,7 @@ public sealed class DpopServerTests
     private static async Task<TokenResponse> BoundSessionAsync(TokenServerHost host, DpopKey key)
     {
         var account = await host.CreateAccountAsync();
-        var (location, verifier) = await host.AuthorizeAsync(account.Id, scope: "openid api");
+        var (location, verifier) = await host.AuthorizeAsync(account.Id, scope: "openid account");
         var issued = await TokenAsync(host, new()
         {
             ["grant_type"] = "authorization_code",

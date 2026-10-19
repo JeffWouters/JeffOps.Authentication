@@ -33,8 +33,9 @@ internal sealed partial class StoreMaintenance(
 
         var interval = options.Value.PruneInterval;
         var nextPrune = time.GetUtcNow();
-        using var timer = new PeriodicTimer(SweepInterval, time);
-        do
+
+        // One delay at a time (not a periodic timer): after a long pause, such as a suspended host, one pass catches up.
+        while (!stoppingToken.IsCancellationRequested)
         {
             await SweepAsync(stoppingToken).ConfigureAwait(false);
             if (interval > TimeSpan.Zero && time.GetUtcNow() >= nextPrune)
@@ -42,8 +43,9 @@ internal sealed partial class StoreMaintenance(
                 await PruneAsync(stoppingToken).ConfigureAwait(false);
                 nextPrune = time.GetUtcNow() + interval;
             }
+
+            await Task.Delay(SweepInterval, time, stoppingToken).ConfigureAwait(false);
         }
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
     }
 
     /// <summary>

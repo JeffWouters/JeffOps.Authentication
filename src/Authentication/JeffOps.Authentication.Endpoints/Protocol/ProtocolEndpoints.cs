@@ -107,6 +107,10 @@ internal static class ProtocolEndpoints
                 : Forbid(Errors.AccessDenied, result.Error.Message, result.Error.Code);
         }
 
+        // The owner of a pending link (a tenant provider's login waiting for confirmation) just signed in another way: attach it.
+        await context.RequestServices.GetRequiredService<ICommandHandler<Application.Features.Federation.ConfirmPendingLink.ConfirmPendingLinkCommand, bool>>()
+            .HandleAsync(new(accountId, SignInPrincipal.ProviderOf(signedIn.Principal)), context.RequestAborted).ConfigureAwait(false);
+
         // dpop_jkt (RFC 9449 section 10): the code is bound to the client's key and redeemable only with a proof of it.
         var issued = Dpop.RequestedBinding(request) is { } requestedKey ? Dpop.Bind(result.Value, requestedKey) : result.Value;
         return TokenIssuance.SignIn(issued, names, options.Value, time);
@@ -181,7 +185,7 @@ internal static class ProtocolEndpoints
         }
 
         var issued = dpop.Value is { } jkt ? Dpop.Bind(result.Value, jkt) : result.Value;
-        return TokenIssuance.SignIn(issued, names, options.Value, time);
+        return TokenIssuance.SignIn(issued, names, options.Value, time, requestedScopes: request.GetScopes());
     }
 
     /// <summary>
