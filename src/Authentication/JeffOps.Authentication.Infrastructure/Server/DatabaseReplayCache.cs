@@ -29,12 +29,11 @@ public sealed class ReplayEntry
 /// <summary>
 /// The token server's <see cref="IReplayCache"/>: the database's primary key makes check-and-record atomic across every
 /// instance, so a DPoP proof or SAML assertion counts once however many replicas run. Uses its own short-lived context, so it
-/// never saves a request's other changes. Expired entries are pruned at most once a minute per instance.
+/// never saves a request's other changes. Expired entries are pruned by <see cref="StoreMaintenance"/>, off the request path
+/// (an expired entry still in the table is taken over, so pruning is never needed for correctness).
 /// </summary>
 internal sealed class DatabaseReplayCache(IServiceScopeFactory scopes, TimeProvider time) : IReplayCache
 {
-    private long _nextPrune;
-
     public async ValueTask<bool> TryAddAsync(string key, DateTimeOffset expiresAt, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
@@ -43,12 +42,6 @@ internal sealed class DatabaseReplayCache(IServiceScopeFactory scopes, TimeProvi
 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
-
-        if (now >= Interlocked.Read(ref _nextPrune))
-        {
-            Interlocked.Exchange(ref _nextPrune, now + 60_000);
-            await db.ReplayEntries.Where(entry => entry.ExpiresAtUnixMs <= now).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-        }
 
         // The common case, a value not seen before, is one insert; the primary key makes it atomic across instances.
         db.ReplayEntries.Add(new ReplayEntry(key, expires));

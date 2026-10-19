@@ -1,8 +1,6 @@
-using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.Infrastructure.Server;
 
@@ -33,9 +31,9 @@ public sealed class EndedSession
 
 /// <summary>
 /// Ended sessions in the token server's database. An entry is needed only while the session's tokens could still be
-/// refreshed, so entries older than the session lifetime are pruned.
+/// refreshed, so <see cref="StoreMaintenance"/> prunes entries older than the session lifetime.
 /// </summary>
-internal sealed class DatabaseEndedSessions(AuthenticationDbContext db, IOptions<TokenServerOptions> options, TimeProvider time) : IEndedSessions
+internal sealed class DatabaseEndedSessions(AuthenticationDbContext db) : IEndedSessions
 {
     public Task<bool> IsEndedAsync(string sessionId, CancellationToken cancellationToken) =>
         db.EndedSessions.AnyAsync(session => session.SessionId == sessionId, cancellationToken);
@@ -43,9 +41,6 @@ internal sealed class DatabaseEndedSessions(AuthenticationDbContext db, IOptions
     public async Task EndAsync(string sessionId, Guid accountId, DateTimeOffset now, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(sessionId);
-        var cutoff = (time.GetUtcNow() - options.Value.SessionLifetime).ToUnixTimeMilliseconds();
-        await db.EndedSessions.Where(session => session.EndedAtUnixMs < cutoff).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-
         if (await db.EndedSessions.AnyAsync(session => session.SessionId == sessionId, cancellationToken).ConfigureAwait(false))
         {
             return;

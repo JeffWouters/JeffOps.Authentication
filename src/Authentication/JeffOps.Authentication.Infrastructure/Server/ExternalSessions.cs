@@ -39,16 +39,13 @@ public sealed class ExternalSessionEntry
     public long ExpiresAtUnixMs { get; private set; }
 }
 
-/// <summary>External sessions in the token server's database; expired entries are pruned as new ones arrive.</summary>
+/// <summary>External sessions in the token server's database; expired entries are ignored, and pruned by <see cref="StoreMaintenance"/>.</summary>
 internal sealed class DatabaseExternalSessions(AuthenticationDbContext db, TimeProvider time) : IExternalSessions
 {
     public async Task RecordAsync(string provider, string? providerSessionId, Guid accountId, string sessionId, DateTimeOffset expiresAt, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(provider);
         ArgumentException.ThrowIfNullOrEmpty(sessionId);
-        var now = time.GetUtcNow().ToUnixTimeMilliseconds();
-        await db.ExternalSessions.Where(entry => entry.ExpiresAtUnixMs <= now).ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
-
         db.ExternalSessions.Add(new ExternalSessionEntry(sessionId, provider, Hash(providerSessionId), accountId, expiresAt.ToUnixTimeMilliseconds()));
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }

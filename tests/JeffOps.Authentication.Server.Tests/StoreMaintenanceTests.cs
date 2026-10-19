@@ -44,6 +44,38 @@ public sealed class StoreMaintenanceTests
         (await server.RefreshAsync(tokens.RefreshToken!)).Error.ShouldBe("invalid_grant");
     }
 
+    [Fact]
+    public async Task Expired_replay_entries_and_old_sessions_are_deleted_in_batches_and_live_ones_kept()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var ct = TestContext.Current.CancellationToken;
+        var now = server.Time.GetUtcNow();
+        var past = now.AddMinutes(-1).ToUnixTimeMilliseconds();
+        var future = now.AddMinutes(5).ToUnixTimeMilliseconds();
+        var longAgo = (now - TimeSpan.FromHours(9)).ToUnixTimeMilliseconds(); // the session lifetime is 8 hours
+        await using (var scope = server.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
+            db.ReplayEntries.AddRange(Enumerable.Range(0, 12_001).Select(index => new ReplayEntry($"expired-{index}", past)));
+            db.ReplayEntries.Add(new ReplayEntry("live", future));
+            db.ExternalSessions.Add(new ExternalSessionEntry("expired-session", "provider", null, Guid.NewGuid(), past));
+            db.ExternalSessions.Add(new ExternalSessionEntry("live-session", "provider", null, Guid.NewGuid(), future));
+            db.EndedSessions.Add(new EndedSession("ended-long-ago", Guid.NewGuid(), longAgo));
+            db.EndedSessions.Add(new EndedSession("ended-recently", Guid.NewGuid(), past));
+            await db.SaveChangesAsync(ct);
+        }
+
+        await Maintenance(server).SweepAsync(ct);
+
+        await using (var scope = server.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
+            (await db.ReplayEntries.Select(entry => entry.Key).ToListAsync(ct)).ShouldBe(["live"], "more than two batches of expired entries");
+            (await db.ExternalSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["live-session"]);
+            (await db.EndedSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["ended-recently"], "its tokens could still be refreshed");
+        }
+    }
+
     private static StoreMaintenance Maintenance(TokenServerHost server) =>
         server.Services.GetServices<IHostedService>().OfType<StoreMaintenance>().Single();
 

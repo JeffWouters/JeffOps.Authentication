@@ -66,8 +66,9 @@ public sealed class TokenServerOptions
     public TimeSpan PruneAfter { get; set; } = TimeSpan.FromDays(14);
 
     /// <summary>
-    /// How often each instance prunes the token store, after a random first delay of up to five minutes. Zero disables
-    /// pruning (for hosts that prune the store themselves). Default: 1 hour.
+    /// How often each instance prunes spent tokens and authorizations, starting within a minute of startup (at a random
+    /// moment, so instances don't prune together). Zero disables it, for hosts that prune them themselves; expired replay
+    /// entries and sessions are still deleted every minute. Default: 1 hour.
     /// </summary>
     public TimeSpan PruneInterval { get; set; } = TimeSpan.FromHours(1);
 
