@@ -114,6 +114,7 @@ internal sealed class TokenServerHost : IAsyncDisposable
         builder.Services.AddSingleton<TimeProvider>(time);
         builder.Services.AddSingleton<ITenantDirectory>(tenants);
         var authentication = builder.Services.AddJeffOpsAuthentication(builder.Configuration);
+        JeffOps.Authentication.Testing.TestKeyRing.AddTestKeyRing(builder.Services);
         if (TestDatabase.SqlServer)
         {
             authentication.AddSqlServerPersistence(migrateOnStartup: true);

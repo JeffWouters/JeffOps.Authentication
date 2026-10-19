@@ -37,6 +37,35 @@ public sealed class ClientSnapshotTests
         (await host.ClientCredentialsAsync(secret: NewSecret)).Status.ShouldBe(HttpStatusCode.OK);
     }
 
+    [Fact]
+    public async Task A_client_no_longer_configured_is_refused_and_deleted_at_startup()
+    {
+        await using var host = await TokenServerHost.StartAsync();
+        var ct = TestContext.Current.CancellationToken;
+
+        // A client from an earlier configuration, still in the database.
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<IOpenIddictApplicationManager>().CreateAsync(new OpenIddictApplicationDescriptor
+            {
+                ClientId = "retired",
+                ClientSecret = NewSecret,
+                ClientType = OpenIddictConstants.ClientTypes.Confidential,
+                Permissions = { OpenIddictConstants.Permissions.Endpoints.Token, OpenIddictConstants.Permissions.GrantTypes.ClientCredentials },
+            }, ct);
+        }
+
+        (await host.TokenAsync(new() { ["grant_type"] = "client_credentials", ["client_id"] = "retired", ["client_secret"] = NewSecret }))
+            .Error.ShouldBe("invalid_client");
+
+        // The next startup deletes it.
+        await host.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Single(service => service.GetType().Name == "AuthenticationStartup").StartAsync(ct);
+        await using var check = host.Services.CreateAsyncScope();
+        var db = check.ServiceProvider.GetRequiredService<Infrastructure.Persistence.AuthenticationDbContext>();
+        (await db.Set<OpenIddict.EntityFrameworkCore.Models.OpenIddictEntityFrameworkCoreApplication>().AnyAsync(application => application.ClientId == "retired", ct)).ShouldBeFalse();
+        (await host.ClientCredentialsAsync()).Status.ShouldBe(HttpStatusCode.OK, "configured clients stay");
+    }
+
     private static async Task ChangeSecretAsync(TokenServerHost host)
     {
         await using var scope = host.Services.CreateAsyncScope();

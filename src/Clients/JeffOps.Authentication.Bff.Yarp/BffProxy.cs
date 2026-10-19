@@ -101,7 +101,8 @@ public sealed class PatExchangeOptions
 
 /// <summary>
 /// Exchanges a PAT for a JWT and caches the result under the PAT's SHA-256 (never the PAT itself), encrypted with Data
-/// Protection in the distributed cache and briefly in memory. Refusals are cached for a short time; outages aren't cached.
+/// Protection in the distributed cache (bound to that key: a value copied under another PAT's key doesn't decrypt there)
+/// and briefly in memory. Refusals are cached for a short time, protected the same way; outages aren't cached.
 /// </summary>
 public sealed partial class PatExchanger(
     IHttpClientFactory httpClientFactory,
@@ -114,8 +115,9 @@ public sealed partial class PatExchanger(
     /// <summary>The name of the HTTP client that calls the token endpoint.</summary>
     public const string HttpClientName = "JeffOps.PatExchange";
     private const string Refused = "refused";
+    private const string TokenPrefix = "token:";
 
-    private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.PatExchange");
+    private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.PatExchange.v2");
 
     /// <summary>The result of exchanging a PAT.</summary>
     public enum Outcome
@@ -145,9 +147,8 @@ public sealed partial class PatExchanger(
         }
 
         var cached = await cache.GetStringAsync(key, cancellationToken).ConfigureAwait(false);
-        if (cached is not null)
+        if (cached is not null && Unprotect(key, cached) is { } value)
         {
-            var value = cached == Refused ? Refused : _protector.Unprotect(cached);
             local.Set(key, value, TimeSpan.FromSeconds(30));
             return value == Refused ? (Outcome.Refused, null) : (Outcome.Exchanged, value);
         }
@@ -186,7 +187,7 @@ public sealed partial class PatExchanger(
 
             if (!response.IsSuccessStatusCode)
             {
-                await cache.SetStringAsync(key, Refused, new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = settings.NegativeCacheDuration }, cancellationToken).ConfigureAwait(false);
+                await cache.SetStringAsync(key, _protector.CreateProtector(key).Protect(Refused), new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = settings.NegativeCacheDuration }, cancellationToken).ConfigureAwait(false);
                 local.Set(key, Refused, settings.NegativeCacheDuration);
                 return (Outcome.Refused, null);
             }
@@ -201,11 +202,25 @@ public sealed partial class PatExchanger(
             var lifetime = TimeSpan.FromSeconds(Math.Max(0, token.ExpiresIn - 30));
             if (lifetime > TimeSpan.Zero)
             {
-                await cache.SetStringAsync(key, _protector.Protect(token.AccessToken), new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = lifetime }, cancellationToken).ConfigureAwait(false);
+                await cache.SetStringAsync(key, _protector.CreateProtector(key).Protect(TokenPrefix + token.AccessToken), new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = lifetime }, cancellationToken).ConfigureAwait(false);
                 local.Set(key, token.AccessToken, lifetime < TimeSpan.FromSeconds(30) ? lifetime : TimeSpan.FromSeconds(30));
             }
 
             return (Outcome.Exchanged, token.AccessToken);
+        }
+    }
+
+    /// <summary>The cached access token or <see cref="Refused"/>; null when the value wasn't stored under this key (or is damaged).</summary>
+    private string? Unprotect(string key, string cached)
+    {
+        try
+        {
+            var value = _protector.CreateProtector(key).Unprotect(cached);
+            return value == Refused ? Refused : value.StartsWith(TokenPrefix, StringComparison.Ordinal) ? value[TokenPrefix.Length..] : null;
+        }
+        catch (CryptographicException)
+        {
+            return null;
         }
     }
 

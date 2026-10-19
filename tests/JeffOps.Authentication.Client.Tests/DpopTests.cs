@@ -48,6 +48,16 @@ public sealed class DpopProofValidatorTests
     }
 
     [Fact]
+    public void A_proof_dated_more_than_a_minute_ahead_is_refused()
+    {
+        using var key = new DpopKey();
+        var now = DateTimeOffset.UtcNow;
+
+        DpopProofValidator.Validate(key.Proof("GET", Target.AbsoluteUri, issuedAt: now.AddSeconds(50)), "GET", Target, now, TimeSpan.FromMinutes(5)).Error.ShouldBeNull("clock skew");
+        DpopProofValidator.Validate(key.Proof("GET", Target.AbsoluteUri, issuedAt: now.AddMinutes(4)), "GET", Target, now, TimeSpan.FromMinutes(5)).Error.ShouldNotBeNull();
+    }
+
+    [Fact]
     public void A_proof_signed_by_another_key_than_its_jwk_is_refused()
     {
         using var key = new DpopKey();
@@ -132,6 +142,24 @@ public sealed class DpopResourceServerTests
         refused.Headers.WwwAuthenticate.ToString().ShouldContain("DPoP");
     }
 
+    [Fact]
+    public async Task One_key_can_t_present_more_than_its_quota_of_proofs_a_minute()
+    {
+        await using var app = await StartAsync(proofsPerKeyPerMinute: 3);
+        using var greedy = new DpopKey();
+        using var other = new DpopKey();
+        var greedyToken = Token(greedy.Thumbprint);
+        var otherToken = Token(other.Thumbprint);
+
+        for (var i = 0; i < 3; i++)
+        {
+            (await SendAsync(app, "DPoP", greedyToken, greedy.Proof("GET", "http://localhost/me", greedyToken))).StatusCode.ShouldBe(HttpStatusCode.OK);
+        }
+
+        (await SendAsync(app, "DPoP", greedyToken, greedy.Proof("GET", "http://localhost/me", greedyToken))).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+        (await SendAsync(app, "DPoP", otherToken, other.Proof("GET", "http://localhost/me", otherToken))).StatusCode.ShouldBe(HttpStatusCode.OK, "other clients aren't affected");
+    }
+
     private static string Token(string? jkt)
     {
         var claims = new Dictionary<string, object> { ["sub"] = Guid.NewGuid().ToString() };
@@ -169,7 +197,7 @@ public sealed class DpopResourceServerTests
         (await SendAsync(app, "DPoP", token, key.Proof("GET", "http://localhost/me", token, nonce: "made-up"))).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
     }
 
-    private static async Task<WebApplication> StartAsync(DpopMode mode = DpopMode.Allowed, bool nonces = false)
+    private static async Task<WebApplication> StartAsync(DpopMode mode = DpopMode.Allowed, bool nonces = false, int proofsPerKeyPerMinute = 3_000)
     {
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
         builder.WebHost.UseTestServer();
@@ -180,7 +208,10 @@ public sealed class DpopResourceServerTests
             ["JeffOps:Authentication:Audiences:0"] = "api",
             ["JeffOps:Authentication:Dpop"] = mode.ToString(),
             ["JeffOps:Authentication:DpopNonces"] = nonces ? "true" : "false",
+            ["JeffOps:Authentication:DpopProofsPerKeyPerMinute"] = proofsPerKeyPerMinute.ToString(System.Globalization.CultureInfo.InvariantCulture),
         });
+        // A clock that stands still, so a test's requests never straddle a minute (the per-key quota counts per minute).
+        builder.Services.AddSingleton<TimeProvider>(new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.UtcNow));
         builder.Services.AddJeffOpsAuthenticationClient(builder.Configuration);
         builder.Services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
         {

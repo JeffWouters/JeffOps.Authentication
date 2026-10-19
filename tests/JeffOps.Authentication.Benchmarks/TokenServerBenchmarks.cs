@@ -303,6 +303,7 @@ internal sealed class BenchHost : IAsyncDisposable
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["JeffOps:TokenServer:Issuer"] = "https://localhost/",
+            ["JeffOps:RateLimiting:Enabled"] = "false",
             ["JeffOps:TokenServer:ApiScopes:api:0"] = "api",
             ["JeffOps:TokenServer:RefreshTokenReuseLeeway"] = "00:00:00",
             ["JeffOps:TokenServer:Clients:0:ClientId"] = BffClient,
@@ -327,6 +328,7 @@ internal sealed class BenchHost : IAsyncDisposable
         });
         builder.Services.AddSingleton<ITenantDirectory>(tenants);
         var authentication = builder.Services.AddJeffOpsAuthentication(builder.Configuration);
+        JeffOps.Authentication.Testing.TestKeyRing.AddTestKeyRing(builder.Services);
         if (TestDatabase.SqlServer)
         {
             authentication.AddSqlServerPersistence(migrateOnStartup: true);

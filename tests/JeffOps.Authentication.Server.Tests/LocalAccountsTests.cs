@@ -363,6 +363,44 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
         credential.FailedAttempts.ShouldBeGreaterThan(0, "the attempts stand until the emailed code is entered");
     }
 
+    [Fact]
+    public async Task Sign_in_attempts_for_one_account_are_rate_limited()
+    {
+        var host = await StartAsync(new() { ["JeffOps:RateLimiting:SignInPerAccount:PermitLimit"] = "3" });
+        await RegisterVerifiedAsync(host, "ada@example.com");
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            using var browser = new Browser(host);
+            (await LoginAsync(browser, "ada@example.com", "a wrong passphrase guess")).ShouldContain("error=invalid_credentials");
+        }
+
+        using (var browser = new Browser(host))
+        {
+            (await LoginAsync(browser, "ADA@example.com", Password)).ShouldContain("error=too_many_requests", customMessage: "the same account, however written");
+        }
+
+        // A minute later the account may try again; other accounts never waited.
+        host.Time.Advance(TimeSpan.FromMinutes(1));
+        using (var browser = new Browser(host))
+        {
+            (await LoginAsync(browser, "ada@example.com", Password)).ShouldNotContain("error=");
+        }
+    }
+
+    [Fact]
+    public async Task Requests_that_send_mail_to_one_address_are_rate_limited()
+    {
+        var host = await StartAsync(new() { ["JeffOps:RateLimiting:MailPerRecipient:PermitLimit"] = "2" });
+        await RegisterVerifiedAsync(host, "ada@example.com");   // registering mailed ada once
+
+        (await PostJsonAsync(host, "account/local/password/forgot", new { email = "ada@example.com" })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        var limited = await PostJsonAsync(host, "account/local/password/forgot", new { email = "ada@example.com" });
+        limited.StatusCode.ShouldBe(HttpStatusCode.TooManyRequests);
+        limited.Headers.RetryAfter.ShouldNotBeNull();
+        (await PostJsonAsync(host, "account/local/password/forgot", new { email = "bea@example.com" })).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+    }
+
     // ---- Security review proofs (docs/security-review.md) ---------------------------------------------------------------
 
     [Fact]

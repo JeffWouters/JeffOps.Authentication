@@ -361,6 +361,10 @@ app.Run();
    - `Directory.Build.targets` fails the build when a banned package id is referenced.
    - A licence scan fails on any licence not on the allow-list: the architecture test `Every_resolved_package_has_a_permissive_licence` reads every restored package's nuspec (direct and transitive) and checks its licence expression; packages that only carry a licence URL are allowed when the URL is on a reviewed list. No third-party scanning tool is needed.
    - It covers the reference hosts and samples too, and judges a package by what it ships: a package restored with every asset excluded (`ExcludeAssets="all"`) counts as not shipped.
+   - Supply chain: `nuget.config` maps every package to nuget.org (no other feed can substitute one); every project
+     restores with a lock file (`packages.lock.json`), in locked mode in CI. Workflow actions are pinned to commit SHAs
+     (Dependabot keeps them current), checkouts don't keep the token, a release runs only for a `vX.Y.Z[-pre]` tag on a
+     commit of `main`, and published packages get signed build provenance (`actions/attest-build-provenance`).
    - No exceptions (D24). SQL Server support uses `Microsoft.Data.SqlClient` 7.x, which moved Entra authentication (and the MSAL broker's proprietary native interop) to an optional package. SqlClient's native networking (`Microsoft.Data.SqlClient.SNI.runtime`, Microsoft licence terms) is excluded in every project here that resolves SqlClient (root `Directory.Build.props`), and the TokenServer host turns on SqlClient's managed networking (`Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows`). **For consumers:** SqlClient still brings SNI.runtime on Windows; the `*.SqlServer` packages can't remove it from your graph. To keep it out, add `<PackageReference Include="Microsoft.Data.SqlClient.SNI.runtime" ExcludeAssets="all" PrivateAssets="all" />` to your host and `<RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />` (Linux and macOS always use managed networking). The packages' design-time factories turn the switch on for `dotnet ef` themselves; the hosts' `migrateOnStartup` path needs nothing extra. **Cost with Windows authentication:** under managed networking with `Integrated Security`/`Trusted_Connection`, SqlClient looks up the process's Windows identity (`Environment.UserDomainName`, `UserName`) on every connection it takes from the pool to pick the pool: about 0.17 ms on one thread and 0.5 ms with 16 contending, which profiled at 12–28% of the token server's CPU under load (a sign-in takes about twelve connections, a refresh seven). SQL or Microsoft Entra authentication doesn't pay it; production deployments should prefer them.
 
 **Banned** (non-exhaustive)
@@ -552,6 +556,11 @@ authorization management API never treats a PAT-derived caller as Root.
 - `ITokenKeyProvider` is an Application port in pure BCL terms (`RSA`), so the Key Vault plug-in implements it with an `RSA` whose signing happens in the vault. Encryption keys (refresh tokens, codes) always come from the database store.
 - Encryption keys (refresh tokens) are separate from signing keys and always rotate with overlap.
 - Dev keys are refused outside `Development`.
+- **Several instances (2026-10):** the first keys are created in a serializable transaction, so instances starting on an
+  empty store agree on one key of each kind; rotation runs in one too. Each rotation check reloads when storage holds other
+  active keys than the ones loaded (another instance rotated). A key this instance can't decrypt is skipped and logged,
+  never retired; when none of a kind can be decrypted, loading fails. Outside Development the Data Protection key ring
+  must be persisted and encrypted at rest (`KeyManagementOptions.XmlRepository` and `XmlEncryptor`), or startup fails.
 
 ### 7.6 Session revalidation (kept as-is, generalised)
 
@@ -998,11 +1007,20 @@ Non-negotiable defaults. Each has a test.
 - [ ] Data Protection key ring persisted and wrapped by a KEK (certificate or Key Vault); fail closed outside Development.
 - [ ] Forwarded headers trusted only from configured proxies; fail closed when unconfigured outside Development.
 - [ ] Tenant headers stripped at the edge, trusted only from service tokens.
-- [ ] Rate limiting partitions: preflight → stream → tenant → auth → session → IP.
+- [x] Rate limiting, on by default (`JeffOps:RateLimiting`, D28): sign-in per address and per account, mail per address and per recipient, protocol endpoints per address and per client, SCIM per token. Per instance; 429 with `Retry-After`.
 - [ ] Failed sign-ins audited with a rate budget.
 - [x] NuGet audit covers transitive packages; vulnerable transitive versions are pinned centrally (`CentralPackageTransitivePinningEnabled`).
 
 ### 16.1 As built (2026-10 hardening, access and federation)
+
+- **Clients** follow configuration exactly: a client removed from configuration is deleted at startup (with its
+  authorizations and tokens), and is never found meanwhile.
+- **BFF and PAT caches:** each cached value is protected with its cache key in the Data Protection purpose, so a value
+  copied under another key (another session, another PAT's hash) doesn't decrypt. The per-user session index is protected
+  the same way.
+- **DPoP at resource services:** a proof's `iat` may be at most a minute ahead (`DpopProofValidator.MaxFutureSkew`), and one
+  key may present `DpopProofsPerKeyPerMinute` proofs a minute (3,000) per instance, so one client can't fill the replay
+  cache all clients share.
 
 - **Delegated administration** is held to `ManagementOptions.DelegationCeiling`: a token acting for a tenant through
   delegation (`dlg_scope`) administers only the permissions the ceiling and the delegation both allow.
@@ -1084,7 +1102,7 @@ These requirements differ from the origin implementation. They are listed here s
 | D25 | Tokens for the token server's own APIs | any token it issued / a dedicated audience | **Decided 2026-10-19: a dedicated audience (`jeffops-account`) for the reserved `account` scope, never next to another audience;** clients allowed the scope get it by narrowing a refresh, and the BFF does that for `/bff/account/*`. |
 | D26 | Accounts a tenant's provider may sign in as | any provisioned account / accounts provisioning created | **Decided 2026-10-19: only accounts the tenant's provisioning created and that have nothing else;** any other existing account is linked after its owner signs in their usual way once (pending link, audited, notified). Verified domains are re-checked daily and can be revoked by operators. |
 | D27 | Personal access tokens of platform administrators | allowed with a ceiling / none | **Decided 2026-10-19: none.** Root acts interactively; a PAT-derived token is never Root, and `TrustForRootTokens` goes. |
-| D28 | Where rate limiting lives | host only / library, on by default | **Decided 2026-10-19: in the library** (`JeffOps.Security.AspNetCore` partitions, applied by each module to its own routes as endpoint filters, configurable). |
+| D28 | Where rate limiting lives | host only / library, on by default | **Decided 2026-10-19: in the library** (`JeffOps.Security.AspNetCore` partitions, applied by each module to its own routes as endpoint filters, configurable). **As built:** the limiter (`RequestRateLimiter`, `RateLimitOptions`) lives in `JeffOps.Authentication.Abstractions`, because modules may not reference Common packages (§6.3); local accounts and SCIM apply it as endpoint filters, the protocol endpoints in an OpenIddict request handler that runs before client authentication. |
 | D29 | Step-up under impersonation | inherited from the actor / never | **Decided 2026-10-19: never;** an impersonation token carries no `step_up`, so step-up actions are refused while impersonating; products may still list further refused permissions. |
 | D30 | Release protections | workflow only / repository settings too | **Decided 2026-10-19:** actions pinned by commit, tag-on-`main` check and provenance in the workflow; required reviewers, deployment-tag rules and a `v*` tag ruleset in the repository settings (owner). |
 | D31 | Security fixes before the first release | push as they land / one coordinated release | **Decided 2026-10-19: one coordinated push** with the hosted deployment updated straight after; the review report stays private. |

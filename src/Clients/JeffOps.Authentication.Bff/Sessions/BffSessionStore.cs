@@ -72,15 +72,16 @@ public sealed class SessionStoreUnavailableException : Exception
 /// <summary>
 /// Stores sessions in <see cref="IDistributedCache"/> (Redis in production). The session id in the cookie is 256 random bits;
 /// the cache key is its SHA-256, so a cache reader can't recover cookies; the value is encrypted with Data Protection, so
-/// tokens never sit in clear in the cache. Every entry expires at the session's absolute deadline and after the idle timeout.
-/// A per-user index lets a back-channel logout end all of a user's sessions.
+/// tokens never sit in clear in the cache, and bound to its key (the key is part of the protector's purpose), so a value
+/// copied under another key doesn't decrypt there. Every entry expires at the session's absolute deadline and after the idle
+/// timeout. A per-user index, protected the same way, lets a back-channel logout end all of a user's sessions.
 /// </summary>
 public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProvider dataProtection, IOptions<BffOptions> options, TimeProvider time)
 {
     private const string SessionPrefix = "jeffops:bff:sid:";
     private const string SubjectPrefix = "jeffops:bff:sub:";
 
-    private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.Bff.Session");
+    private readonly IDataProtector _protector = dataProtection.CreateProtector("JeffOps.Bff.Session.v2");
 
     /// <summary>A new session id: 256 random bits as lowercase hex. It goes in the cookie; the store keys on its hash.</summary>
     public static string NewId() => Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
@@ -119,7 +120,7 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
         BffSession? session;
         try
         {
-            session = JsonSerializer.Deserialize<BffSession>(_protector.Unprotect(blob));
+            session = JsonSerializer.Deserialize<BffSession>(ProtectorFor(key).Unprotect(blob));
         }
         catch (CryptographicException)
         {
@@ -218,7 +219,7 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
         {
             await cache.SetStringAsync(
                 KeyOf(id),
-                _protector.Protect(JsonSerializer.Serialize(session)),
+                ProtectorFor(KeyOf(id)).Protect(JsonSerializer.Serialize(session)),
                 new DistributedCacheEntryOptions
                 {
                     AbsoluteExpirationRelativeToNow = remaining,
@@ -250,7 +251,7 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
         {
             await cache.SetStringAsync(
                 SubjectKeyOf(subject),
-                JsonSerializer.Serialize(keys),
+                ProtectorFor(SubjectKeyOf(subject)).Protect(JsonSerializer.Serialize(keys)),
                 new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = options.Value.SessionLifetime },
                 cancellationToken).ConfigureAwait(false);
         }
@@ -262,9 +263,25 @@ public sealed class BffSessionStore(IDistributedCache cache, IDataProtectionProv
 
     private async Task<HashSet<string>> SessionKeysAsync(string subject, CancellationToken cancellationToken)
     {
-        var json = await ReadAsync(SubjectKeyOf(subject), cancellationToken).ConfigureAwait(false);
-        return json is null ? [] : JsonSerializer.Deserialize<HashSet<string>>(json) ?? [];
+        var key = SubjectKeyOf(subject);
+        var blob = await ReadAsync(key, cancellationToken).ConfigureAwait(false);
+        if (blob is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<HashSet<string>>(ProtectorFor(key).Unprotect(blob)) ?? [];
+        }
+        catch (Exception exception) when (exception is CryptographicException or JsonException)
+        {
+            return []; // not this index's: another user's copied here, or tampered with
+        }
     }
+
+    /// <summary>The protector for the value stored under <paramref name="key"/>: it decrypts only what was stored there.</summary>
+    private IDataProtector ProtectorFor(string key) => _protector.CreateProtector(key);
 
     private async Task<string?> ReadAsync(string key, CancellationToken cancellationToken)
     {

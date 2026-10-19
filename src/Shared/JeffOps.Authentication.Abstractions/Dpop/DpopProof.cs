@@ -44,6 +44,12 @@ public static class DpopProofValidator
     public static readonly TimeSpan ReplayClockSkew = TimeSpan.FromMinutes(1);
 
     /// <summary>
+    /// How far ahead of the validating clock a proof's <c>iat</c> may be: clock skew only. A proof dated later would stay in the
+    /// replay cache that much longer, so one client could fill it faster.
+    /// </summary>
+    public static readonly TimeSpan MaxFutureSkew = TimeSpan.FromSeconds(60);
+
+    /// <summary>
     /// Imported public keys, by RFC 7638 thumbprint (which covers exactly the key material), so a client's key is turned into
     /// a key object once rather than for every proof. Instances aren't shared between concurrent checks: each check takes one
     /// from a slot and puts it back. Bounded: about <see cref="MaxCachedKeys"/> keys and <see cref="MaxInstancesPerKey"/>
@@ -129,7 +135,8 @@ public static class DpopProofValidator
 
             var nowSeconds = now.ToUnixTimeSeconds();
             var windowSeconds = (long)window.TotalSeconds;
-            if (iat > nowSeconds + windowSeconds || iat < nowSeconds - windowSeconds)
+            var futureSeconds = Math.Min(windowSeconds, (long)MaxFutureSkew.TotalSeconds);
+            if (iat > nowSeconds + futureSeconds || iat < nowSeconds - windowSeconds)
             {
                 return (null, "The DPoP proof is too old or from the future.");
             }

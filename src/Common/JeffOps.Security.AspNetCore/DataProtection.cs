@@ -34,6 +34,12 @@ public sealed class DataProtectionSettings
 
     /// <summary>Password of the earlier certificates, when they share one.</summary>
     public string? PreviousKekCertificatesPassword { get; set; }
+
+    /// <summary>
+    /// A directory to persist the key ring in, shared by every instance (for example a mounted file share). Leave it empty
+    /// and call <see cref="DataProtectionExtensions.PersistKeysToRedis"/> (or another PersistKeysTo...) instead.
+    /// </summary>
+    public string? KeyDirectory { get; set; }
 }
 
 /// <summary>Registers Data Protection for a JeffOps host.</summary>
@@ -76,6 +82,11 @@ public static class DataProtectionExtensions
         if (decryption.Length > 0)
         {
             builder.UnprotectKeysWithAnyCertificate(decryption);
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.KeyDirectory))
+        {
+            builder.PersistKeysToFileSystem(new DirectoryInfo(settings.KeyDirectory));
         }
 
         return builder;

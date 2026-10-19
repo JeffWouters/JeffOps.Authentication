@@ -60,17 +60,23 @@ internal sealed class ClientSnapshots(TimeProvider time)
 /// <summary>
 /// OpenIddict's application store, reading a client by id from <see cref="ClientSnapshots"/> when it was read in the last
 /// minute: the copy is attached to this request's context (unchanged), so OpenIddict and the token store find it there
-/// and nothing is read. Every write goes to the database and drops the snapshot.
+/// and nothing is read. Every write goes to the database and drops the snapshot. A client id that isn't configured is never
+/// found, even while the database still holds it (another replica, or before startup removed it).
 /// </summary>
 internal sealed class CachedApplicationStore(
     IMemoryCache cache,
     IOpenIddictEntityFrameworkCoreContext context,
     IOptionsMonitor<OpenIddictEntityFrameworkCoreOptions> options,
+    IOptions<JeffOps.Authentication.Application.TokenServerOptions> tokenServer,
     ClientSnapshots snapshots) : OpenIddictEntityFrameworkCoreApplicationStore(cache, context, options)
 {
     public override async ValueTask<OpenIddictEntityFrameworkCoreApplication?> FindByClientIdAsync(string identifier, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(identifier);
+        if (JeffOps.Authentication.Application.Federation.ClientProviders.Find(tokenServer.Value, identifier) is null)
+        {
+            return null;
+        }
         var db = await Context.GetDbContextAsync(cancellationToken).ConfigureAwait(false);
         if (snapshots.Find(identifier) is { } snapshot)
         {

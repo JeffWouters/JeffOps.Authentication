@@ -1184,6 +1184,18 @@ public static partial class ScimEndpoints
             var http = context.HttpContext;
             var header = http.Request.Headers.Authorization.ToString();
             var secret = header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? header[7..].Trim() : null;
+
+            // Rate limited per token (its hash) before it is looked up: one tenant's provisioning can't swamp the server.
+            var limits = http.RequestServices.GetRequiredService<Microsoft.Extensions.Options.IOptions<Abstractions.RateLimiting.RateLimitOptions>>().Value;
+            if (limits.Enabled && !http.RequestServices.GetRequiredService<Abstractions.RateLimiting.RequestRateLimiter>().TryAcquire(
+                    limits.ScimPerToken,
+                    Abstractions.RateLimiting.RateLimitPartitions.For("scim-token", Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(secret ?? string.Empty)))),
+                    out var wait))
+            {
+                http.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return Error(StatusCodes.Status429TooManyRequests, null, "Too many requests. Try again later.");
+            }
+
             var tenant = await http.RequestServices.GetRequiredService<ScimTokenAuthenticator>().AuthenticateAsync(secret, http.RequestAborted).ConfigureAwait(false);
             if (tenant is null)
             {

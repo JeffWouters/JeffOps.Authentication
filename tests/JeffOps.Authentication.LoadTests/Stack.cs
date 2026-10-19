@@ -150,6 +150,8 @@ internal sealed class Stack : IAsyncDisposable
         var settings = new Dictionary<string, string?>
         {
             ["JeffOps:TokenServer:Issuer"] = Issuer,
+            // The harness measures throughput from one address: the per-address limits would cap it.
+            ["JeffOps:RateLimiting:Enabled"] = "false",
             ["JeffOps:TokenServer:ApiScopes:api:0"] = "api",
             ["JeffOps:TokenServer:RefreshTokenReuseLeeway"] = "00:00:00",
             ["ConnectionStrings:authentication"] = connectionString,
@@ -190,6 +192,7 @@ internal sealed class Stack : IAsyncDisposable
         Tenants.Latency = options.DirectoryLatency;
         builder.Services.AddSingleton<ITenantDirectory>(Tenants);
         var authentication = builder.Services.AddJeffOpsAuthentication(builder.Configuration);
+        JeffOps.Authentication.Testing.TestKeyRing.AddTestKeyRing(builder.Services);
         var latency = new LatencyInterceptor(options.DatabaseLatency);
         if (TestDatabase.SqlServer)
         {

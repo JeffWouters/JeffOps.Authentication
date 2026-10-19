@@ -68,26 +68,27 @@ public static class LocalAccountEndpointRouteBuilderExtensions
         var root = endpoints.MapGroup(Routes).WithTags("Local accounts").AddEndpointFilter<EnabledFilter>();
 
         var open = root.MapGroup(string.Empty).AllowAnonymous();
-        open.MapPost("login", LoginAsync).DisableAntiforgery().ExcludeFromDescription();
-        open.MapPost("login/code", CodeAsync).DisableAntiforgery().ExcludeFromDescription();
-        open.MapPost("login/code/resend", ResendCodeAsync).DisableAntiforgery().ExcludeFromDescription();
+        open.MapPost("login", LoginAsync).DisableAntiforgery().ExcludeFromDescription()
+            .SignInLimited(context => BackToLogin(LocalOrRoot(context.Request.Form["returnUrl"].ToString()), context.Request.Form["email"].ToString(), "too_many_requests"));
+        open.MapPost("login/code", CodeAsync).DisableAntiforgery().ExcludeFromDescription().SignInLimited();
+        open.MapPost("login/code/resend", ResendCodeAsync).DisableAntiforgery().ExcludeFromDescription().MailLimited();
 
         // The hosted pages' forms (account/verify-email, account/forgot-password, account/reset-password).
         open.MapPost("verify-email/form", VerifyEmailFormAsync).DisableAntiforgery().ExcludeFromDescription();
-        open.MapPost("password/forgot/form", ForgotPasswordFormAsync).DisableAntiforgery().ExcludeFromDescription();
+        open.MapPost("password/forgot/form", ForgotPasswordFormAsync).DisableAntiforgery().ExcludeFromDescription().MailLimited();
         open.MapPost("password/reset/form", ResetPasswordFormAsync).DisableAntiforgery().ExcludeFromDescription();
         open.MapPost("register", async (RegisterRequest request, ICommandHandler<RegisterLocalAccountCommand> handler, HttpContext context) =>
-            Accepted(await handler.HandleAsync(new RegisterLocalAccountCommand(request.Email, request.Password, request.DisplayName), context.RequestAborted).ConfigureAwait(false)));
+            Accepted(await handler.HandleAsync(new RegisterLocalAccountCommand(request.Email, request.Password, request.DisplayName), context.RequestAborted).ConfigureAwait(false))).MailLimited();
         open.MapPost("verify-email", async (TokenRequest request, ICommandHandler<VerifyEmailCommand> handler, HttpContext context) =>
             NoContent(await handler.HandleAsync(new VerifyEmailCommand(request.Token), context.RequestAborted).ConfigureAwait(false)));
         open.MapPost("verify-email/resend", async (EmailRequest request, ICommandHandler<ResendVerificationCommand> handler, HttpContext context) =>
-            Accepted(await handler.HandleAsync(new ResendVerificationCommand(request.Email), context.RequestAborted).ConfigureAwait(false)));
+            Accepted(await handler.HandleAsync(new ResendVerificationCommand(request.Email), context.RequestAborted).ConfigureAwait(false))).MailLimited();
         open.MapPost("password/forgot", async (EmailRequest request, ICommandHandler<RequestPasswordResetCommand> handler, HttpContext context) =>
-            Accepted(await handler.HandleAsync(new RequestPasswordResetCommand(request.Email), context.RequestAborted).ConfigureAwait(false)));
+            Accepted(await handler.HandleAsync(new RequestPasswordResetCommand(request.Email), context.RequestAborted).ConfigureAwait(false))).MailLimited();
         open.MapPost("password/reset", async (ResetPasswordRequest request, ICommandHandler<ResetPasswordCommand> handler, HttpContext context) =>
             NoContent(await handler.HandleAsync(new ResetPasswordCommand(request.Token, request.NewPassword), context.RequestAborted).ConfigureAwait(false)));
-        open.MapPost("passkey/login/options", PasskeyLoginOptionsAsync);
-        open.MapPost("passkey/login", PasskeyLoginAsync);
+        open.MapPost("passkey/login/options", PasskeyLoginOptionsAsync).SignInLimited();
+        open.MapPost("passkey/login", PasskeyLoginAsync).SignInLimited();
 
         // Only access tokens issued for the token server's own APIs (the account audience), never a token meant for an API.
         const string tokenPolicy = JeffOps.Authentication.Application.AccountApi.PolicyName;

@@ -9,8 +9,8 @@ namespace JeffOps.Authentication.Infrastructure.Server;
 
 /// <summary>
 /// Runs database initializers (for example migrations) and then creates or updates the configured scopes and clients
-/// (docs/DESIGN.md §7.7). Client permissions follow configuration exactly: a grant removed from configuration is removed
-/// from the client.
+/// (docs/DESIGN.md §7.7). Clients follow configuration exactly: a grant removed from configuration is removed from the
+/// client, and a client removed from configuration is deleted, with its authorizations and tokens.
 /// </summary>
 internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<TokenServerOptions> options, IHostEnvironment environment) : IHostedService
 {
@@ -30,6 +30,30 @@ internal sealed class AuthenticationStartup(IServiceProvider services, IOptions<
         foreach (var client in options.Value.Clients)
         {
             await SeedClientAsync(applications, client, cancellationToken).ConfigureAwait(false);
+        }
+
+        await RemoveUnconfiguredClientsAsync(applications, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Deletes clients no longer configured: their redirect URIs may now belong to someone else, and their secrets and
+    /// refresh tokens must stop working.
+    /// </summary>
+    private async Task RemoveUnconfiguredClientsAsync(IOpenIddictApplicationManager applications, CancellationToken cancellationToken)
+    {
+        var configured = options.Value.Clients.Select(client => client.ClientId).ToHashSet(StringComparer.Ordinal);
+        var removed = new List<object>();
+        await foreach (var application in applications.ListAsync(count: null, offset: null, cancellationToken).ConfigureAwait(false))
+        {
+            if (await applications.GetClientIdAsync(application, cancellationToken).ConfigureAwait(false) is not { } clientId || !configured.Contains(clientId))
+            {
+                removed.Add(application);
+            }
+        }
+
+        foreach (var application in removed)
+        {
+            await applications.DeleteAsync(application, cancellationToken).ConfigureAwait(false);
         }
     }
 

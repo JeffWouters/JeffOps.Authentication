@@ -23,13 +23,29 @@ jobs:
     name: Build, test, pack
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+
+      # A release is built only from a well-formed version tag on a commit of main: a tag on any other commit (a branch,
+      # a fork's push, a modified copy) fails here, before anything is packed.
+      - name: Check release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not a version tag (vMAJOR.MINOR.PATCH[-prerelease])."
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main."
+            exit 1
+          fi
 
       - name: Version
         id: version
@@ -40,8 +56,9 @@ jobs:
             echo "args=-p:VersionSuffix=ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Exactly the packages in the lock files (packages.lock.json), from the sources nuget.config maps them to.
       - name: Restore
-        run: dotnet restore JeffOps.Authentication.slnx
+        run: dotnet restore JeffOps.Authentication.slnx --locked-mode
 
       # Release is the strict configuration: analyzers, code style, warnings as errors, transitive NuGet audit.
       - name: Build
@@ -56,7 +73,7 @@ jobs:
           ${{ steps.version.outputs.args }}
           -p:JeffOpsRepositoryUrl=${{ github.server_url }}/${{ github.repository }}
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: packages
           path: artifacts/*.*nupkg
@@ -82,9 +99,11 @@ jobs:
       JEFFOPS_TEST_DATABASE: SqlServer
       JEFFOPS_TEST_SQLSERVER: Server=localhost,1433;User Id=sa;Password=Ci-Only-Passw0rd!;TrustServerCertificate=true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
 
@@ -107,13 +126,19 @@ jobs:
     permissions:
       contents: read
       id-token: write # Trusted Publishing: GitHub's OIDC token is exchanged for a one-hour NuGet key; no stored secret.
+      attestations: write # Build provenance for the published packages.
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: packages
           path: artifacts
 
-      - uses: actions/setup-dotnet@v6
+      # Signed build provenance (SLSA): anyone can check a package came from this workflow, at this commit.
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: artifacts/*.nupkg
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.0.x'
 
@@ -121,7 +146,7 @@ jobs:
       # environment nuget). NUGET_USER is the nuget.org profile name (a repository variable), not an email address.
       - name: NuGet login
         id: login
-        uses: NuGet/login@v1
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
         with:
           user: ${{ vars.NUGET_USER }}
 

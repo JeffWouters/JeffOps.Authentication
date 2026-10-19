@@ -83,6 +83,18 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddSingleton<IEventPublisher, InProcessEventPublisher>();
 
         services.AddDataProtection();
+
+        // Outside Development the key ring must persist where every instance finds it, encrypted at rest (docs/DESIGN.md §16):
+        // it protects the token keys, the sign-in cookie and every sealed value, and one kept in memory signs everyone out at
+        // each restart (and differs per instance).
+        services.AddOptions<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>()
+            .Validate<IHostEnvironment>(
+                (keys, environment) => environment.IsDevelopment() || (keys.XmlRepository is not null && keys.XmlEncryptor is not null),
+                "Outside Development, the Data Protection key ring must be persisted (PersistKeysTo...) and protected at rest (ProtectKeysWith...). " +
+                "AddJeffOpsDataProtection with JeffOps:DataProtection:KekCertificate and KeyDirectory (or PersistKeysToRedis) does both.")
+            .ValidateOnStart();
+        services.AddOptions<Abstractions.RateLimiting.RateLimitOptions>().Bind(configuration.GetSection(Abstractions.RateLimiting.RateLimitOptions.SectionName));
+        services.TryAddSingleton(provider => new Abstractions.RateLimiting.RequestRateLimiter(provider.GetService<TimeProvider>() ?? TimeProvider.System));
         services.AddMemoryCache();
         services.AddAuthorization(); // The endpoints require it; idempotent when the host adds its own policies.
         services.TryAddEnumerable(ServiceDescriptor.Singleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, AccountAudienceHandler>());
@@ -171,6 +183,7 @@ public static class AuthenticationServiceCollectionExtensions
 
                 BoundAccessTokens.Register(server);
                 PushedAuthorizationDpop.Register(server);
+                ProtocolRateLimits.Register(server);
                 server.UseAspNetCore()
                     .EnableAuthorizationEndpointPassthrough()
                     .EnableTokenEndpointPassthrough()

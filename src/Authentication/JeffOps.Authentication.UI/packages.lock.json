@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0": {
+      "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
+        "type": "Direct",
+        "requested": "[5.6.0, )",
+        "resolved": "5.6.0",
+        "contentHash": "Kcobt3pnOdO0A+6CKiMHZdTEluJpsfxiV20axtZdmfBQnDmiWTKPJADlgAfdTuKNAnVarrkJa0UEGwuOo91muw=="
+      },
+      "jeffops.authentication.abstractions": {
+        "type": "Project"
+      },
+      "jeffops.authentication.application": {
+        "type": "Project",
+        "dependencies": {
+          "JeffOps.Authentication.Abstractions": "[0.1.0-alpha, )",
+          "JeffOps.Authentication.Domain": "[0.1.0-alpha, )"
+        }
+      },
+      "jeffops.authentication.domain": {
+        "type": "Project",
+        "dependencies": {
+          "JeffOps.Authentication.SharedKernel": "[0.1.0-alpha, )"
+        }
+      },
+      "jeffops.authentication.sharedkernel": {
+        "type": "Project"
+      }
+    }
+  }
+}

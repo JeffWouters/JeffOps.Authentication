@@ -37,6 +37,11 @@ First public preview (`0.1.0-alpha`).
   `prompt=login` and `max_age` reach upstream providers, and their older authentication is refused. The email-domain
   allow-list needs verified emails. SAML metadata downloads are bounded, and cached metadata is bound to its source.
   Providers without certificates are refused. Suspended tenants' SCIM, providers and domains stop working.
+- Rate limits are on by default (`JeffOps:RateLimiting`). Clients removed from configuration are deleted. Token keys stay
+  consistent across instances, and outside Development the Data Protection key ring must be persisted and encrypted
+  (`JeffOps:DataProtection:KeyDirectory` is new). BFF and PAT cache entries are bound to their keys: BFF users sign in once
+  more after upgrading. DPoP proofs may be dated at most a minute ahead, with a per-key quota at resource services. CI pins
+  actions to commits, restores from lock files and nuget.org only, releases only tags on `main`, and attests provenance.
 
 Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
 details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the

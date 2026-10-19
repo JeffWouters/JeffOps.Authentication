@@ -76,6 +76,8 @@ public static class LocalAccountsServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddOptions<LocalAccountOptions>().Bind(configuration.GetSection(LocalAccountOptions.SectionName));
+        services.AddOptions<Abstractions.RateLimiting.RateLimitOptions>().Bind(configuration.GetSection(Abstractions.RateLimiting.RateLimitOptions.SectionName));
+        services.TryAddSingleton(provider => new Abstractions.RateLimiting.RequestRateLimiter(provider.GetService<TimeProvider>() ?? TimeProvider.System));
         services.TryAddScoped<ILocalCredentialRepository, LocalCredentialRepository>();
         services.Replace(ServiceDescriptor.Scoped<JeffOps.Authentication.Application.Federation.IAccountCredentials, LocalAccountCredentials>());
         services.TryAddScoped<IAccountTokenRepository, AccountTokenRepository>();

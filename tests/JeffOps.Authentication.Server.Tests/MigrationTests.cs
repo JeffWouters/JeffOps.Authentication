@@ -28,6 +28,7 @@ public sealed class MigrationTests
         var services = new ServiceCollection();
         services.AddSingleton<IConfiguration>(configuration);
         services.AddJeffOpsAuthentication(configuration).AddSqlServerPersistence();
+        JeffOps.Authentication.Testing.TestKeyRing.AddTestKeyRing(services);
         var modules = new AuthenticationBuilder(services, configuration);
         modules.AddDelegation().AddSqlServerPersistence();
         modules.AddEnterprise().AddSqlServerPersistence();

@@ -281,6 +281,19 @@ public sealed class StartupTests
         }));
 
     [Fact]
+    public async Task A_key_ring_kept_in_memory_fails_startup_outside_development()
+    {
+        var exception = await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(
+            configure: builder => builder.Services.Configure<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>(options =>
+            {
+                options.XmlRepository = null;
+                options.XmlEncryptor = null;
+            })));
+
+        exception.Message.ShouldContain("key ring");
+    }
+
+    [Fact]
     public async Task A_missing_issuer_fails_startup_outside_development() =>
         await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
         {

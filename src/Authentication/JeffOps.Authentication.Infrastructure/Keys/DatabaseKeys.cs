@@ -39,7 +39,9 @@ public sealed class SigningKeyOptions
 /// <summary>
 /// Token keys kept in the database, private keys protected with Data Protection. Signing keys rotate
 /// (<see cref="KeyRotationService"/>); the encryption key (for refresh tokens and codes) is created once. Loads lazily and
-/// creates the first keys itself, so a fresh database works without setup.
+/// creates the first keys itself, so a fresh database works without setup: in a serializable transaction, so replicas
+/// starting together agree on one key of each kind. A key this instance can't decrypt is skipped, never retired (another
+/// instance, with the right key ring, may be using it); when none can be decrypted, loading fails.
 /// </summary>
 public sealed partial class DatabaseKeyStore(
     IServiceScopeFactory scopes,
@@ -76,6 +78,10 @@ public sealed partial class DatabaseKeyStore(
         Load(force: true);
         KeysChanged?.Invoke(this, EventArgs.Empty);
     }
+
+    /// <summary>Whether the keys loaded are exactly the active keys in storage (another instance may have rotated).</summary>
+    public bool IsCurrent(IEnumerable<string> activeKeyIds) =>
+        Volatile.Read(ref _snapshot) is { } snapshot && snapshot.KeyIds.SetEquals(activeKeyIds);
 
     /// <summary>
     /// Notifies listeners when the key that should sign now differs from the one last announced: a pending key's activation
@@ -115,16 +121,20 @@ public sealed partial class DatabaseKeyStore(
 
             using var scope = scopes.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
-            var stored = db.StoredKeys.Where(key => key.RetiredAt == null).ToList();
             var now = time.GetUtcNow();
-
-            var signing = LoadOrCreate(db, stored, KeyUse.Signing, now);
-            var encryption = LoadOrCreate(db, stored, KeyUse.Encryption, now);
-            db.SaveChanges();
+            var (stored, signing, encryption) = KeyTransaction.Run(db, () =>
+            {
+                var stored = db.StoredKeys.Where(key => key.RetiredAt == null).ToList();
+                var signing = LoadOrCreate(db, stored, KeyUse.Signing, now);
+                var encryption = LoadOrCreate(db, stored, KeyUse.Encryption, now);
+                db.SaveChanges();
+                return (stored, signing, encryption);
+            });
 
             var snapshot = new Snapshot(
                 [.. signing.OrderByDescending(pair => pair.Stored.CreatedAt).Select(pair => new SigningKey(pair.Stored.KeyId, pair.Key, pair.Stored.ActivatesAt))],
-                [.. encryption.OrderByDescending(pair => pair.Stored.CreatedAt).Select(pair => pair.Key)]);
+                [.. encryption.OrderByDescending(pair => pair.Stored.CreatedAt).Select(pair => pair.Key)],
+                stored.Select(key => key.KeyId).Concat(signing.Concat(encryption).Select(pair => pair.Stored.KeyId)).ToHashSet(StringComparer.Ordinal));
             Volatile.Write(ref _announcedSigner, CurrentSigner(snapshot.Signing, now));
 
             // Published whole and at once: a reader sees the old keys or the new ones, never none.
@@ -133,11 +143,12 @@ public sealed partial class DatabaseKeyStore(
         }
     }
 
-    private sealed record Snapshot(IReadOnlyList<SigningKey> Signing, IReadOnlyList<RSA> Encryption);
+    private sealed record Snapshot(IReadOnlyList<SigningKey> Signing, IReadOnlyList<RSA> Encryption, HashSet<string> KeyIds);
 
     private List<(StoredKey Stored, RSA Key)> LoadOrCreate(AuthenticationDbContext db, List<StoredKey> stored, KeyUse use, DateTimeOffset now)
     {
         var keys = new List<(StoredKey, RSA)>();
+        var unreadable = 0;
         foreach (var record in stored.Where(key => key.Use == use))
         {
             try
@@ -148,10 +159,17 @@ public sealed partial class DatabaseKeyStore(
             }
             catch (Exception exception) when (exception is CryptographicException or FormatException)
             {
-                // The Data Protection key ring that protected it is gone: the key is unusable, retire it.
+                // Not retired: the key ring may only be missing here (a misconfigured instance), not everywhere.
                 LogUnreadableKey(logger, exception, record.KeyId);
-                record.Retire(now);
+                unreadable++;
             }
+        }
+
+        if (keys.Count == 0 && unreadable > 0)
+        {
+            throw new InvalidOperationException(
+                $"None of the stored {use} keys can be decrypted with this instance's Data Protection key ring. Give it the key ring " +
+                "the other instances use. If that key ring is lost for good, retire the keys (set RetiredAt) to start new ones.");
         }
 
         if (keys.Count == 0)
@@ -167,8 +185,63 @@ public sealed partial class DatabaseKeyStore(
         return keys;
     }
 
-    [LoggerMessage(EventId = 8201, Level = LogLevel.Warning, Message = "Token key {KeyId} can't be decrypted (lost Data Protection key ring?); retiring it.")]
+    [LoggerMessage(EventId = 8201, Level = LogLevel.Error, Message = "Token key {KeyId} can't be decrypted with this instance's Data Protection key ring; skipping it.")]
     private static partial void LogUnreadableKey(ILogger logger, Exception exception, string keyId);
+}
+
+/// <summary>
+/// Runs a read-then-write of the key table in a serializable transaction, so two instances can't both see "no key" and
+/// both create one: the second waits or fails, and runs again on what the first wrote.
+/// </summary>
+internal static class KeyTransaction
+{
+    private const int MaxTries = 5;
+
+    public static T Run<T>(AuthenticationDbContext db, Func<T> work)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                // The provider's execution strategy (SQL Server retries deadlocks) owns the transaction.
+                return db.Database.CreateExecutionStrategy().Execute(() =>
+                {
+                    db.ChangeTracker.Clear();
+                    using var transaction = db.Database.BeginTransaction(System.Data.IsolationLevel.Serializable);
+                    var result = work();
+                    transaction.Commit();
+                    return result;
+                });
+            }
+            catch (Exception exception) when (attempt < MaxTries && exception is DbUpdateException or System.Data.Common.DbException)
+            {
+                // Another instance got there first (SQLite: the database was locked): read again.
+                db.ChangeTracker.Clear();
+            }
+        }
+    }
+
+    public static async Task<T> RunAsync<T>(AuthenticationDbContext db, Func<Task<T>> work, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await db.Database.CreateExecutionStrategy().ExecuteAsync(async ct =>
+                {
+                    db.ChangeTracker.Clear();
+                    await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct).ConfigureAwait(false);
+                    var result = await work().ConfigureAwait(false);
+                    await transaction.CommitAsync(ct).ConfigureAwait(false);
+                    return result;
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (attempt < MaxTries && exception is DbUpdateException or System.Data.Common.DbException)
+            {
+                db.ChangeTracker.Clear();
+            }
+        }
+    }
 }
 
 /// <summary>
@@ -218,27 +291,34 @@ internal sealed partial class KeyRotationService(
 
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
-        var active = (await db.StoredKeys.Where(key => key.RetiredAt == null).ToListAsync(cancellationToken).ConfigureAwait(false))
-            .Where(key => key.Use == KeyUse.Signing)
-            .ToList();
 
-        var plan = KeyRotation.Plan(active, now, settings.RotationInterval, settings.Overlap);
-        if (plan.CreateNew)
+        // In one serializable transaction: of replicas checking together, one rotates and the others see its result.
+        var (changed, activeIds) = await KeyTransaction.RunAsync(db, async () =>
         {
-            var created = store.CreateKey(KeyUse.Signing, now, settings.ActivationDelay);
-            db.StoredKeys.Add(created);
-            LogKeyCreated(logger, created.KeyId, created.ActivatesAt);
-        }
+            var all = await db.StoredKeys.Where(key => key.RetiredAt == null).ToListAsync(cancellationToken).ConfigureAwait(false);
+            var plan = KeyRotation.Plan([.. all.Where(key => key.Use == KeyUse.Signing)], now, settings.RotationInterval, settings.Overlap);
+            if (plan.CreateNew)
+            {
+                var created = store.CreateKey(KeyUse.Signing, now, settings.ActivationDelay);
+                db.StoredKeys.Add(created);
+                all.Add(created);
+                LogKeyCreated(logger, created.KeyId, created.ActivatesAt);
+            }
 
-        foreach (var retired in plan.ToRetire)
-        {
-            retired.Retire(now);
-            LogKeyRetired(logger, retired.KeyId);
-        }
+            foreach (var retired in plan.ToRetire)
+            {
+                retired.Retire(now);
+                all.Remove(retired);
+                LogKeyRetired(logger, retired.KeyId);
+            }
 
-        if (plan.CreateNew || plan.ToRetire.Count > 0)
-        {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return (plan.CreateNew || plan.ToRetire.Count > 0, all.Select(key => key.KeyId).ToList());
+        }, cancellationToken).ConfigureAwait(false);
+
+        // Another replica may have rotated: reload whenever storage holds other keys than the ones loaded here.
+        if (changed || !store.IsCurrent(activeIds))
+        {
             store.Reload();
         }
         else

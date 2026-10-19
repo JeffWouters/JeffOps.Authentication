@@ -292,8 +292,15 @@ client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 - **Issuer and hosts.** Set `JeffOps:TokenServer:Issuer` to the public URL, `AllowedHosts`, and
   `JeffOps:ForwardedHeaders` for your proxy: DPoP and the SAML endpoints compare URLs with the request's scheme and host.
 - **Data Protection.** Share and protect the key ring across instances (`JeffOps:DataProtection`); it protects the
-  signing keys, cookies and sign-in state.
+  signing keys, cookies and sign-in state. Outside Development the token server doesn't start without a persisted,
+  encrypted key ring: set `KekCertificate`, and `KeyDirectory` (a share every instance mounts) or call
+  `.PersistKeysToRedis(...)` on `AddJeffOpsDataProtection`. Every instance must use the same key ring: an instance that
+  can't decrypt the stored token keys refuses to start rather than replace them.
 - **Secrets.** Client secrets of at least 32 characters, kept out of `appsettings.json`.
+- **Rate limits.** On by default (`JeffOps:RateLimiting`): sign-in attempts per address (120 a minute) and per account (10),
+  mail per address (20 an hour) and per recipient (5), protocol requests per address (600 a minute) and per client
+  (3,000), SCIM per token (1,200). They count per instance and per client address, so set `JeffOps:ForwardedHeaders`
+  behind a proxy, and raise `SignInPerAddress` when many users share one address (a corporate NAT).
 - **Log levels.** At the default `Information`, OpenIddict logs every protocol step (about five messages per token
   request, twelve per refresh) and YARP two messages per proxied request, each written to every sink you configure. Keep
   them at `Warning` unless you are diagnosing (the token server template does): `"OpenIddict": "Warning"`,

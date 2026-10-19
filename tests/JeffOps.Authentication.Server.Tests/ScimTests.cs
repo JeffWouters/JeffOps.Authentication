@@ -633,6 +633,18 @@ public sealed class ScimTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Requests_with_one_scim_token_are_rate_limited()
+    {
+        await StartAsync(settings: new() { ["JeffOps:RateLimiting:ScimPerToken:PermitLimit"] = "2" });
+
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.OK);
+        var limited = await ScimAsync(HttpMethod.Get, "Users");
+        limited.StatusCode.ShouldBe(HttpStatusCode.TooManyRequests);
+        limited.Headers.RetryAfter.ShouldNotBeNull();
+    }
+
+    [Fact]
     public async Task A_suspended_or_deleted_tenant_s_scim_token_stops_working()
     {
         await StartAsync();
@@ -657,9 +669,10 @@ public sealed class ScimTests : IAsyncDisposable
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
-    private async Task StartAsync(bool scimTokenPolicy = true)
+    private async Task StartAsync(bool scimTokenPolicy = true, Dictionary<string, string?>? settings = null)
     {
         _host = await TokenServerHost.StartAsync(
+            settings,
             configure: builder =>
             {
                 builder.Services.AddSingleton(_memberships);

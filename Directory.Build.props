@@ -16,6 +16,10 @@
     <!-- CS1591: missing XML doc on public members. Relaxed for now; revisit before 1.0 (public packages). -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <RestoreUseStaticGraphEvaluation>true</RestoreUseStaticGraphEvaluation>
+    <!-- Every project's resolved packages, with their hashes, are recorded in packages.lock.json; CI restores in locked
+         mode, so a changed or substituted package fails the build instead of being used. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
   </PropertyGroup>
 
   <!-- Local-dev build speed: in Debug skip analyzers, code-style and XML docs. CI builds Release, which keeps

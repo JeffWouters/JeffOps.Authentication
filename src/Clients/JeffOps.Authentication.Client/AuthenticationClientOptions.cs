@@ -46,6 +46,13 @@ public sealed class AuthenticationClientOptions
     /// </summary>
     public int DpopReplayCapacity { get; set; } = Abstractions.Replay.MemoryReplayCache.DefaultCapacity;
 
+    /// <summary>
+    /// How many DPoP proofs one key (one client's tokens) may present to this instance per minute; more are refused. Each
+    /// proof stays in the shared replay cache for minutes, so without a limit one client could fill it and lock every other
+    /// DPoP client out. Default: 3,000 (50 a second).
+    /// </summary>
+    public int DpopProofsPerKeyPerMinute { get; set; } = 3_000;
+
     /// <summary>Which service tokens may be scoped to a tenant by trusted internal headers.</summary>
     public ServiceTokenTenantScopingOptions ServiceTokenTenantScoping { get; } = new();
 }

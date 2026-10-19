@@ -160,10 +160,60 @@ internal static class DpopValidation
             }
         }
 
+        if (!http.RequestServices.GetRequiredService<DpopKeyQuota>().TryTake(proof.Jkt))
+        {
+            return "Too many DPoP proofs for this key; slow down.";
+        }
+
         return await http.RequestServices.GetRequiredService<IReplayCache>()
                 .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), DpopProofValidator.ReplayExpiry(proof, Window), http.RequestAborted).ConfigureAwait(false)
             ? null
             : "This DPoP proof was already used.";
+    }
+}
+
+/// <summary>
+/// At most <see cref="AuthenticationClientOptions.DpopProofsPerKeyPerMinute"/> proofs per key a minute on this instance, so
+/// one client can't fill the replay cache all clients share. Counted per calendar minute; counters of past minutes are
+/// dropped once a minute.
+/// </summary>
+internal sealed class DpopKeyQuota(TimeProvider time, Microsoft.Extensions.Options.IOptions<AuthenticationClientOptions> options)
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Counter> _counters = new(StringComparer.Ordinal);
+    private long _sweptMinute;
+
+    public bool TryTake(string jkt)
+    {
+        var minute = time.GetUtcNow().ToUnixTimeSeconds() / 60;
+        var swept = Interlocked.Read(ref _sweptMinute);
+        if (minute > swept && Interlocked.CompareExchange(ref _sweptMinute, minute, swept) == swept)
+        {
+            foreach (var entry in _counters)
+            {
+                if (Volatile.Read(ref entry.Value.Minute) < minute)
+                {
+                    _counters.TryRemove(entry);
+                }
+            }
+        }
+
+        var counter = _counters.GetOrAdd(jkt, static _ => new Counter());
+        lock (counter)
+        {
+            if (counter.Minute != minute)
+            {
+                counter.Minute = minute;
+                counter.Count = 0;
+            }
+
+            return ++counter.Count <= options.Value.DpopProofsPerKeyPerMinute;
+        }
+    }
+
+    private sealed class Counter
+    {
+        public long Minute;
+        public int Count;
     }
 }
 

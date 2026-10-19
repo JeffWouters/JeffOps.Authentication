@@ -253,6 +253,32 @@ public sealed class DataProtectionTests
     }
 
     [Fact]
+    public async Task A_key_directory_persists_the_key_ring_there_encrypted()
+    {
+        var directory = Directory.CreateTempSubdirectory("jeffops-keys-");
+        try
+        {
+            var app = await Host.StartAsync(Host.NoProxy.Concat(new Dictionary<string, string?>
+            {
+                ["JeffOps:DataProtection:KekCertificate"] = SelfSignedPfx(),
+                ["JeffOps:DataProtection:KeyDirectory"] = directory.FullName,
+            }).ToDictionary(), "Production", builder => builder.Services.AddJeffOpsDataProtection(builder.Configuration));
+            await using (app)
+            {
+                var protector = app.Services.GetRequiredService<IDataProtectionProvider>().CreateProtector("test");
+                protector.Unprotect(protector.Protect("secret payload")).ShouldBe("secret payload");
+            }
+
+            var stored = File.ReadAllText(directory.GetFiles("key-*.xml").ShouldHaveSingleItem().FullName);
+            stored.ShouldContain("EncryptedData");
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public void A_malformed_kek_fails_at_registration()
     {
         var services = new ServiceCollection();

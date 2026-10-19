@@ -514,6 +514,8 @@ public static class EnterpriseServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configuration);
 
         services.AddOptions<EnterpriseOptions>().Bind(configuration.GetSection(EnterpriseOptions.SectionName));
+        services.AddOptions<Abstractions.RateLimiting.RateLimitOptions>().Bind(configuration.GetSection(Abstractions.RateLimiting.RateLimitOptions.SectionName));
+        services.TryAddSingleton(provider => new Abstractions.RateLimiting.RequestRateLimiter(provider.GetService<TimeProvider>() ?? TimeProvider.System));
         services.TryAddScoped<ITenantDomainRepository, TenantDomainRepository>();
         services.TryAddScoped<ISsoPolicyRepository, SsoPolicyRepository>();
         services.TryAddScoped<ITenantIdentityProviderRepository, TenantIdentityProviderRepository>();
