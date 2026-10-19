@@ -46,10 +46,10 @@ internal sealed class SamlProviders(
 
     /// <summary>
     /// Makes <paramref name="provider"/>'s settings available to <see cref="Settings"/>: configured providers always are; a
-    /// provider a tenant registered is read from its directory (at most a minute old), with its metadata. False when there is
-    /// no such provider, or its tenant may no longer use it.
+    /// provider a tenant registered is read from its directory (at most a minute old), with its metadata unless
+    /// <paramref name="withMetadata"/> is false. False when there is no such provider, or its tenant may no longer use it.
     /// </summary>
-    public async Task<bool> PrepareAsync(string provider, CancellationToken cancellationToken)
+    public async Task<bool> PrepareAsync(string provider, CancellationToken cancellationToken, bool withMetadata = true)
     {
         if (IsConfigured(provider))
         {
@@ -63,6 +63,11 @@ internal sealed class SamlProviders(
 
         if (_tenants.TryGetValue(provider, out var cached) && time.GetUtcNow() - cached.LoadedAt < TenantSettingsLifetime)
         {
+            if (withMetadata)
+            {
+                await metadataClient.EnsureAsync(provider, cached.Settings, cancellationToken).ConfigureAwait(false);
+            }
+
             return true;
         }
 
@@ -75,6 +80,7 @@ internal sealed class SamlProviders(
         if (found is null)
         {
             _tenants.TryRemove(provider, out _);
+            metadata.Remove(provider);
             return false;
         }
 
@@ -103,9 +109,23 @@ internal sealed class SamlProviders(
             settings.MultiFactorAuthnContexts.Add(context);
         }
 
-        await metadataClient.EnsureAsync(provider, settings, cancellationToken).ConfigureAwait(false);
         _tenants[provider] = (settings, time.GetUtcNow());
+        if (withMetadata)
+        {
+            await metadataClient.EnsureAsync(provider, settings, cancellationToken).ConfigureAwait(false);
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// Whether anything can verify the provider's signatures: configured certificates, or current metadata. A provider
+    /// without is refused at every endpoint (its messages couldn't be checked, and an unsigned one would pass).
+    /// </summary>
+    public bool HasTrustAnchors(string provider)
+    {
+        var settings = Settings(provider);
+        return settings.IdpSigningCertificates.Count > 0 || metadata.For(provider, settings) is { SigningCertificates.Count: > 0 };
     }
 
     /// <summary>The settings of a provider (after <see cref="PrepareAsync"/> for one a tenant registered).</summary>
@@ -155,7 +175,7 @@ internal sealed class SamlProviders(
         var configuration = new Saml2Configuration
         {
             Issuer = serviceProviderEntityId,
-            SingleSignOnDestination = settings.IdpSingleSignOnUrl ?? metadata.For(provider)?.SingleSignOnUrl,
+            SingleSignOnDestination = settings.IdpSingleSignOnUrl ?? metadata.For(provider, settings)?.SingleSignOnUrl,
             AllowedIssuer = settings.IdpEntityId,
             CertificateValidationMode = System.ServiceModel.Security.X509CertificateValidationMode.None,
             RevocationMode = X509RevocationMode.NoCheck,
@@ -181,7 +201,7 @@ internal sealed class SamlProviders(
         }
 
         // Certificates from the provider's metadata, so a rollover there needs no change here.
-        foreach (var certificate in metadata.For(provider)?.SigningCertificates ?? [])
+        foreach (var certificate in metadata.For(provider, settings)?.SigningCertificates ?? [])
         {
             configuration.SignatureValidationCertificates.Add(certificate);
         }
@@ -190,7 +210,11 @@ internal sealed class SamlProviders(
     }
 
     /// <summary>The provider's single logout URL: configured, or from its metadata; null when it has none.</summary>
-    public Uri? SingleLogoutUrl(string provider) => Settings(provider).IdpSingleLogoutUrl ?? metadata.For(provider)?.SingleLogoutUrl;
+    public Uri? SingleLogoutUrl(string provider)
+    {
+        var settings = Settings(provider);
+        return settings.IdpSingleLogoutUrl ?? metadata.For(provider, settings)?.SingleLogoutUrl;
+    }
 
     /// <summary>This server's signing certificate for <paramref name="provider"/>, or null when requests go unsigned.</summary>
     public X509Certificate2? SigningCertificate(string provider)

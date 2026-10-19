@@ -281,6 +281,7 @@ namespace JeffOps.Authorization.Persistence.SqlServer.Migrations
                         .HasColumnType("nvarchar(100)");
 
                     b.Property<string>("Status")
+                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");

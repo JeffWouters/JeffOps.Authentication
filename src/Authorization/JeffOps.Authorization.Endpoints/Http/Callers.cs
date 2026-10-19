@@ -29,6 +29,7 @@ internal static class Callers
             access.ActingTenantId)
         {
             PatCeiling = AccessContextReader.ValuesOf(user, names.PatCeiling),
+            DelegationScopes = AccessContextReader.ValuesOf(user, names.DelegationScope),
             ServicePermissions = isService ? AccessContextReader.ValuesOf(user, names.ServicePermission) : [],
         };
     }

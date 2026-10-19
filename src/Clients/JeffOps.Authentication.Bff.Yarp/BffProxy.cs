@@ -22,13 +22,21 @@ namespace JeffOps.Authentication.Bff.Yarp;
 public static class BffProxyExtensions
 {
     /// <summary>
-    /// Removes the <c>Cookie</c> header from every proxied request: backends authenticate with the bearer token the BFF
-    /// attached, and must never receive the session cookie.
+    /// Removes the <c>Cookie</c> header from every proxied request (backends authenticate with the bearer token the BFF
+    /// attached, and must never receive the session cookie), and the headers in <see cref="BffOptions.StripRequestHeaders"/>
+    /// (the browser must not set headers backends trust only from services, such as tenant headers).
     /// </summary>
     public static IReverseProxyBuilder AddBffTransforms(this IReverseProxyBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        return builder.AddTransforms(context => context.AddRequestHeaderRemove("Cookie"));
+        return builder.AddTransforms(context =>
+        {
+            context.AddRequestHeaderRemove("Cookie");
+            foreach (var header in context.Services.GetRequiredService<IOptions<BffOptions>>().Value.StripRequestHeaders)
+            {
+                context.AddRequestHeaderRemove(header);
+            }
+        });
     }
 
     /// <summary>

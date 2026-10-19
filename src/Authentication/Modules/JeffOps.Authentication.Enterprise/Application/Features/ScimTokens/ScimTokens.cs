@@ -1,4 +1,5 @@
 using JeffOps.Authentication.Abstractions.Auditing;
+using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Enterprise.Domain;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using JeffOps.Authentication.SharedKernel.Results;
@@ -74,8 +75,11 @@ public sealed class RevokeScimTokenHandler(IScimTokenRepository tokens, IEnterpr
     }
 }
 
-/// <summary>Finds the tenant a SCIM bearer token belongs to (null when unknown or revoked) and records its use.</summary>
-public sealed class ScimTokenAuthenticator(IScimTokenRepository tokens, IEnterpriseUnitOfWork unitOfWork, TimeProvider time)
+/// <summary>
+/// Finds the tenant a SCIM bearer token belongs to (null when unknown or revoked, or the tenant is suspended or gone) and
+/// records its use.
+/// </summary>
+public sealed class ScimTokenAuthenticator(IScimTokenRepository tokens, IEnterpriseUnitOfWork unitOfWork, ITenantDirectory tenants, TimeProvider time)
 {
     public async Task<Guid?> AuthenticateAsync(string? secret, CancellationToken cancellationToken)
     {
@@ -85,7 +89,8 @@ public sealed class ScimTokenAuthenticator(IScimTokenRepository tokens, IEnterpr
         }
 
         var token = await tokens.FindByHashAsync(ScimToken.HashOf(secret), cancellationToken).ConfigureAwait(false);
-        if (token is not { IsActive: true })
+        if (token is not { IsActive: true }
+            || await tenants.FindTenantAsync(token.TenantId, cancellationToken).ConfigureAwait(false) is not { AcceptsSessions: true })
         {
             return null;
         }

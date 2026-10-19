@@ -49,6 +49,7 @@ namespace JeffOps.Authentication.LocalAccounts.SqlServer.Migrations
                         .HasColumnType("nvarchar(64)");
 
                     b.Property<DateTimeOffset?>("UsedAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetimeoffset");
 
                     b.HasKey("Id");
@@ -71,6 +72,7 @@ namespace JeffOps.Authentication.LocalAccounts.SqlServer.Migrations
                         .HasColumnType("datetimeoffset");
 
                     b.Property<int>("FailedAttempts")
+                        .IsConcurrencyToken()
                         .HasColumnType("int");
 
                     b.Property<DateTimeOffset?>("LockedUntil")
@@ -97,6 +99,7 @@ namespace JeffOps.Authentication.LocalAccounts.SqlServer.Migrations
                         .HasColumnType("bit");
 
                     b.Property<long?>("TotpLastStep")
+                        .IsConcurrencyToken()
                         .HasColumnType("bigint");
 
                     b.HasKey("Id");

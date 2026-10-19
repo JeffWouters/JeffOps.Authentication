@@ -16,6 +16,7 @@
             <AntiforgeryToken />
             <label for="user_code">Code shown on the device</label>
             <input id="user_code" name="user_code" value="@UserCode" autocomplete="off" autocapitalize="characters" required />
+            <input type="hidden" name="consent" value="@Consent" />
             @if (Client is not null)
             {
                 <p>Allow <strong>@Client</strong> to use your account? Only continue if you started this on your own device.</p>

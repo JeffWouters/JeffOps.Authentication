@@ -212,12 +212,19 @@ public sealed class RecertifyAssignmentHandler(
             return Error.Failure(ManagementErrors.InvalidExpiry, problem);
         }
 
+        // An expired assignment is over, even before the sweeper removes it: it is granted again, never revived.
+        if (Domain.Assignments.AssignmentExpiry.IsExpired(assignment.ExpiresAt, time.GetUtcNow()))
+        {
+            return Error.Failure(ManagementErrors.Expired, "This assignment has expired; grant it again instead.");
+        }
+
         var role = await roles.FindAsync(assignment.RoleId, cancellationToken).ConfigureAwait(false);
         if (role is not null)
         {
-            if (role.IsBreakGlass && command.ExpiresAt - time.GetUtcNow() > guard.Options.BreakGlassMaxDuration)
+            // Break-glass access is short by design and granted with a second approver; extending it is granting it again.
+            if (role.IsBreakGlass)
             {
-                return Error.Failure(ManagementErrors.InvalidExpiry, $"'{role.Name}' can be extended by at most {guard.Options.BreakGlassMaxDuration}.");
+                return Error.Forbidden(ManagementErrors.BreakGlassRecertification, $"'{role.Name}' is break-glass access: grant it again (with its approval) instead of extending it.");
             }
 
             if (!caller.IsRoot)

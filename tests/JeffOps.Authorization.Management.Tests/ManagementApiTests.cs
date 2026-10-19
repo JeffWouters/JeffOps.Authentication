@@ -283,6 +283,70 @@ public sealed class ManagementApiTests
         response.StatusCode.ShouldBe(HttpStatusCode.Forbidden, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task A_read_only_tenant_switch_administers_nothing_whatever_roles_the_partner_holds_there()
+    {
+        // The relationship says readonly; the partner still holds an administrator role in the managed tenant.
+        await using var host = await StartAsync();
+        await AssignAsync(host, RootUser(), Alice, TenantAdmin);
+        var switched = Principal(("sub", Alice.ToString()), ("tid", Guid.NewGuid().ToString()), ("act_tid", TenantA.ToString()),
+            ("lvl", "Delegated"), ("dlg_scope", "readonly"), ("step_up", "mfa"));
+        var roleId = await RoleIdAsync(host, TenantAdmin);
+
+        var grant = await host.SendAsync(switched, HttpMethod.Post, ManagementRoutes.Assignments, new AssignRoleRequest(Bob, roleId, TenantA));
+
+        grant.StatusCode.ShouldBe(HttpStatusCode.Forbidden, await grant.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        (await host.GetAsync(switched, ManagementRoutes.Assignments)).StatusCode.ShouldBe(HttpStatusCode.OK, "reading is within readonly");
+    }
+
+    [Fact]
+    public async Task Break_glass_access_is_granted_again_never_extended()
+    {
+        await using var host = await StartAsync();
+        await AssignAsync(host, RootUser(), Alice, TenantAdmin);
+        await AssignAsync(host, RootUser(), Carol, BreakGlass, expiresAt: host.Time.GetUtcNow().AddHours(2));
+        var assignment = (await host.ReadAsync<List<AssignmentDto>>(await host.GetAsync(User(Alice), ManagementRoutes.Assignments))).Single(item => item.UserId == Carol);
+
+        var response = await host.SendAsync(User(Alice), HttpMethod.Post, $"{ManagementRoutes.Assignments}/{assignment.Id}/recertify",
+            new RecertifyRequest(host.Time.GetUtcNow().AddHours(4)));
+
+        (await CodeOf(response)).ShouldBe("break_glass_recertification");
+    }
+
+    [Fact]
+    public async Task An_expired_assignment_is_granted_again_never_revived()
+    {
+        await using var host = await StartAsync();
+        await AssignAsync(host, RootUser(), Alice, TenantAdmin);
+        await AssignAsync(host, RootUser(), Bob, TenantAdmin, expiresAt: host.Time.GetUtcNow().AddMinutes(2));
+        var assignment = (await host.ReadAsync<List<AssignmentDto>>(await host.GetAsync(User(Alice), ManagementRoutes.Assignments))).Single(item => item.UserId == Bob);
+
+        // Expired, but not yet swept (the sweeper runs every five minutes).
+        host.Time.Advance(TimeSpan.FromMinutes(3));
+
+        var response = await host.SendAsync(User(Alice), HttpMethod.Post, $"{ManagementRoutes.Assignments}/{assignment.Id}/recertify",
+            new RecertifyRequest(host.Time.GetUtcNow().AddDays(30)));
+
+        (await CodeOf(response)).ShouldBe("expired");
+    }
+
+    [Fact]
+    public async Task A_stale_role_change_request_can_only_be_rejected()
+    {
+        await using var host = await StartAsync();
+        await AssignAsync(host, RootUser(), Alice, TenantAdmin);
+        await AssignAsync(host, RootUser(), Bob, TenantAdmin);
+        var role = await host.ReadAsync<RoleDto>(await host.SendAsync(User(Alice), HttpMethod.Post, ManagementRoutes.Roles, new CreateRoleRequest("Readers")));
+        var queued = await host.SendAsync(User(Alice), HttpMethod.Post, $"{ManagementRoutes.Roles}/{role.Id}/permissions", new RolePermissionRequest("billing.invoices.read"));
+        var requestId = (await host.ReadAsync<ChangeOutcomeDto>(queued)).RequestId!.Value;
+        host.Time.Advance(TimeSpan.FromDays(8));
+
+        var approved = await host.SendAsync(User(Bob), HttpMethod.Post, $"{ManagementRoutes.RoleChanges}/{requestId}/approve", new DecideRoleChangeRequest(null));
+
+        (await CodeOf(approved)).ShouldBe("expired");
+        (await host.SendAsync(User(Bob), HttpMethod.Post, $"{ManagementRoutes.RoleChanges}/{requestId}/reject", new DecideRoleChangeRequest(null))).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
     private static async Task AssignAsync(ManagementHost host, System.Security.Claims.ClaimsPrincipal caller, Guid userId, string roleName, DateTimeOffset? expiresAt = null)
     {
         var roleId = await RoleIdAsync(host, roleName);

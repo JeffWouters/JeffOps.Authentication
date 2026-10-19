@@ -61,6 +61,33 @@ public sealed class TenantOidcProviderTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_fresh_sign_in_is_asked_of_the_tenant_s_provider_and_an_older_authentication_is_refused()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await AllowAsync(Contoso);
+        var provider = (await RegisterAsync(admin)).GetProperty("name").GetString()!;
+        await ReadOkAsync(await _host.SendAsync(HttpMethod.Put, "enterprise/sso", admin, JsonContent.Create(new { provider, ssoOnly = false })));
+        var returnUrl = $"/done?jeffops_signed_in_after={_host.Time.GetUtcNow().ToUnixTimeSeconds()}";
+        var start = $"account/login/discover?email=jo%40contoso.com&returnUrl={Uri.EscapeDataString(returnUrl)}";
+
+        using (var browser = new Browser(_host))
+        {
+            _idp.AuthTime = _host.Time.GetUtcNow().AddHours(-1);
+            (await SignInThroughAsync(browser, start, "jo@contoso.com")).Headers.Location!.OriginalString.ShouldContain("error=reauthentication_required");
+            _idp.LastAuthorization!["prompt"].ShouldBe("login");
+            _idp.LastAuthorization["max_age"].ShouldNotBeNull();
+        }
+
+        using (var browser = new Browser(_host))
+        {
+            _idp.AuthTime = _host.Time.GetUtcNow();
+            (await SignInThroughAsync(browser, start, "jo@contoso.com")).Headers.Location!.OriginalString.ShouldBe(returnUrl);
+        }
+    }
+
+    [Fact]
     public async Task A_tenant_oidc_provider_can_t_sign_in_addresses_outside_the_tenant_s_domains()
     {
         await StartAsync();
@@ -430,6 +457,12 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
     /// <summary>The last ID token issued.</summary>
     public string? LastIdToken { get; private set; }
 
+    /// <summary>The last authorization request's parameters.</summary>
+    public System.Collections.Specialized.NameValueCollection? LastAuthorization { get; private set; }
+
+    /// <summary>When the provider says it authenticated the user (<c>auth_time</c>); not said when null.</summary>
+    public DateTimeOffset? AuthTime { get; set; }
+
     public static RsaSecurityKey NewKey(string keyId) => new(RSA.Create(2048)) { KeyId = keyId };
 
     /// <summary>The user signs in at the provider; returns where the provider sends the browser back to.</summary>
@@ -438,9 +471,11 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
         query["response_type"].ShouldBe("code");
         query["code_challenge_method"].ShouldBe("S256");
         var code = Guid.NewGuid().ToString("N");
+        LastAuthorization = query;
         var token = new IdToken(query["client_id"]!, query["nonce"]!, query["code_challenge"]!, query["redirect_uri"]!, "subject-" + email, email, _key)
         {
             Sid = "idp-session-" + Guid.NewGuid().ToString("N"),
+            AuthTime = AuthTime,
         };
         _codes[code] = Forge?.Invoke(token) ?? token;
         LastSid = token.Sid;
@@ -542,17 +577,31 @@ internal sealed class FakeOidcProvider(string issuer) : HttpMessageHandler
     {
         public string? Sid { get; init; }
 
-        public string Issue(string issuer) => new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+        public DateTimeOffset? AuthTime { get; init; }
+
+        public string Issue(string issuer)
         {
-            Issuer = issuer,
-            Audience = Audience,
-            IssuedAt = DateTime.UtcNow,
-            NotBefore = DateTime.UtcNow,
-            Expires = DateTime.UtcNow.AddMinutes(5),
-            Claims = Sid is null
-                ? new Dictionary<string, object> { ["sub"] = Subject, ["email"] = Email, ["nonce"] = Nonce, ["name"] = "Jo" }
-                : new Dictionary<string, object> { ["sub"] = Subject, ["email"] = Email, ["nonce"] = Nonce, ["name"] = "Jo", ["sid"] = Sid },
-            SigningCredentials = new SigningCredentials(SigningKey, SecurityAlgorithms.RsaSha256),
-        });
+            var claims = new Dictionary<string, object> { ["sub"] = Subject, ["email"] = Email, ["nonce"] = Nonce, ["name"] = "Jo" };
+            if (Sid is not null)
+            {
+                claims["sid"] = Sid;
+            }
+
+            if (AuthTime is { } authTime)
+            {
+                claims["auth_time"] = authTime.ToUnixTimeSeconds();
+            }
+
+            return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
+            {
+                Issuer = issuer,
+                Audience = Audience,
+                IssuedAt = DateTime.UtcNow,
+                NotBefore = DateTime.UtcNow,
+                Expires = DateTime.UtcNow.AddMinutes(5),
+                Claims = claims,
+                SigningCredentials = new SigningCredentials(SigningKey, SecurityAlgorithms.RsaSha256),
+            });
+        }
     }
 }

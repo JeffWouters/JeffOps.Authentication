@@ -16,6 +16,9 @@ public sealed record ManagementCaller(Guid? UserId, bool IsRoot, bool IsService,
     /// <summary>Permissions a service principal holds through its token.</summary>
     public IReadOnlyList<string> ServicePermissions { get; init; } = [];
 
+    /// <summary>The caller's delegation scopes (a tenant switch into a managed tenant); empty for an own session.</summary>
+    public IReadOnlyList<string> DelegationScopes { get; init; } = [];
+
     public Guid? EffectiveTenantId => ActingTenantId ?? TenantId;
 
     /// <summary>Whether the caller may act in <paramref name="tenantId"/> at all.</summary>
@@ -26,7 +29,7 @@ public sealed record ManagementCaller(Guid? UserId, bool IsRoot, bool IsService,
 /// What a user holds in a tenant, read straight from the store (not the cache): the basis of the escalation checks, which
 /// must never decide on stale data.
 /// </summary>
-public sealed class HeldPermissions(IAuthorizationReads reads, TimeProvider time)
+public sealed class HeldPermissions(IAuthorizationReads reads, TimeProvider time, Microsoft.Extensions.Options.IOptions<ManagementOptions> options)
 {
     public async Task<IReadOnlyList<string>> OfAsync(Guid userId, Guid tenantId, string scopeKey, Guid? instanceId, CancellationToken cancellationToken)
     {
@@ -47,7 +50,10 @@ public sealed class HeldPermissions(IAuthorizationReads reads, TimeProvider time
         return [.. applicable.SelectMany(assignment => permissions.TryGetValue(assignment.RoleId, out var codes) ? codes : [])];
     }
 
-    /// <summary>What the caller may exercise: their holdings, cut down by their PAT ceiling. Root holds everything.</summary>
+    /// <summary>
+    /// What the caller may exercise: their holdings, cut down by their delegation ceiling (when acting in a managed tenant)
+    /// and their PAT ceiling. Root holds everything.
+    /// </summary>
     public async Task<IReadOnlyList<string>> OfCallerAsync(ManagementCaller caller, Guid tenantId, string scopeKey, Guid? instanceId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(caller);
@@ -55,6 +61,13 @@ public sealed class HeldPermissions(IAuthorizationReads reads, TimeProvider time
         IReadOnlyList<string> held = caller.IsRoot
             ? [Permission.Wildcard]
             : caller.UserId is { } user ? await OfAsync(user, tenantId, scopeKey, instanceId, cancellationToken).ConfigureAwait(false) : caller.ServicePermissions;
+
+        if (caller.DelegationScopes.Count > 0)
+        {
+            // A wildcard holding survives only an unrestricted scope: "billing.*" isn't a read, whatever it covers.
+            var delegation = options.Value.DelegationCeiling;
+            held = [.. held.Where(permission => delegation.Allows(caller.DelegationScopes, permission))];
+        }
 
         if (caller.PatCeiling.Count == 0)
         {
@@ -84,6 +97,9 @@ public static class ManagementErrors
     public const string SelfDecision = "self_decision";
     public const string AlreadyDecided = "already_decided";
     public const string SelfRecertification = "self_recertification";
+    public const string BreakGlassRecertification = "break_glass_recertification";
+    public const string Expired = "expired";
+    public const string RequesterLacksPermission = "requester_lacks_permission";
     public const string InvalidCondition = "invalid_condition";
     public const string ScopeInUse = "scope_in_use";
     public const string Cycle = "scope_cycle";

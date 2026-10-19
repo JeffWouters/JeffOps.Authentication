@@ -7,17 +7,42 @@ using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.Federation.Saml;
 
-/// <summary>What a provider's metadata says: its signing certificates and its sign-in and logout URLs.</summary>
-internal sealed record IdpMetadata(IReadOnlyList<X509Certificate2> SigningCertificates, Uri? SingleSignOnUrl, Uri? SingleLogoutUrl, DateTimeOffset FetchedAt);
+/// <summary>
+/// What a provider's metadata says: its signing certificates and its sign-in and logout URLs, with where it came from
+/// (<paramref name="Source"/>) and the entity it names.
+/// </summary>
+internal sealed record IdpMetadata(
+    IReadOnlyList<X509Certificate2> SigningCertificates,
+    Uri? SingleSignOnUrl,
+    Uri? SingleLogoutUrl,
+    DateTimeOffset FetchedAt,
+    Uri Source,
+    string EntityId);
 
 /// <summary>The last good metadata of each provider configured with an <see cref="SamlProviderOptions.IdpMetadataUrl"/>.</summary>
-internal sealed class SamlMetadata
+internal sealed class SamlMetadata(TimeProvider time)
 {
     private readonly ConcurrentDictionary<string, IdpMetadata> _byProvider = new(StringComparer.Ordinal);
 
-    public IdpMetadata? For(string provider) => _byProvider.GetValueOrDefault(provider);
+    /// <summary>
+    /// The provider's metadata, only while it matches its current settings (the same metadata URL and entity id) and is
+    /// younger than <see cref="SamlProviderOptions.MetadataMaxAge"/>: a changed or removed URL stops trusting the old
+    /// certificates at once.
+    /// </summary>
+    public IdpMetadata? For(string provider, SamlProviderOptions settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return _byProvider.GetValueOrDefault(provider) is { } current
+            && current.Source == settings.IdpMetadataUrl
+            && string.Equals(current.EntityId, settings.IdpEntityId, StringComparison.Ordinal)
+            && time.GetUtcNow() - current.FetchedAt <= settings.MetadataMaxAge
+                ? current
+                : null;
+    }
 
     public void Set(string provider, IdpMetadata metadata) => _byProvider[provider] = metadata;
+
+    public void Remove(string provider) => _byProvider.TryRemove(provider, out _);
 }
 
 /// <summary>
@@ -81,24 +106,72 @@ internal sealed partial class SamlMetadataClient(SamlMetadata metadata, IHttpCli
     /// <summary>The client for tenants' metadata URLs: public addresses only, no redirects (<see cref="PublicNetwork"/>).</summary>
     public const string TenantHttpClientName = "JeffOps.Saml.TenantMetadata";
 
-    /// <summary>Downloads the metadata unless a copy younger than its refresh interval is at hand.</summary>
+    /// <summary>How long a download may take, headers and body.</summary>
+    public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>After a failed download of a tenant's metadata, how long before the next try.</summary>
+    public static readonly TimeSpan RetryAfterFailure = TimeSpan.FromMinutes(1);
+
+    private readonly ConcurrentDictionary<string, Lazy<Task>> _inFlight = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _failedAt = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Downloads a tenant provider's metadata unless a copy younger than its refresh interval is at hand. Requests for the
+    /// same provider share one download, and after a failure the next waits <see cref="RetryAfterFailure"/>: anonymous
+    /// requests can't make this server fetch over and over.
+    /// </summary>
     public async Task EnsureAsync(string provider, SamlProviderOptions settings, CancellationToken cancellationToken)
     {
-        if (metadata.For(provider) is { } current && time.GetUtcNow() - current.FetchedAt < settings.MetadataRefreshInterval)
+        ArgumentNullException.ThrowIfNull(settings);
+        if (settings.IdpMetadataUrl is null)
+        {
+            metadata.Remove(provider);
+            return;
+        }
+
+        var now = time.GetUtcNow();
+        if ((metadata.For(provider, settings) is { } current && now - current.FetchedAt < settings.MetadataRefreshInterval)
+            || (_failedAt.TryGetValue(provider, out var failed) && now - failed < RetryAfterFailure))
         {
             return;
         }
 
-        await RefreshAsync(provider, settings, TenantHttpClientName, cancellationToken).ConfigureAwait(false);
+        var download = _inFlight.GetOrAdd(provider, name => new Lazy<Task>(() => DownloadOnceAsync(name, settings)));
+        await download.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task RefreshAsync(string provider, SamlProviderOptions settings, string clientName, CancellationToken cancellationToken)
+    private async Task DownloadOnceAsync(string provider, SamlProviderOptions settings)
     {
+        try
+        {
+            // Not the first caller's token: a caller giving up doesn't cancel the download others wait for.
+            if (await RefreshAsync(provider, settings, TenantHttpClientName, CancellationToken.None).ConfigureAwait(false))
+            {
+                _failedAt.TryRemove(provider, out _);
+            }
+            else
+            {
+                _failedAt[provider] = time.GetUtcNow();
+            }
+        }
+        finally
+        {
+            _inFlight.TryRemove(provider, out _);
+        }
+    }
+
+    /// <summary>Downloads and checks the metadata; true when it was stored, false when it failed (logged).</summary>
+    public async Task<bool> RefreshAsync(string provider, SamlProviderOptions settings, string clientName, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
         if (settings.IdpMetadataUrl is not { } url)
         {
-            return;
+            metadata.Remove(provider);
+            return false;
         }
 
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(Timeout);
         try
         {
             if (url.Scheme != Uri.UriSchemeHttps)
@@ -107,18 +180,9 @@ internal sealed partial class SamlMetadataClient(SamlMetadata metadata, IHttpCli
             }
 
             using var client = httpClientFactory.CreateClient(clientName);
-            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength > MaxMetadataBytes)
-            {
-                throw new InvalidOperationException("The metadata is too large.");
-            }
-
-            var xml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (xml.Length > MaxMetadataBytes)
-            {
-                throw new InvalidOperationException("The metadata is too large.");
-            }
+            var xml = await PublicNetwork.ReadLimitedAsync(response, MaxMetadataBytes, timeout.Token).ConfigureAwait(false);
 
             var descriptor = new EntityDescriptor().ReadIdPSsoDescriptor(xml);
             if (!string.Equals(descriptor.EntityId, settings.IdpEntityId, StringComparison.Ordinal))
@@ -137,13 +201,17 @@ internal sealed partial class SamlMetadataClient(SamlMetadata metadata, IHttpCli
                 certificates,
                 idp.SingleSignOnServices?.FirstOrDefault(service => service.Binding?.OriginalString == Redirect)?.Location,
                 idp.SingleLogoutServices?.FirstOrDefault(service => service.Binding?.OriginalString == Redirect)?.Location,
-                time.GetUtcNow()));
+                time.GetUtcNow(),
+                url,
+                descriptor.EntityId));
+            return true;
         }
 #pragma warning disable CA1031 // A failed refresh keeps the last good metadata; it is logged, never fatal.
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
 #pragma warning restore CA1031
         {
             LogFailed(logger, exception, provider);
+            return false;
         }
     }
 

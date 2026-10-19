@@ -632,6 +632,19 @@ public sealed class ScimTests : IAsyncDisposable
         (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
     }
 
+    [Fact]
+    public async Task A_suspended_or_deleted_tenant_s_scim_token_stops_working()
+    {
+        await StartAsync();
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        _host.Tenants.Tenants[Contoso] = new TenantInfo(Contoso, null, AcceptsSessions: false);
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        _host.Tenants.Tenants.TryRemove(Contoso, out _);
+        (await ScimAsync(HttpMethod.Get, "Users")).StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_host is not null)

@@ -29,6 +29,9 @@ public sealed class LocalAccountsDbContext(DbContextOptions<LocalAccountsDbConte
             credential.Property(entity => entity.PasswordHash).HasMaxLength(200);
             credential.Property(entity => entity.ProtectedTotpSecret).HasMaxLength(1000);
             credential.Property(entity => entity.SecurityStamp).HasMaxLength(64).IsConcurrencyToken();
+            // Attempts and accepted TOTP steps are checked-and-set: of two writers, one saves and the other starts over.
+            credential.Property(entity => entity.FailedAttempts).IsConcurrencyToken();
+            credential.Property(entity => entity.TotpLastStep).IsConcurrencyToken();
             credential.Ignore(entity => entity.DomainEvents);
             credential.Ignore(entity => entity.HasSecondFactor);
 
@@ -58,6 +61,7 @@ public sealed class LocalAccountsDbContext(DbContextOptions<LocalAccountsDbConte
             token.HasKey(entity => entity.Id);
             token.Property(entity => entity.TokenHash).HasMaxLength(64);
             token.Property(entity => entity.Purpose).HasConversion<string>().HasMaxLength(30);
+            token.Property(entity => entity.UsedAt).IsConcurrencyToken(); // a token is used once, also by requests racing
             token.HasIndex(entity => entity.TokenHash).IsUnique();
             token.HasIndex(entity => new { entity.AccountId, entity.Purpose });
         });
@@ -83,11 +87,29 @@ internal sealed class AccountTokenRepository(LocalAccountsDbContext db) : IAccou
     public async Task<IReadOnlyList<AccountToken>> ListUnusedAsync(Guid accountId, AccountTokenPurpose purpose, CancellationToken cancellationToken) =>
         await db.Tokens.Where(token => token.AccountId == accountId && token.Purpose == purpose && token.UsedAt == null).ToListAsync(cancellationToken).ConfigureAwait(false);
 
+    public async Task<int> CountIssuedSinceAsync(Guid accountId, AccountTokenPurpose purpose, DateTimeOffset since, CancellationToken cancellationToken) =>
+        (await db.Tokens.Where(token => token.AccountId == accountId && token.Purpose == purpose).Select(token => token.CreatedAt).ToListAsync(cancellationToken).ConfigureAwait(false))
+            .Count(created => created >= since);
+
     public void Add(AccountToken token) => db.Tokens.Add(token);
 }
 
 internal sealed class LocalUnitOfWork(LocalAccountsDbContext db, IDomainEventDispatcher dispatcher) : ILocalUnitOfWork
 {
+    public async Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            db.ChangeTracker.Clear();
+            return false;
+        }
+    }
+
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
     {
         var aggregates = db.ChangeTracker.Entries<IHasDomainEvents>().Select(entry => entry.Entity).Where(entity => entity.DomainEvents.Count > 0).ToList();

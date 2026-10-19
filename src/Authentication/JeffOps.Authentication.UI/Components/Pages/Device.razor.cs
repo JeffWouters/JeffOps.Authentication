@@ -1,4 +1,6 @@
+using JeffOps.Authentication.Application.Sessions;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 
 namespace JeffOps.Authentication.UI.Components.Pages;
@@ -11,11 +13,14 @@ public sealed partial class Device
     public string? UserCode { get; set; }
 
     /// <summary>
-    /// The display name of the application asking for access, from the <c>client</c> query value. Set once the code has been
-    /// checked; its presence switches the page from entering a code to allowing or denying.
+    /// The token server's sealed consent ticket for the code (<see cref="DeviceConsentTicket"/>), from the <c>consent</c>
+    /// query value; posted back with the decision. The application's name is shown only from it, never from the query.
     /// </summary>
-    [SupplyParameterFromQuery(Name = "client")]
-    public string? Client { get; set; }
+    [SupplyParameterFromQuery(Name = "consent")]
+    public string? Consent { get; set; }
+
+    /// <summary>The registered name of the application the code was issued to, once the code has been checked.</summary>
+    private string? Client { get; set; }
 
     /// <summary>The outcome of a decision, from the <c>result</c> query value: <c>approved</c> or <c>denied</c>.</summary>
     [SupplyParameterFromQuery(Name = "result")]
@@ -40,6 +45,8 @@ public sealed partial class Device
             http.Response.Headers.CacheControl = "no-store";
         }
 
+        Client = ClientNameFromTicket();
+
         Message = (Result, Error) switch
         {
             ("approved", _) => "Done. You can go back to your device.",
@@ -48,5 +55,25 @@ public sealed partial class Device
             (_, not null) => "That didn't work. Try again.",
             _ => null,
         };
+    }
+
+    private string? ClientNameFromTicket()
+    {
+        if (string.IsNullOrEmpty(Consent) || HttpContext?.RequestServices.GetService(typeof(IDataProtectionProvider)) is not IDataProtectionProvider provider)
+        {
+            return null;
+        }
+
+        try
+        {
+            var json = provider.CreateProtector(DeviceConsentTicket.Purpose).ToTimeLimitedDataProtector().Unprotect(Consent);
+            return DeviceConsentTicket.Deserialize(json) is { } ticket && string.Equals(ticket.UserCode, UserCode, StringComparison.Ordinal)
+                ? ticket.DisplayName
+                : null;
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            return null;
+        }
     }
 }

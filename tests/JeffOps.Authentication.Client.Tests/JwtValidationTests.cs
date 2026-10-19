@@ -155,7 +155,7 @@ public sealed class AccessContextTests
     private static readonly Guid HomeTenant = Guid.NewGuid();
     private static readonly Guid HeaderTenant = Guid.NewGuid();
 
-    private static async Task<AccessContext> ResolveAsync(ClaimsPrincipal user, bool trustRoot = false, bool trustService = false)
+    private static async Task<AccessContext> ResolveAsync(ClaimsPrincipal user, bool trustService = false)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -164,7 +164,6 @@ public sealed class AccessContextTests
         {
             ["JeffOps:Authentication:Authority"] = "https://issuer.test",
             ["JeffOps:Authentication:Audiences:0"] = "api",
-            ["JeffOps:Authentication:ServiceTokenTenantScoping:TrustForRootTokens"] = trustRoot.ToString(),
             ["JeffOps:Authentication:ServiceTokenTenantScoping:TrustForServiceTokens"] = trustService.ToString(),
         }).Build());
 
@@ -202,12 +201,12 @@ public sealed class AccessContextTests
         (await ResolveAsync(Principal(("sub", "svc-reports"), ("lvl", "Service")), trustService: true)).EffectiveTenantId.ShouldBe(HeaderTenant);
 
     [Fact]
-    public async Task A_root_token_needs_its_own_switch()
+    public async Task A_platform_administrator_is_never_scoped_by_headers()
     {
-        var root = Principal(("sub", "svc-admin"), ("lvl", "Root"));
+        // Root comes only from a person's membership; acting in a tenant goes through the audited tenant switch.
+        var root = Principal(("sub", Guid.NewGuid().ToString()), ("lvl", "Root"));
 
         (await ResolveAsync(root, trustService: true)).EffectiveTenantId.ShouldBeNull();
-        (await ResolveAsync(root, trustRoot: true)).EffectiveTenantId.ShouldBe(HeaderTenant);
     }
 
     [Fact]
@@ -215,7 +214,6 @@ public sealed class AccessContextTests
     {
         var context = await ResolveAsync(
             Principal(("sub", Guid.NewGuid().ToString()), ("tid", HomeTenant.ToString())),
-            trustRoot: true,
             trustService: true);
 
         context.EffectiveTenantId.ShouldBe(HomeTenant);

@@ -654,7 +654,7 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Flow:** `account/login` (hosted UI) → `account/login/discover?email=` (home realm discovery from `Federation:DomainProviders`, else the provider list) → `signin/{provider}` (OpenIddict client challenge) → provider → `signin/callback/{provider}` → `CompleteExternalSignIn` (link on (issuer, subject), domain policy, just-in-time account, MFA policy, `IExternalSignInObserver` hooks) → sign-in scheme → back to the local return URL (never an absolute URL: no open redirect) → `connect/authorize` completes the code flow.
 - **Providers:** `AddOidcProvider(name, …)` (`Federation.Oidc`) for any OpenID Connect provider; `AddEntra(…)` (`Federation.Entra`, built on `Federation.Oidc` via OpenIddict's Microsoft web provider; links on `login.microsoftonline.com/{tid}` + `oid`, exposes `tid` as `DirectoryId`, treats Entra email as unverified). A plug-in may build on another plug-in, never on Infrastructure (architecture rule).
 - **Provider state** (the OpenIddict client's state tokens) is protected with Data Protection, so a callback can land on any replica sharing the key ring.
-- **Domain policy** (`Federation:AllowedEmailDomains`, `OpenRegistration`) applies to every external sign-in, not just the first. With no allowed domains, sign-in is closed outside Development unless `OpenRegistration` is set.
+- **Domain policy** (`Federation:AllowedEmailDomains`, `OpenRegistration`) applies to every external sign-in, not just the first. With no allowed domains, sign-in is closed outside Development unless `OpenRegistration` is set. Only an email the provider marks verified matches an allowed domain; Entra's counts as verified only with the optional claim `xms_edov` (domain owner verified).
 - **MFA from providers:** `amr`, plus `acr`/`acrs` values listed in `Federation:MultiFactorAuthenticationContexts`.
 - **Login UI** (`JeffOps.Authentication.UI`): Razor components with static SSR and no scripts; sends its own CSP (`default-src 'none'; style-src 'self'; form-action 'self' https:`). Hosts call `UseAntiforgery()` and `MapStaticAssets()`.
 - **Tested end to end** with a second JeffOps token server as the upstream provider.
@@ -1001,6 +1001,37 @@ Non-negotiable defaults. Each has a test.
 - [ ] Rate limiting partitions: preflight → stream → tenant → auth → session → IP.
 - [ ] Failed sign-ins audited with a rate budget.
 - [x] NuGet audit covers transitive packages; vulnerable transitive versions are pinned centrally (`CentralPackageTransitivePinningEnabled`).
+
+### 16.1 As built (2026-10 hardening, access and federation)
+
+- **Delegated administration** is held to `ManagementOptions.DelegationCeiling`: a token acting for a tenant through
+  delegation (`dlg_scope`) administers only the permissions the ceiling and the delegation both allow.
+- **Tenant headers** scope only service tokens. `Service` and `Delegated` membership levels map to `Tenant` in user
+  tokens. The BFF strips `X-Tenant-Id` and `X-Acting-Tenant-Id` from browser requests (`BffOptions.StripRequestHeaders`).
+- **ABAC** evaluates with three-valued logic: a missing attribute is unknown, never equal to a value. A Deny policy
+  applies unless its condition is certainly false; a Permit applies only when certainly true. Use `exists` to test
+  presence. Policy targets are validated on save (`resource`, `prefix.*`, or `*`).
+- **Role changes:** requests expire after `ManagementOptions.RoleChangeRequestLifetime` (7 days); the approver and the
+  requester must both hold a permission being added; a request is decided once (concurrency token). Break-glass and
+  expired assignments are granted again, never recertified or revived.
+- **Device flow:** the confirmation page names the client only from a token-server consent ticket (Data Protection,
+  10 minutes) bound to the user code. An approval without a matching ticket shows the confirmation again.
+- **Local sign-in:** an attempt is reserved (counted and saved) before the password or code is checked, so parallel
+  guesses all count. A correct password resets the count only when no second factor follows. Emailed sign-in codes are
+  capped at `LocalAccountOptions.MaxEmailCodesPerHour` (5).
+- **Fresh sign-ins through providers:** `prompt=login` and `max_age` send the user to sign in with
+  `jeffops_signed_in_after` in the return URL. A Data-Protected cookie bound to that URL settles them for that request
+  only (a pushed request keeps them). Providers are asked again (`prompt=login` and `max_age`, SAML `ForceAuthn`). An
+  answer whose `auth_time` or `AuthnInstant` predates the request (one minute of clock skew) gets
+  `reauthentication_required`. `auth_time` in tokens is when the user signed in here.
+- **Email-domain allow-list:** only emails the provider marks verified count (Entra: optional claim `xms_edov`).
+- **SAML metadata:** 10 s and 1 MB per download (headers and body). Tenants' downloads are single-flight per provider,
+  with a 1-minute back-off after a failure. Cached metadata counts only for the URL and entity id it came from, and for at
+  most `MetadataMaxAge` (7 days). A provider with no certificate to check signatures is refused at sign-in, the assertion
+  consumer and single logout. The service provider's own metadata endpoint never downloads the provider's.
+- **Suspended or deleted tenants** (`TenantInfo.AcceptsSessions` false, or unknown): their SCIM tokens stop working, their
+  own providers are gone, and their verified domains admit and claim no one. An SSO-only policy keeps refusing other
+  sign-ins under those domains.
 
 ---
 

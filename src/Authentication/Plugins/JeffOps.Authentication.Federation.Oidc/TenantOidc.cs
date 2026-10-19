@@ -160,6 +160,13 @@ public static partial class TenantOidcEndpoints
             query["login_hint"] = login_hint;
         }
 
+        // The client asked for a fresh sign-in: so does this server, of the provider.
+        if (FreshSignIn.RequiredAfter(local, time.GetUtcNow()) is { } after)
+        {
+            query["prompt"] = "login";
+            query["max_age"] = FreshSignIn.MaxAge(after, time.GetUtcNow()).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         var endpoint = document.Configuration.AuthorizationEndpoint;
         var separator = endpoint.Contains('?', StringComparison.Ordinal) ? '&' : '?';
         return Results.Redirect(endpoint + separator + string.Join('&', query.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}")));
@@ -244,6 +251,13 @@ public static partial class TenantOidcEndpoints
         {
             LogRejected(logger, provider, "the ID token names no subject");
             return BackToLogin(pending.ReturnUrl, "provider_error");
+        }
+
+        // A fresh sign-in was asked for: the provider's own single sign-on session, from before, doesn't count.
+        if (!FreshSignIn.ProviderAuthenticatedInTime(FreshSignIn.AuthTime(Claim(idToken, "auth_time")), FreshSignIn.RequiredAfter(pending.ReturnUrl, time.GetUtcNow())))
+        {
+            LogRejected(logger, provider, "authenticated before the fresh sign-in the client asked for");
+            return BackToLogin(pending.ReturnUrl, FreshSignIn.ReauthenticationRequired);
         }
 
         // A tenant's own provider signs in only that tenant's people: addresses in the domains the tenant verified. The tenant

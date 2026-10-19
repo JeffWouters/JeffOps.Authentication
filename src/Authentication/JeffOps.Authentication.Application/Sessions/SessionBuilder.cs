@@ -104,7 +104,15 @@ public sealed class SessionBuilder(ITenantDirectory tenants, ClaimNames names, I
         ArgumentNullException.ThrowIfNull(claims);
         ArgumentNullException.ThrowIfNull(standing);
 
-        claims.Add(new Claim(names.Level, (standing.Membership?.Level ?? AccessLevel.Tenant).ToString()));
+        // Service and Delegated describe tokens this server issues (client credentials, tenant switch), never a person's
+        // membership: a directory answering them for a user is treated as a plain tenant member.
+        var level = standing.Membership?.Level ?? AccessLevel.Tenant;
+        if (level is AccessLevel.Service or AccessLevel.Delegated)
+        {
+            level = AccessLevel.Tenant;
+        }
+
+        claims.Add(new Claim(names.Level, level.ToString()));
         if (standing.Membership is { } membership)
         {
             claims.Add(new Claim(names.Tenant, membership.TenantId.ToString()));

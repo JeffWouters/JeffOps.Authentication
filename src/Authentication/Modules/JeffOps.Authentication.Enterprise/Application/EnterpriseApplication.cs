@@ -1,3 +1,4 @@
+using JeffOps.Authentication.Abstractions.Tenancy;
 using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Application.Federation;
 using JeffOps.Authentication.Enterprise.Domain;
@@ -146,18 +147,22 @@ public static class EnterpriseErrors
     public const string TooManyProviders = "too_many_providers";
 }
 
-/// <summary>Tenants' own providers, for the SAML and OIDC plugins; only while an operator allows the tenant to have them.</summary>
+/// <summary>
+/// Tenants' own providers, for the SAML and OIDC plugins; only while an operator allows the tenant to have them, and while
+/// the tenant accepts sessions (not suspended or deleted).
+/// </summary>
 public sealed class EnterpriseTenantProviders(
     ITenantIdentityProviderRepository providers,
     ITenantOidcProviderRepository oidcProviders,
     ISsoPolicyRepository policies,
-    IClientSecretProtector secrets) : ITenantProviderDirectory
+    IClientSecretProtector secrets,
+    ITenantDirectory tenants) : ITenantProviderDirectory
 {
     public async Task<TenantOidcProvider?> FindOidcAsync(string name, CancellationToken cancellationToken)
     {
         if (TenantOidcIdentityProvider.IdOf(name) is not { } id
             || await oidcProviders.FindAsync(id, cancellationToken).ConfigureAwait(false) is not { } provider
-            || await policies.FindAsync(provider.TenantId, cancellationToken).ConfigureAwait(false) is not { CustomProvidersAllowed: true })
+            || !await UsableAsync(provider.TenantId, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -184,7 +189,7 @@ public sealed class EnterpriseTenantProviders(
     {
         if (TenantIdentityProvider.IdOf(name) is not { } id
             || await providers.FindAsync(id, cancellationToken).ConfigureAwait(false) is not { } provider
-            || await policies.FindAsync(provider.TenantId, cancellationToken).ConfigureAwait(false) is not { CustomProvidersAllowed: true })
+            || !await UsableAsync(provider.TenantId, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
@@ -202,6 +207,10 @@ public sealed class EnterpriseTenantProviders(
     }
 
     private static Uri? Url(string? value) => value is null ? null : new Uri(value);
+
+    private async Task<bool> UsableAsync(Guid tenantId, CancellationToken cancellationToken) =>
+        await policies.FindAsync(tenantId, cancellationToken).ConfigureAwait(false) is { CustomProvidersAllowed: true }
+        && await tenants.FindTenantAsync(tenantId, cancellationToken).ConfigureAwait(false) is { AcceptsSessions: true };
 }
 
 /// <summary>The accounts a tenant's SCIM provisioning created or linked, by email.</summary>
@@ -217,8 +226,11 @@ public sealed class ScimProvisionedAccounts(IAccountRepository accounts, IScimUs
     }
 }
 
-/// <summary>Home realm discovery and SSO policy from tenants' verified domains.</summary>
-public sealed class EnterpriseHomeRealms(ITenantDomainRepository domains, ISsoPolicyRepository policies) : IHomeRealmDirectory
+/// <summary>
+/// Home realm discovery and SSO policy from tenants' verified domains. While a tenant is suspended (or gone) its domains
+/// admit and claim no one, and an SSO-only policy keeps refusing every other way in: nobody signs in under its domains.
+/// </summary>
+public sealed class EnterpriseHomeRealms(ITenantDomainRepository domains, ISsoPolicyRepository policies, ITenantDirectory tenants) : IHomeRealmDirectory
 {
     public async Task<RealmPolicy?> FindByDomainAsync(string domain, CancellationToken cancellationToken)
     {
@@ -229,7 +241,8 @@ public sealed class EnterpriseHomeRealms(ITenantDomainRepository domains, ISsoPo
         }
 
         var policy = await policies.FindAsync(verified.TenantId, cancellationToken).ConfigureAwait(false);
-        return new RealmPolicy(verified.TenantId, policy?.Provider, policy?.SsoOnly ?? false);
+        var active = await tenants.FindTenantAsync(verified.TenantId, cancellationToken).ConfigureAwait(false) is { AcceptsSessions: true };
+        return new RealmPolicy(verified.TenantId, active ? policy?.Provider : null, policy?.SsoOnly ?? false);
     }
 }
 

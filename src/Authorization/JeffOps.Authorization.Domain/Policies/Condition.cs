@@ -8,7 +8,11 @@ namespace JeffOps.Authorization.Domain.Policies;
 /// </summary>
 /// <remarks>
 /// The attribute context maps names to JSON values: <c>subject.*</c>, <c>resource.*</c>, <c>environment.*</c> and
-/// <c>action</c>. A missing attribute evaluates as undefined, which equals only null/undefined and orders against nothing.
+/// <c>action</c>. Evaluation has three outcomes (<see cref="Test"/>): true, false, or unknown (null) when a comparison involves
+/// a missing attribute or values of different kinds. <c>and</c>, <c>or</c> and <c>not</c> combine them as in SQL (false wins
+/// <c>and</c>, true wins <c>or</c>, <c>not</c> keeps unknown). A Permit policy applies only when its condition is true; a
+/// Deny policy also when it is unknown, so a fence written with missing or mistyped attributes fails closed. Use
+/// <c>exists</c> to test for an attribute explicitly.
 /// </remarks>
 public abstract class Condition
 {
@@ -18,43 +22,87 @@ public abstract class Condition
     /// <summary>The condition that never holds.</summary>
     public static Condition Never { get; } = new Constant(false);
 
-    public abstract bool Evaluate(IReadOnlyDictionary<string, JsonElement> context);
+    /// <summary>True, false, or null when the outcome is unknown (a missing attribute, values of different kinds).</summary>
+    public abstract bool? Test(IReadOnlyDictionary<string, JsonElement> context);
+
+    /// <summary>Whether the condition certainly holds (unknown counts as not holding).</summary>
+    public bool Evaluate(IReadOnlyDictionary<string, JsonElement> context) => Test(context) == true;
 
     internal sealed class Constant(bool value) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context) => value;
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context) => value;
     }
 
     internal sealed class All(IReadOnlyList<Condition> conditions) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context) =>
-            conditions.All(condition => condition.Evaluate(context));
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context)
+        {
+            var unknown = false;
+            foreach (var condition in conditions)
+            {
+                switch (condition.Test(context))
+                {
+                    case false:
+                        return false;
+                    case null:
+                        unknown = true;
+                        break;
+                }
+            }
+
+            return unknown ? null : true;
+        }
     }
 
     internal sealed class Any(IReadOnlyList<Condition> conditions) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context) =>
-            conditions.Any(condition => condition.Evaluate(context));
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context)
+        {
+            var unknown = false;
+            foreach (var condition in conditions)
+            {
+                switch (condition.Test(context))
+                {
+                    case true:
+                        return true;
+                    case null:
+                        unknown = true;
+                        break;
+                }
+            }
+
+            return unknown ? null : false;
+        }
     }
 
     internal sealed class Not(Condition inner) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context) => !inner.Evaluate(context);
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context) => inner.Test(context) is { } value ? !value : null;
+    }
+
+    internal sealed class Exists(Operand operand) : Condition
+    {
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context) =>
+            operand.Resolve(context).ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null);
     }
 
     internal sealed class Comparison(string op, Operand left, Operand right) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context)
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context)
         {
-            var order = JsonValues.Compare(left.Resolve(context), right.Resolve(context));
+            if (JsonValues.Compare(left.Resolve(context), right.Resolve(context)) is not { } order)
+            {
+                return null;
+            }
+
             return op switch
             {
                 "eq" => order == 0,
-                "ne" => order is { } ne && ne != 0,
-                "lt" => order is { } lt && lt < 0,
-                "le" => order is { } le && le <= 0,
-                "gt" => order is { } gt && gt > 0,
-                "ge" => order is { } ge && ge >= 0,
+                "ne" => order != 0,
+                "lt" => order < 0,
+                "le" => order <= 0,
+                "gt" => order > 0,
+                "ge" => order >= 0,
                 _ => false,
             };
         }
@@ -62,21 +110,43 @@ public abstract class Condition
 
     internal sealed class In(Operand value, IReadOnlyList<Operand> candidates) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context)
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context)
         {
             var resolved = value.Resolve(context);
-            return candidates.Any(candidate => JsonValues.Compare(resolved, candidate.Resolve(context)) == 0);
+            if (resolved.ValueKind == JsonValueKind.Undefined)
+            {
+                return null;
+            }
+
+            var unknown = false;
+            foreach (var candidate in candidates)
+            {
+                switch (JsonValues.Compare(resolved, candidate.Resolve(context)))
+                {
+                    case 0:
+                        return true;
+                    case null:
+                        unknown = true;
+                        break;
+                }
+            }
+
+            return unknown ? null : false;
         }
     }
 
     internal sealed class Contains(Operand array, Operand value) : Condition
     {
-        public override bool Evaluate(IReadOnlyDictionary<string, JsonElement> context)
+        public override bool? Test(IReadOnlyDictionary<string, JsonElement> context)
         {
             var resolvedArray = array.Resolve(context);
             var resolvedValue = value.Resolve(context);
-            return resolvedArray.ValueKind == JsonValueKind.Array
-                && resolvedArray.EnumerateArray().Any(element => JsonValues.Compare(element, resolvedValue) == 0);
+            if (resolvedArray.ValueKind != JsonValueKind.Array || resolvedValue.ValueKind == JsonValueKind.Undefined)
+            {
+                return null;
+            }
+
+            return resolvedArray.EnumerateArray().Any(element => JsonValues.Compare(element, resolvedValue) == 0);
         }
     }
 }
@@ -120,9 +190,17 @@ internal abstract class Operand
 
 internal static class JsonValues
 {
-    /// <summary>-1/0/1 for comparable values of the same kind; null when the kinds differ or don't order.</summary>
+    /// <summary>
+    /// -1/0/1 for comparable values of the same kind (explicit JSON nulls compare equal); null when either is missing, the
+    /// kinds differ, or they don't order.
+    /// </summary>
     public static int? Compare(JsonElement left, JsonElement right)
     {
+        if (left.ValueKind == JsonValueKind.Undefined || right.ValueKind == JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
         if (left.ValueKind == JsonValueKind.Number && right.ValueKind == JsonValueKind.Number)
         {
             return left.GetDouble().CompareTo(right.GetDouble());
@@ -138,7 +216,7 @@ internal static class JsonValues
             return (left.ValueKind == JsonValueKind.True).CompareTo(right.ValueKind == JsonValueKind.True);
         }
 
-        if (IsNothing(left) && IsNothing(right))
+        if (left.ValueKind == JsonValueKind.Null && right.ValueKind == JsonValueKind.Null)
         {
             return 0;
         }
@@ -148,5 +226,4 @@ internal static class JsonValues
 
     private static bool IsBoolean(JsonElement element) => element.ValueKind is JsonValueKind.True or JsonValueKind.False;
 
-    private static bool IsNothing(JsonElement element) => element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined;
 }

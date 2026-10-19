@@ -187,8 +187,8 @@ public sealed class FederationOptions
     public bool AutoProvisionAccounts { get; set; } = true;
 
     /// <summary>
-    /// Email domains allowed to sign in through external providers, e.g. <c>contoso.com</c>. Empty: see
-    /// <see cref="OpenRegistration"/>.
+    /// Email domains allowed to sign in through external providers, e.g. <c>contoso.com</c>. Only an email the provider
+    /// marks verified counts (for Entra: the <c>xms_edov</c> optional claim). Empty: see <see cref="OpenRegistration"/>.
     /// </summary>
     public IList<string> AllowedEmailDomains { get; } = [];
 

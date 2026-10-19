@@ -42,12 +42,10 @@ internal sealed class HttpAccessContextAccessor(
         return headerTenant is null ? context : context with { ActingTenantId = headerTenant };
     }
 
-    private bool HeaderScopingEnabled(AccessLevel level) => level switch
-    {
-        AccessLevel.Root => options.Value.ServiceTokenTenantScoping.TrustForRootTokens,
-        AccessLevel.Service => options.Value.ServiceTokenTenantScoping.TrustForServiceTokens,
-        _ => false,
-    };
+    // Only service tokens (client credentials): a person, platform administrators included, acts in another tenant only
+    // through the token server's audited tenant switch.
+    private bool HeaderScopingEnabled(AccessLevel level) =>
+        level == AccessLevel.Service && options.Value.ServiceTokenTenantScoping.TrustForServiceTokens;
 
     private static Guid? TenantFrom(HttpContext http, string header) =>
         http.Request.Headers.TryGetValue(header, out var value) && value.Count == 1 && Guid.TryParse(value[0], out var tenant)

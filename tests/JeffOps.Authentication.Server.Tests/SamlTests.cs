@@ -231,10 +231,44 @@ public sealed class SamlTests : IAsyncDisposable
             metadataXml: IdpMetadata("https://impostor.test/", _idpCertificate));
         using var browser = new Browser(_host);
 
-        var (requestId, acs, spEntityId) = await StartSignInAsync(browser);
-        var response = await PostResponseAsync(browser, Response(requestId, acs, spEntityId, null, _idpCertificate));
+        // No certificate is trusted for the provider, so sign-in through it doesn't even start.
+        var start = await browser.GetAsync(null!, "signin/saml/corp?returnUrl=%2Fdone");
+        start.Headers.Location!.OriginalString.ShouldContain("error=provider_error");
+        start.Headers.Location.OriginalString.ShouldNotContain("idp.test");
+    }
 
-        response.Headers.Location!.OriginalString.ShouldContain("error=provider_error", customMessage: "no certificate is trusted for the provider");
+    [Fact]
+    public async Task A_provider_without_certificates_refuses_logout_requests_even_with_a_signature_parameter()
+    {
+        // A metadata-only provider whose metadata didn't load: nothing could check a signature.
+        await StartAsync(metadataXml: IdpMetadata("https://impostor.test/", _idpCertificate));
+
+        var forged = LogoutRequest("employee-4711", null).OriginalString + "&SigAlg=http%3A%2F%2Fwww.w3.org%2F2001%2F04%2Fxmldsig-more%23rsa-sha256&Signature=AAAA";
+        (await _host.Client.GetAsync(new Uri(forged, UriKind.Relative), TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task A_fresh_sign_in_forces_authentication_at_the_provider_and_an_older_one_is_refused()
+    {
+        await StartAsync();
+        var returnUrl = $"/done?jeffops_signed_in_after={_host.Time.GetUtcNow().ToUnixTimeSeconds()}";
+
+        using (var browser = new Browser(_host))
+        {
+            var request = await StartSignInRequestAsync(browser, returnUrl);
+            request.ForceAuthn.ShouldBe(true);
+
+            // The provider answers from its single sign-on session, authenticated an hour ago.
+            var stale = await PostResponseAsync(browser, Response(request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer, null, _idpCertificate, authenticatedAt: _host.Time.GetUtcNow().UtcDateTime.AddHours(-1)));
+            stale.Headers.Location!.OriginalString.ShouldContain("error=reauthentication_required");
+        }
+
+        using (var browser = new Browser(_host))
+        {
+            var request = await StartSignInRequestAsync(browser, returnUrl);
+            var fresh = await PostResponseAsync(browser, Response(request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer, null, _idpCertificate, authenticatedAt: _host.Time.GetUtcNow().UtcDateTime));
+            fresh.Headers.Location!.OriginalString.ShouldBe(returnUrl);
+        }
     }
 
     private static string IdpMetadata(string entityId, X509Certificate2 signing) => $"""
@@ -446,7 +480,13 @@ public sealed class SamlTests : IAsyncDisposable
     /// <summary>Follows the login page's provider link to the AuthnRequest, and reads it as the provider would.</summary>
     private static async Task<(string RequestId, Uri Acs, string SpEntityId)> StartSignInAsync(Browser browser)
     {
-        var challenge = await browser.GetAsync(null!, "signin/corp?returnUrl=%2Fdone");
+        var request = await StartSignInRequestAsync(browser, "/done");
+        return (request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer);
+    }
+
+    private static async Task<Saml2AuthnRequest> StartSignInRequestAsync(Browser browser, string returnUrl)
+    {
+        var challenge = await browser.GetAsync(null!, $"signin/corp?returnUrl={Uri.EscapeDataString(returnUrl)}");
         challenge.StatusCode.ShouldBe(HttpStatusCode.Redirect);
         var start = await browser.GetAsync(null!, challenge.Headers.Location!.OriginalString);
         start.StatusCode.ShouldBe(HttpStatusCode.Redirect, await start.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
@@ -458,12 +498,12 @@ public sealed class SamlTests : IAsyncDisposable
         new Saml2RedirectBinding().ReadSamlRequest(
             new ITfoxtec.Identity.Saml2.Http.HttpRequest { Method = "GET", Query = query, QueryString = location.Query, Form = new NameValueCollection() },
             request);
-        return (request.IdAsString, request.AssertionConsumerServiceUrl, request.Issuer);
+        return request;
     }
 
     private static string Response(
         string inResponseTo, Uri acs, string audience, string? authnContext, X509Certificate2? signer,
-        string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent", X509Certificate2? encryptFor = null)
+        string nameIdFormat = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent", X509Certificate2? encryptFor = null, DateTime? authenticatedAt = null)
     {
         var configuration = new Saml2Configuration { Issuer = IdpEntityId, SigningCertificate = signer, EncryptionCertificate = encryptFor };
         var response = new Saml2AuthnResponse(configuration)
@@ -480,6 +520,10 @@ public sealed class SamlTests : IAsyncDisposable
             ]),
         };
         response.CreateSecurityToken(audience, new Uri(authnContext ?? AuthnContextClassTypes.PasswordProtectedTransport.OriginalString), null, 5, 60);
+        if (authenticatedAt is { } instant)
+        {
+            response.Saml2SecurityToken.Assertion.Statements.OfType<Saml2AuthenticationStatement>().Single().AuthenticationInstant = instant;
+        }
 
         var binding = new Saml2PostBinding();
         binding.Bind(response);

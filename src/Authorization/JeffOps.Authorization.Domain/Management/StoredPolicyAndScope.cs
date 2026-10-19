@@ -46,6 +46,11 @@ public sealed class StoredPolicy : AggregateRoot<Guid>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(targetAction);
+        if (!Policies.AttributePolicy.IsValidTarget(targetAction))
+        {
+            throw new ArgumentException("A policy targets *, one action, or a prefix such as billing.*.", nameof(targetAction));
+        }
+
         ConditionParser.Parse(conditionJson);
 
         Name = name.Trim();

@@ -4,6 +4,7 @@ using JeffOps.Authorization.Application.Abstractions;
 using JeffOps.Authorization.Application.Management;
 using JeffOps.Authorization.Contracts;
 using JeffOps.Authorization.Domain.Management;
+using JeffOps.Authorization.Domain.Permissions;
 
 namespace JeffOps.Authorization.Application.Features.RoleChanges;
 
@@ -99,6 +100,27 @@ public sealed class DecideRoleChangeHandler(
             return refused;
         }
 
+        if (command.Approve && time.GetUtcNow() - request.RequestedAt > guard.Options.RoleChangeRequestLifetime)
+        {
+            return Error.Failure(ManagementErrors.Expired, "This request is too old to approve; reject it and ask again.");
+        }
+
+        if (command.Approve && request.Kind == RoleChangeKind.AddPermission && request.PermissionCode is { } added && request.TenantId is { } changeTenant)
+        {
+            // Both sides must still be able to make the change: the approver holds the permission being added, and the
+            // requester still holds the right to request it.
+            if (!caller.IsRoot
+                && !Permission.GrantsAny(await held.OfCallerAsync(caller, changeTenant, "tenant", null, cancellationToken).ConfigureAwait(false), added))
+            {
+                return Error.Forbidden(ManagementErrors.Escalation, $"You can't approve adding {added}: you don't hold it.");
+            }
+
+            if (!Permission.GrantsAny(await held.OfAsync(request.RequestedBy, changeTenant, "tenant", null, cancellationToken).ConfigureAwait(false), guard.Options.Permissions.RolesWrite))
+            {
+                return Error.Forbidden(ManagementErrors.RequesterLacksPermission, "The requester no longer holds the permission to make this change.");
+            }
+        }
+
         if (command.Approve && request.Kind == RoleChangeKind.AssignRole && !caller.IsRoot
             && await roles.FindAsync(request.RoleId!.Value, cancellationToken).ConfigureAwait(false) is { } role)
         {
@@ -115,7 +137,11 @@ public sealed class DecideRoleChangeHandler(
             return failed;
         }
 
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // The status is a concurrency token: of two decisions racing, one is saved and the other answers conflict.
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Conflict(ManagementErrors.AlreadyDecided, "The request has already been decided.");
+        }
         await audit.WriteAsync(command.Approve ? "role.change.approved" : "role.change.rejected", "role_change", request.Id.ToString(), caller, request.TenantId, cancellationToken).ConfigureAwait(false);
         return request.ToDto();
     }

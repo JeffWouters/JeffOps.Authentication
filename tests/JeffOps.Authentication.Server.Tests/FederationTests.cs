@@ -138,6 +138,68 @@ public sealed class FederationTests
     }
 
     [Fact]
+    public async Task The_allow_list_admits_only_emails_the_provider_vouches_for()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, new() { ["JeffOps:TokenServer:Federation:AllowedEmailDomains:0"] = "contoso.com" });
+        var claimed = await upstream.CreateAccountAsync("mallory@contoso.com", emailVerified: false);
+        var verified = await upstream.CreateAccountAsync("lin@contoso.com");
+
+        using (var browser = new Browser(downstream))
+        {
+            var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, claimed.Id);
+            callback.Headers.Location!.OriginalString.ShouldContain("error=domain_not_allowed");
+        }
+
+        using (var browser = new Browser(downstream))
+        {
+            var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, verified.Id);
+            callback.Headers.Location!.OriginalString.ShouldBe("/done");
+        }
+    }
+
+    [Fact]
+    public async Task A_fresh_sign_in_is_asked_of_the_provider_and_an_older_authentication_is_refused()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream);
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+
+        // The client asked downstream for prompt=login; the user is already signed in at the upstream provider.
+        async Task<HttpResponseMessage> SignInAsync(string returnUrl)
+        {
+            using var browser = new Browser(downstream);
+            using var atUpstream = new Browser(upstream);
+            var challenge = await browser.GetAsync(downstream, $"signin/upstream?returnUrl={Uri.EscapeDataString(returnUrl)}");
+            var signedIn = $"{upstreamAccount.Id}|pwd,mfa|{upstream.Time.GetUtcNow().AddHours(-1).ToUnixTimeSeconds()}";
+
+            // Upstream got prompt=login (in the pushed request): its older session doesn't do, the user signs in there again.
+            using (var authorize = new HttpRequestMessage(HttpMethod.Get, challenge.Headers.Location!.PathAndQuery.TrimStart('/')))
+            {
+                authorize.Headers.Add(HeaderSignIn.Header, signedIn);
+                var asked = await atUpstream.SendAsync(authorize);
+                asked.Headers.Location!.OriginalString.ShouldStartWith("/login?returnUrl=", customMessage: "the provider was asked to authenticate the user again");
+                challenge = asked;
+            }
+
+            var again = Uri.UnescapeDataString(challenge.Headers.Location!.OriginalString["/login?returnUrl=".Length..]);
+            using var resumed = new HttpRequestMessage(HttpMethod.Get, again.TrimStart('/'));
+            resumed.Headers.Add(HeaderSignIn.Header, $"{upstreamAccount.Id}|pwd,mfa|{upstream.Time.GetUtcNow().ToUnixTimeSeconds()}");
+            var code = await atUpstream.SendAsync(resumed);
+            code.Headers.Location!.ToString().ShouldStartWith("https://localhost/signin/callback/upstream", customMessage: "the new sign-in answers the pushed request, once");
+            return await browser.GetAsync(downstream, code.Headers.Location.PathAndQuery);
+        }
+
+        var fresh = $"/done?jeffops_signed_in_after={downstream.Time.GetUtcNow().ToUnixTimeSeconds()}";
+        (await SignInAsync(fresh)).Headers.Location!.OriginalString.ShouldBe(fresh);
+
+        // A provider whose authentication time is before the request (here: its clock an hour behind) doesn't count.
+        downstream.Time.Advance(TimeSpan.FromHours(1));
+        var stale = $"/done?jeffops_signed_in_after={downstream.Time.GetUtcNow().ToUnixTimeSeconds()}";
+        (await SignInAsync(stale)).Headers.Location!.OriginalString.ShouldContain("error=reauthentication_required");
+    }
+
+    [Fact]
     public async Task A_return_url_to_another_site_is_ignored()
     {
         await using var upstream = await StartUpstreamAsync();
@@ -324,6 +386,17 @@ public sealed class EntraMapperTests
         identity.DirectoryId.ShouldBe(tenant.ToString());
         identity.EmailVerified.ShouldBeFalse("Entra's email claim is not verified for every account type");
         identity.Strength.IsMultiFactor.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void An_Entra_email_counts_as_verified_only_with_a_verified_domain_owner()
+    {
+        var tenant = Guid.NewGuid().ToString();
+        var objectId = Guid.NewGuid().ToString();
+
+        Mapper.Map("entra", Principal(("tid", tenant), ("oid", objectId), ("email", "ada@contoso.com"), ("xms_edov", "true"))).Value.EmailVerified.ShouldBeTrue();
+        Mapper.Map("entra", Principal(("tid", tenant), ("oid", objectId), ("email", "ada@contoso.com"), ("xms_edov", "false"))).Value.EmailVerified.ShouldBeFalse();
+        Mapper.Map("entra", Principal(("tid", tenant), ("oid", objectId), ("preferred_username", "ada@contoso.com"), ("xms_edov", "true"))).Value.EmailVerified.ShouldBeFalse();
     }
 
     [Fact]

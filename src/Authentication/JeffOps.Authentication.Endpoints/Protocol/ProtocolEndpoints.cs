@@ -14,6 +14,7 @@ using JeffOps.Authentication.SharedKernel.Results;
 using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -52,13 +53,21 @@ internal static class ProtocolEndpoints
 
         var signedIn = await context.AuthenticateAsync(signInScheme).ConfigureAwait(false);
         var signedInAt = SignInPrincipal.SignedInAt(signedIn.Principal, names);
+        var now = time.GetUtcNow();
+
+        // Coming back from a sign-in that prompt=login or max_age asked for: it must have happened after that time. The URL's
+        // time only ever asks for more; this request's own cookie, which the browser can't forge, also settles prompt=login
+        // and max_age (a pushed request keeps them, so they can't be dropped from the URL).
+        var freshAfter = FreshSignIn.Parse(Single(context, FreshSignIn.Parameter), now);
+        var reauthenticated = FreshSignInCookie.Read(context) is { } resumed && signedInAt >= resumed;
 
         // A client limited to some providers (its own app registration and consent screen at each) gets only sign-ins that came
         // through one of them: a session from another product's registration signs in again here.
         var client = ClientProviders.Find(options.Value, request.ClientId);
         var mustSignIn = !signedIn.Succeeded
-            || request.HasPromptValue(PromptValues.Login)
-            || (request.MaxAge is { } maxAge && signedInAt is { } at && time.GetUtcNow() - at > TimeSpan.FromSeconds(maxAge))
+            || (!reauthenticated && request.HasPromptValue(PromptValues.Login))
+            || (!reauthenticated && request.MaxAge is { } maxAge && signedInAt is { } at && now - at > TimeSpan.FromSeconds(maxAge))
+            || (freshAfter is { } after && (signedInAt is not { } since || since < after))
             || !ClientProviders.Allows(client, SignInPrincipal.ProviderOf(signedIn.Principal));
 
         IResult SignInAgain()
@@ -68,12 +77,29 @@ internal static class ProtocolEndpoints
                 return Forbid(Errors.LoginRequired, "The user is not signed in.");
             }
 
-            // Come back here after signing in, without prompt=login / max_age, or the user would be asked again forever.
-            var parameters = context.Request.HasFormContentType
-                ? context.Request.Form.Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge))
-                : context.Request.Query.Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge));
-            var returnUrl = context.Request.PathBase + context.Request.Path
-                + QueryString.Create(parameters.SelectMany(pair => pair.Value.Select(value => KeyValuePair.Create(pair.Key, value))));
+            // Come back here after signing in, without prompt=login / max_age, or the user would be asked again forever. In their
+            // place, the time the new sign-in must follow: providers are asked to authenticate the user again, and this
+            // endpoint accepts only a sign-in after it.
+            var required = new[]
+            {
+                request.HasPromptValue(PromptValues.Login) ? now : (DateTimeOffset?)null,
+                request.MaxAge is { } age ? now - TimeSpan.FromSeconds(age) : null,
+                freshAfter,
+            }.Max();
+            var parameters = (context.Request.HasFormContentType ? context.Request.Form.AsEnumerable() : context.Request.Query)
+                .Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge or FreshSignIn.Parameter))
+                .SelectMany(pair => pair.Value.Select(value => KeyValuePair.Create(pair.Key, value)))
+                .ToList();
+            if (required is { } since)
+            {
+                parameters.Add(KeyValuePair.Create(FreshSignIn.Parameter, (string?)since.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            }
+
+            var returnUrl = context.Request.PathBase + context.Request.Path + QueryString.Create(parameters);
+            if (required is { } mustFollow)
+            {
+                FreshSignInCookie.Set(context, returnUrl, mustFollow);
+            }
 
             return Results.Challenge(new AuthenticationProperties { RedirectUri = returnUrl }, [signInScheme]);
         }
@@ -83,6 +109,11 @@ internal static class ProtocolEndpoints
             return SignInAgain();
         }
 
+        if (reauthenticated)
+        {
+            FreshSignInCookie.Clear(context);
+        }
+
         if (!Guid.TryParse(signedIn.Principal!.FindFirst(names.Subject)?.Value, out var accountId))
         {
             return Forbid(Errors.AccessDenied, "The sign-in does not identify an account.");
@@ -90,7 +121,7 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var result = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, signedInAt ?? time.GetUtcNow(), request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names)),
+            new StartSessionCommand(accountId, strength, signedInAt ?? now, request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names)),
             context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsFailure && result.Error.Code is GrantErrors.SessionRevoked or GrantErrors.SessionExpired)
@@ -214,9 +245,12 @@ internal static class ProtocolEndpoints
                 return Results.Redirect(string.IsNullOrEmpty(userCode) ? Page : $"{Page}?error=invalid_code");
             }
 
-            var application = await applications.FindByClientIdAsync(code.GetClaim(Claims.ClientId) ?? string.Empty, context.RequestAborted).ConfigureAwait(false);
-            var client = application is null ? "an application" : await applications.GetDisplayNameAsync(application, context.RequestAborted).ConfigureAwait(false);
-            return Results.Redirect($"{Page}?user_code={Uri.EscapeDataString(userCode ?? string.Empty)}&client={Uri.EscapeDataString(client ?? "an application")}");
+            var clientId = code.GetClaim(Claims.ClientId) ?? string.Empty;
+            var application = await applications.FindByClientIdAsync(clientId, context.RequestAborted).ConfigureAwait(false);
+            var client = application is null ? null : await applications.GetDisplayNameAsync(application, context.RequestAborted).ConfigureAwait(false);
+            var ticket = new DeviceConsentTicket(userCode ?? string.Empty, clientId, client ?? clientId).Serialize();
+            var consent = Consent(context).Protect(ticket, DeviceConsentTicket.Lifetime);
+            return Results.Redirect($"{Page}?user_code={Uri.EscapeDataString(userCode ?? string.Empty)}&consent={Uri.EscapeDataString(consent)}");
         }
 
         if (!await antiforgery.IsRequestValidAsync(context).ConfigureAwait(false))
@@ -227,6 +261,12 @@ internal static class ProtocolEndpoints
         if (code is null)
         {
             return Results.Redirect($"{Page}?error=invalid_code");
+        }
+
+        // The user must have seen this code's own client named: otherwise show the confirmation again, with the right name.
+        if (!ConsentShown(context, userCode, code.GetClaim(Claims.ClientId)))
+        {
+            return Results.Redirect($"/connect/verify?user_code={Uri.EscapeDataString(userCode ?? string.Empty)}");
         }
 
         var signInScheme = options.Value.SignInScheme;
@@ -324,6 +364,31 @@ internal static class ProtocolEndpoints
 
         // OpenIddict redirects to the validated post_logout_redirect_uri, or to the RedirectUri below without one.
         return Results.SignOut(new AuthenticationProperties { RedirectUri = "/" }, [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme]);
+    }
+
+    /// <summary>A parameter of the authorize request as the browser sent it (query or form), when given once.</summary>
+    private static string? Single(HttpContext context, string name) =>
+        (context.Request.HasFormContentType ? context.Request.Form[name] : context.Request.Query[name]) is { Count: 1 } values ? values[0] : null;
+
+    private static ITimeLimitedDataProtector Consent(HttpContext context) =>
+        context.RequestServices.GetRequiredService<IDataProtectionProvider>().CreateProtector(DeviceConsentTicket.Purpose).ToTimeLimitedDataProtector();
+
+    /// <summary>Whether the posted consent ticket is the token server's, for this user code and the code's own client.</summary>
+    private static bool ConsentShown(HttpContext context, string? userCode, string? clientId)
+    {
+        string json;
+        try
+        {
+            json = Consent(context).Unprotect(context.Request.Form["consent"].ToString());
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            return false;
+        }
+
+        return DeviceConsentTicket.Deserialize(json) is { } ticket
+            && string.Equals(ticket.UserCode, userCode, StringComparison.Ordinal)
+            && string.Equals(ticket.ClientId, clientId, StringComparison.Ordinal);
     }
 
     /// <summary>

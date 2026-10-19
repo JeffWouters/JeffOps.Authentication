@@ -92,6 +92,44 @@ public sealed class AuthorizationCodeTests
         var returnUrl = Uri.UnescapeDataString(location.OriginalString["/login?returnUrl=".Length..]);
         returnUrl.ShouldStartWith("/connect/authorize?");
         returnUrl.ShouldNotContain("prompt=login", customMessage: "otherwise the user would be asked to sign in forever");
+        returnUrl.ShouldContain($"jeffops_signed_in_after={server.Time.GetUtcNow().ToUnixTimeSeconds()}", customMessage: "the new sign-in must follow the request");
+    }
+
+    [Fact]
+    public async Task Coming_back_from_a_fresh_sign_in_only_a_sign_in_after_the_request_counts()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+        var asked = server.Time.GetUtcNow().ToUnixTimeSeconds();
+        server.Time.Advance(TimeSpan.FromMinutes(1));
+
+        async Task<Uri> AuthorizeSignedInAtAsync(long signedInAt)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
+                $"&scope=openid&code_challenge={SoftwareAuthenticator.Base64Url(System.Security.Cryptography.SHA256.HashData("verifier"u8))}&code_challenge_method=S256&state=xyz&jeffops_signed_in_after={asked}");
+            request.Headers.Add(HeaderSignIn.Header, $"{account.Id}|pwd,mfa|{signedInAt}");
+            return (await server.Client.SendAsync(request, TestContext.Current.CancellationToken)).Headers.Location!;
+        }
+
+        // The browser's sign-in from before the request (an SSO session) doesn't count: sign in again.
+        (await AuthorizeSignedInAtAsync(asked - 1)).OriginalString.ShouldStartWith("/login?returnUrl=");
+
+        // A sign-in after it completes the request.
+        (await AuthorizeSignedInAtAsync(asked + 30)).OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+    }
+
+    [Fact]
+    public async Task A_time_added_to_the_url_can_t_skip_prompt_login()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+        var signedInAt = server.Time.GetUtcNow().ToUnixTimeSeconds();
+        server.Time.Advance(TimeSpan.FromMinutes(1));
+
+        // Only the server's own cookie, for this very request, says the user signed in again for it.
+        var (location, _) = await server.AuthorizeAsync(account.Id, extra: $"&prompt=login&jeffops_signed_in_after={signedInAt - 60}");
+        location.OriginalString.ShouldStartWith("/login?returnUrl=");
     }
 
     [Fact]

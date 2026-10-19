@@ -73,6 +73,12 @@ public sealed class BffOptions
     /// <summary>Whether the session holds an account token: <see cref="AccountApi"/>, or derived sessions.</summary>
     internal bool UsesAccountApi => AccountApi || Delegation.Enabled;
 
+    /// <summary>
+    /// Request headers never forwarded to backends (besides <c>Cookie</c>): headers backends trust only from other services,
+    /// such as the tenant headers of service-token scoping. Default: <c>X-Tenant-Id</c>, <c>X-Acting-Tenant-Id</c>.
+    /// </summary>
+    public IList<string> StripRequestHeaders { get; } = ["X-Tenant-Id", "X-Acting-Tenant-Id"];
+
     /// <summary>The claims of the access token returned by <c>/bff/me</c>.</summary>
     public IList<string> UserClaims { get; } = ["sub", "email", "name", "tid", "org", "lvl", "amr", "step_up", "act_tid", "dlg_scope", "act_kind", "grant_id"];
 

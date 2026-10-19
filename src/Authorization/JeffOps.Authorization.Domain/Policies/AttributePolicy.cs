@@ -88,8 +88,41 @@ public sealed class AttributePolicy
 
     public bool AppliesTo(string action, string? resourceType) =>
         Enabled
-        && (TargetAction == "*" || string.Equals(TargetAction, action, StringComparison.OrdinalIgnoreCase))
+        && TargetMatches(TargetAction, action)
         && (TargetResourceType is null or "*" || string.Equals(TargetResourceType, resourceType, StringComparison.OrdinalIgnoreCase));
 
-    public bool Matches(IReadOnlyDictionary<string, JsonElement> context) => Condition.Evaluate(context);
+    /// <summary>
+    /// Whether the policy's condition holds for <paramref name="context"/>: a Permit only when it certainly does, a Deny also
+    /// when the outcome is unknown (missing or mistyped attributes), so a broken fence fails closed.
+    /// </summary>
+    public bool Matches(IReadOnlyDictionary<string, JsonElement> context) =>
+        Effect == PolicyEffect.Deny ? Condition.Test(context) != false : Condition.Test(context) == true;
+
+    /// <summary>Whether <paramref name="target"/> (<c>*</c>, an action, or <c>prefix.*</c>) covers <paramref name="action"/>.</summary>
+    public static bool TargetMatches(string target, string action)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(action);
+        if (target == "*")
+        {
+            return true;
+        }
+
+        return target.EndsWith(".*", StringComparison.Ordinal)
+            ? action.StartsWith(target[..^1], StringComparison.OrdinalIgnoreCase)
+            : string.Equals(target, action, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether <paramref name="target"/> is a form <see cref="TargetMatches"/> understands; anything else would silently match nothing.</summary>
+    public static bool IsValidTarget(string? target)
+    {
+        var trimmed = target?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return false;
+        }
+
+        var stars = trimmed.Count(character => character == '*');
+        return stars == 0 || trimmed == "*" || (stars == 1 && trimmed.Length > 2 && trimmed.EndsWith(".*", StringComparison.Ordinal));
+    }
 }

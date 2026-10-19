@@ -29,6 +29,7 @@ public sealed partial class Login
         ["signin_expired"] = "That took too long. Sign in again.",
         ["sso_required"] = "Your organization requires signing in with its identity provider.",
         ["link_required"] = "You already have an account. Sign in the way you usually do once, and your organization's sign-in will be linked to it.",
+        ["reauthentication_required"] = "This application asked you to sign in again, and your sign-in provider didn't. Try again.",
         ["provider_not_allowed"] = "Sign in with one of the options below for this application.",
     };
 

@@ -88,6 +88,7 @@ public sealed class EntraIdentityMapper(ExternalProviderInfo provider, IOptions<
 {
     private const string TenantIdClaim = "tid";
     private const string ObjectIdClaim = "oid";
+    private const string DomainOwnerVerifiedClaim = "xms_edov";
 
     /// <inheritdoc />
     public IReadOnlyCollection<ExternalProviderInfo> Providers { get; } = [provider];
@@ -104,14 +105,17 @@ public sealed class EntraIdentityMapper(ExternalProviderInfo provider, IOptions<
             return Error.Unauthorized("provider_response_invalid", "Microsoft did not identify the directory and user (tid, oid).");
         }
 
-        // Entra's email claim isn't verified for every account type, so it is used for contact only, never for linking.
+        // Entra's email claim isn't verified for every account type, so it is used for contact only, never for linking. It
+        // counts as verified (for the domain allow-list) only with the optional claim xms_edov: the domain's owner is verified.
         var email = providerClaims.FindFirst(Claims.Email)?.Value ?? providerClaims.FindFirst(Claims.PreferredUsername)?.Value;
+        var domainOwnerVerified = providerClaims.FindFirst(Claims.Email) is not null
+            && providerClaims.FindFirst(DomainOwnerVerifiedClaim)?.Value is "true" or "True" or "1";
 
         return new ExternalIdentity(
             provider,
             new ExternalLoginKey($"https://login.microsoftonline.com/{tenant}/v2.0", objectId),
             email,
-            EmailVerified: false,
+            EmailVerified: domainOwnerVerified,
             providerClaims.FindFirst(Claims.Name)?.Value,
             OidcIdentityMapper.Strength(providerClaims, options.Value))
         {

@@ -82,7 +82,7 @@ public sealed class AuthorizationDbContext(DbContextOptions<AuthorizationDbConte
             request.HasKey(entity => entity.Id);
             request.Property(entity => entity.Id).ValueGeneratedNever();
             request.Property(entity => entity.Kind).HasConversion<string>().HasMaxLength(30);
-            request.Property(entity => entity.Status).HasConversion<string>().HasMaxLength(20);
+            request.Property(entity => entity.Status).HasConversion<string>().HasMaxLength(20).IsConcurrencyToken();
             request.Property(entity => entity.PermissionCode).HasMaxLength(200);
             request.Property(entity => entity.ScopeKey).HasMaxLength(100);
             request.Property(entity => entity.Note).HasMaxLength(1000);

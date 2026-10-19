@@ -55,6 +55,27 @@ public sealed class TenantSamlProviderTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_suspended_tenant_s_provider_and_domains_admit_no_one()
+    {
+        await StartAsync();
+        var admin = await AdministratorAsync("admin@contoso.com", Contoso);
+        await VerifyDomainAsync(admin, "contoso.com");
+        await AllowAsync(Contoso);
+        var provider = await RegisterAsync(admin);
+        await PutAsync(admin, "enterprise/sso", new { provider, ssoOnly = true });
+        using var browser = new Browser(_host);
+        (await browser.GetAsync(null!, "account/login/discover?email=jo%40contoso.com&returnUrl=%2Fdone")).Headers.Location!.OriginalString.ShouldContain(provider);
+
+        _host.Tenants.Tenants[Contoso] = new TenantInfo(Contoso, null, AcceptsSessions: false);
+        _host.Time.Advance(TimeSpan.FromMinutes(2));   // past the provider settings cache
+
+        // Discovery no longer leads to the tenant's provider, and the provider itself is gone.
+        (await browser.GetAsync(null!, "account/login/discover?email=jo%40contoso.com&returnUrl=%2Fdone")).Headers.Location!.OriginalString.ShouldNotContain(provider);
+        (await browser.GetAsync(null!, $"signin/saml/{provider}?returnUrl=%2Fdone")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+        (await _host.FindAccountAsync("jo@contoso.com")).ShouldBeNull();
+    }
+
+    [Fact]
     public async Task A_tenant_provider_can_t_sign_in_addresses_outside_the_tenant_s_domains()
     {
         await StartAsync();

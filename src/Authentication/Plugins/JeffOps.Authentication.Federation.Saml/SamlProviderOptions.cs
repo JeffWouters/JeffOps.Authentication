@@ -79,6 +79,13 @@ public sealed class SamlProviderOptions
     public TimeSpan MetadataRefreshInterval { get; set; } = TimeSpan.FromHours(12);
 
     /// <summary>
+    /// How long the last good metadata stays trusted while refreshing it fails. Past it, the provider's metadata certificates
+    /// are no longer trusted (sign-in and logout through it are refused unless <see cref="IdpSigningCertificates"/> are set).
+    /// Default: 7 days.
+    /// </summary>
+    public TimeSpan MetadataMaxAge { get; set; } = TimeSpan.FromDays(7);
+
+    /// <summary>
     /// The identity provider's single logout URL (HTTP-Redirect binding), where logout responses go. Without it, logout
     /// requests from the provider are still honoured but answered with a plain page.
     /// </summary>

@@ -69,7 +69,7 @@ public sealed class CompleteExternalSignInHandler(
         // A tenant's verified domain admits its members through the tenant's own provider.
         var admittedByTenant = realm is { Provider: { } realmProvider } && identity.EmailVerified
             && string.Equals(realmProvider, identity.Provider, StringComparison.OrdinalIgnoreCase);
-        if (!admittedByTenant && !DomainAllowed(identity.Email, settings))
+        if (!admittedByTenant && !DomainAllowed(identity, settings))
         {
             await AuditRefusalAsync(identity, FederationErrors.DomainNotAllowed, now, cancellationToken).ConfigureAwait(false);
             return Error.Forbidden(FederationErrors.DomainNotAllowed, "This account's email domain is not permitted to sign in.");
@@ -188,14 +188,20 @@ public sealed class CompleteExternalSignInHandler(
         }
     }
 
-    private bool DomainAllowed(string? email, FederationOptions settings)
+    private bool DomainAllowed(ExternalIdentity identity, FederationOptions settings)
     {
         if (settings.AllowedEmailDomains.Count == 0)
         {
             return settings.OpenRegistration ?? environment.IsDevelopment();
         }
 
-        var domain = HomeRealm.DomainOf(email);
+        // Only an address the provider vouches for counts: an unverified one is whatever the user typed in their own directory.
+        if (!identity.EmailVerified)
+        {
+            return false;
+        }
+
+        var domain = HomeRealm.DomainOf(identity.Email);
         return domain is not null && settings.AllowedEmailDomains.Any(allowed =>
             string.Equals(allowed.Trim().TrimStart('@'), domain, StringComparison.OrdinalIgnoreCase));
     }

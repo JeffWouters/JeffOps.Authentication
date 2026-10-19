@@ -24,7 +24,6 @@ internal sealed class AuthorizationEvaluator(
     TimeProvider time)
 {
     private static readonly IReadOnlyDictionary<string, JsonElement> NoAttributes = new Dictionary<string, JsonElement>();
-    private static readonly JsonElement Null = JsonSerializer.SerializeToElement<string?>(null);
 
     public async Task<AuthorizationDecision> EvaluateAsync(
         ClaimsPrincipal user,
@@ -83,19 +82,26 @@ internal sealed class AuthorizationEvaluator(
     /// </summary>
     private Dictionary<string, JsonElement> BuildAttributes(ClaimsPrincipal user, string action, IReadOnlyDictionary<string, JsonElement>? resource, DateTimeOffset now)
     {
+        // A claim the caller lacks is absent, not null: comparisons with it are unknown, so a Permit doesn't apply and a Deny
+        // does (fail closed), and conditions can test for it with "exists".
         var context = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         {
-            ["subject.sub"] = Text(user.FindFirst(names.Subject)?.Value),
-            ["subject.tid"] = Text(user.FindFirst(names.Tenant)?.Value),
-            ["subject.org"] = Text(user.FindFirst(names.Organization)?.Value),
-            ["subject.lvl"] = Text(user.FindFirst(names.Level)?.Value),
-            ["subject.act_tid"] = Text(user.FindFirst(names.ActingTenant)?.Value),
-            ["subject.email"] = Text(user.FindFirst(names.Email)?.Value),
             ["subject.amr"] = JsonSerializer.SerializeToElement(AccessContextReader.ValuesOf(user, names.AuthenticationMethods)),
             ["action"] = Text(action),
             ["environment.utcHour"] = JsonSerializer.SerializeToElement(now.UtcDateTime.Hour),
             ["environment.utcDayOfWeek"] = Text(now.UtcDateTime.DayOfWeek.ToString()),
         };
+        foreach (var (attribute, claimType) in new[]
+        {
+            ("subject.sub", names.Subject), ("subject.tid", names.Tenant), ("subject.org", names.Organization),
+            ("subject.lvl", names.Level), ("subject.act_tid", names.ActingTenant), ("subject.email", names.Email),
+        })
+        {
+            if (user.FindFirst(claimType)?.Value is { } value)
+            {
+                context[attribute] = Text(value);
+            }
+        }
 
         if (resource is not null)
         {
@@ -108,7 +114,7 @@ internal sealed class AuthorizationEvaluator(
         return context;
     }
 
-    private static JsonElement Text(string? value) => value is null ? Null : JsonSerializer.SerializeToElement(value);
+    private static JsonElement Text(string value) => JsonSerializer.SerializeToElement(value);
 }
 
 /// <summary>The <see cref="IAuthorizer"/> for the current HTTP request.</summary>

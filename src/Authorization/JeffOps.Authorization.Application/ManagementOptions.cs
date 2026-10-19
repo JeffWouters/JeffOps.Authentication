@@ -8,6 +8,13 @@ public sealed class ManagementOptions
     public ManagementPermissions Permissions { get; } = new();
 
     /// <summary>
+    /// The delegation ceiling for callers acting in a managed tenant (a tenant switch carrying delegation scopes): what they may
+    /// administer there is cut down exactly as resource services cut down what they may do. Default: <c>admin</c> lifts it,
+    /// <c>readonly</c> allows actions ending in <c>read</c>. Set it to match the resource services' configuration.
+    /// </summary>
+    public Domain.Ceilings.DelegationCeiling DelegationCeiling { get; set; } = Domain.Ceilings.DelegationCeiling.Default;
+
+    /// <summary>
     /// Permissions that make a role privileged, besides the management permissions themselves. Granting a privileged role
     /// requires holding all its permissions.
     /// </summary>
@@ -22,6 +29,9 @@ public sealed class ManagementOptions
     public TimeSpan BreakGlassMaxDuration { get; set; } = TimeSpan.FromHours(8);
 
     public TimeSpan MaxRecertifyExtension { get; set; } = TimeSpan.FromDays(365);
+
+    /// <summary>How long a pending role change can still be approved; older requests can only be rejected. Default: 7 days.</summary>
+    public TimeSpan RoleChangeRequestLifetime { get; set; } = TimeSpan.FromDays(7);
 
     /// <summary>
     /// Which permission domains each service may register, e.g. <c>svc-billing</c> → <c>billing</c>. A service without an

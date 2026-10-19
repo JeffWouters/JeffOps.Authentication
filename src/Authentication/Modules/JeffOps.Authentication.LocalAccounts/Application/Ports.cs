@@ -17,12 +17,18 @@ public interface IAccountTokenRepository
 
     Task<IReadOnlyList<AccountToken>> ListUnusedAsync(Guid accountId, AccountTokenPurpose purpose, CancellationToken cancellationToken);
 
+    /// <summary>How many tokens of <paramref name="purpose"/> were issued to the account since <paramref name="since"/>.</summary>
+    Task<int> CountIssuedSinceAsync(Guid accountId, AccountTokenPurpose purpose, DateTimeOffset since, CancellationToken cancellationToken);
+
     void Add(AccountToken token);
 }
 
 public interface ILocalUnitOfWork
 {
     Task SaveChangesAsync(CancellationToken cancellationToken);
+
+    /// <summary>Saves; false (nothing saved, nothing tracked any more) when another request changed the same rows first.</summary>
+    Task<bool> TrySaveChangesAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>Protects TOTP secrets at rest (Data Protection by default).</summary>

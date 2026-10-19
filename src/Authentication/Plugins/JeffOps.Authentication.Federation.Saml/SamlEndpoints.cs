@@ -56,6 +56,11 @@ public static partial class SamlEndpoints
             return TypedResults.NotFound();
         }
 
+        if (!saml.Providers.HasTrustAnchors(provider))
+        {
+            return BackToLogin(LocalOrRoot(returnUrl), "provider_error");
+        }
+
         var settings = saml.Providers.Settings(provider);
         var entityId = saml.Providers.ServiceProviderEntityId(provider, saml.TokenServer, Origin(context));
         var request = new Saml2AuthnRequest(saml.Providers.Configuration(provider, entityId))
@@ -66,6 +71,12 @@ public static partial class SamlEndpoints
         if (!string.IsNullOrWhiteSpace(login_hint))
         {
             request.Subject = new Subject { NameID = new NameID { ID = login_hint } };
+        }
+
+        // The client asked for a fresh sign-in: so does this server, of the provider.
+        if (Application.Federation.FreshSignIn.RequiredAfter(LocalOrRoot(returnUrl), saml.Time.GetUtcNow()) is not null)
+        {
+            request.ForceAuthn = true;
         }
 
         // The request id binds the response to this browser: the cookie must come back with an answer to this request.
@@ -100,6 +111,12 @@ public static partial class SamlEndpoints
         if (!context.Request.HasFormContentType || !await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
+        }
+
+        if (!saml.Providers.HasTrustAnchors(provider))
+        {
+            LogRejected(logger, provider, "no certificate to verify the provider's signature");
+            return BackToLogin("/", "provider_error");
         }
 
         var (requestId, returnUrl) = ReadState(context, provider, saml);
@@ -184,6 +201,16 @@ public static partial class SamlEndpoints
             claims.AddClaim(new Claim(SamlProviders.AuthnContextClaim, authnContext));
         }
 
+        // A fresh sign-in was asked for (ForceAuthn): the provider's own single sign-on session, from before, doesn't count.
+        var authenticatedAt = assertion.Statements.OfType<Saml2AuthenticationStatement>().FirstOrDefault()?.AuthenticationInstant is { } instant
+            ? new DateTimeOffset(DateTime.SpecifyKind(instant, DateTimeKind.Utc))
+            : (DateTimeOffset?)null;
+        if (!Application.Federation.FreshSignIn.ProviderAuthenticatedInTime(authenticatedAt, Application.Federation.FreshSignIn.RequiredAfter(returnUrl, saml.Time.GetUtcNow())))
+        {
+            LogRejected(logger, provider, "authenticated before the fresh sign-in the client asked for");
+            return BackToLogin(returnUrl, Application.Federation.FreshSignIn.ReauthenticationRequired);
+        }
+
         var identity = saml.Providers.Map(provider, new ClaimsPrincipal(claims));
         if (identity.IsFailure)
         {
@@ -244,6 +271,13 @@ public static partial class SamlEndpoints
         if (!await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
+        }
+
+        // Without a certificate the binding would accept an unsigned request: refuse instead.
+        if (!saml.Providers.HasTrustAnchors(provider))
+        {
+            LogRejected(logger, provider, "no certificate to verify the provider's signature");
+            return TypedResults.BadRequest();
         }
 
         var settings = saml.Providers.Settings(provider);
@@ -428,7 +462,8 @@ public static partial class SamlEndpoints
 
     private static async Task<IResult> Metadata(string provider, HttpContext context, SamlServices saml)
     {
-        if (!await saml.Providers.PrepareAsync(provider, context.RequestAborted).ConfigureAwait(false))
+        // This server's own metadata: the provider's isn't needed (nor downloaded) for it.
+        if (!await saml.Providers.PrepareAsync(provider, context.RequestAborted, withMetadata: false).ConfigureAwait(false))
         {
             return TypedResults.NotFound();
         }

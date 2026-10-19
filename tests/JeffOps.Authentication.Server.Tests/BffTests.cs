@@ -96,7 +96,12 @@ public sealed partial class BffTests
         var api = apiBuilder.Build();
         api.UseAuthentication();
         api.UseAuthorization();
-        api.MapGet("/api/whoami", (ICurrentUser user, HttpRequest request) => new { user = user.UserId, cookie = request.Headers.Cookie.ToString() });
+        api.MapGet("/api/whoami", (ICurrentUser user, HttpRequest request) => new
+        {
+            user = user.UserId,
+            cookie = request.Headers.Cookie.ToString(),
+            tenantHeaders = request.Headers["X-Tenant-Id"].ToString() + request.Headers["X-Acting-Tenant-Id"].ToString(),
+        });
         api.MapPost("/api/things", () => "created");
         await api.StartAsync(TestContext.Current.CancellationToken);
         routes.Add("api.test", api.GetTestServer().CreateHandler());
@@ -200,6 +205,20 @@ public sealed partial class BffTests
 
         using var post = new HttpRequestMessage(HttpMethod.Post, "bff/account/account/sessions/revoke");
         (await stack.Browser.SendAsync(post, TestContext.Current.CancellationToken)).StatusCode.ShouldBe(HttpStatusCode.Forbidden, "the CSRF header applies");
+    }
+
+    [Fact]
+    public async Task Tenant_headers_from_the_browser_never_reach_the_backend()
+    {
+        await using var stack = await StartAsync();
+        await SignInAsync(stack);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "api/whoami");
+        request.Headers.Add("X-Tenant-Id", Guid.NewGuid().ToString());
+        request.Headers.Add("X-Acting-Tenant-Id", Guid.NewGuid().ToString());
+        var response = await stack.Browser.SendAsync(request, TestContext.Current.CancellationToken);
+
+        (await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken)).GetProperty("tenantHeaders").GetString().ShouldBeEmpty();
     }
 
     [Fact]

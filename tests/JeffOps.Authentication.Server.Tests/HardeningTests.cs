@@ -159,13 +159,15 @@ public sealed partial class HardeningTests
         using var phone = new Browser(host);
         var signIn = $"{account.Id}|pwd,mfa|{host.Time.GetUtcNow().ToUnixTimeSeconds()}";
         var verify = await SendAsync(phone, HttpMethod.Get, $"connect/verify?user_code={Uri.EscapeDataString(userCode)}", signIn);
-        verify.Headers.Location!.OriginalString.ShouldContain("client=TV");
+        verify.Headers.Location!.OriginalString.ShouldContain("consent=");
         var page = await (await SendAsync(phone, HttpMethod.Get, verify.Headers.Location.OriginalString, signIn)).Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        page.ShouldContain("<strong>TV</strong>");
 
         var approve = await SendAsync(phone, HttpMethod.Post, "connect/verify", signIn, new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["__RequestVerificationToken"] = AntiforgeryToken().Match(page).Groups[1].Value,
             ["user_code"] = userCode,
+            ["consent"] = System.Net.WebUtility.HtmlDecode(ConsentField().Match(page).Groups[1].Value),
             ["decision"] = "approve",
         }));
         approve.Headers.Location!.OriginalString.ShouldContain("result=approved");
@@ -173,6 +175,34 @@ public sealed partial class HardeningTests
         var tokens = await host.TokenAsync(new() { ["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code", ["device_code"] = deviceCode, ["client_id"] = DeviceClient });
         tokens.Status.ShouldBe(HttpStatusCode.OK, tokens.Body.ToString());
         tokens.Claims("sub").ShouldBe([account.Id.ToString()]);
+    }
+
+    [Fact]
+    public async Task The_device_confirmation_names_only_the_code_s_own_client()
+    {
+        await using var host = await StartAsync();
+        var account = await host.CreateAccountAsync();
+        var started = await PostFormAsync(host, "connect/device", new() { ["client_id"] = DeviceClient, ["scope"] = "openid api" });
+        var deviceCode = started.GetProperty("device_code").GetString()!;
+        var userCode = started.GetProperty("user_code").GetString()!;
+        using var phone = new Browser(host);
+        var signIn = $"{account.Id}|pwd,mfa|{host.Time.GetUtcNow().ToUnixTimeSeconds()}";
+
+        // A phishing link naming a trusted application: the page doesn't show that name.
+        var spoofed = await (await SendAsync(phone, HttpMethod.Get, $"account/device?user_code={Uri.EscapeDataString(userCode)}&client=Microsoft%20Teams", signIn))
+            .Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        spoofed.ShouldNotContain("Microsoft Teams");
+
+        // Approving without the server's consent ticket shows the real confirmation again instead.
+        var approve = await SendAsync(phone, HttpMethod.Post, "connect/verify", signIn, new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = AntiforgeryToken().Match(spoofed).Groups[1].Value,
+            ["user_code"] = userCode,
+            ["decision"] = "approve",
+        }));
+        approve.Headers.Location!.OriginalString.ShouldNotContain("result=approved");
+        (await host.TokenAsync(new() { ["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code", ["device_code"] = deviceCode, ["client_id"] = DeviceClient }))
+            .Error.ShouldBe("authorization_pending");
     }
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
@@ -243,4 +273,7 @@ public sealed partial class HardeningTests
 
     [GeneratedRegex("<input[^>]*name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"")]
     private static partial Regex AntiforgeryToken();
+
+    [GeneratedRegex("name=\"consent\" value=\"([^\"]*)\"")]
+    private static partial Regex ConsentField();
 }

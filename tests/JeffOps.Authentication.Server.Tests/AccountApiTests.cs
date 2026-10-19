@@ -322,6 +322,23 @@ public sealed class AccountAudienceTests
     }
 }
 
+public sealed class MembershipLevelTests
+{
+    [Theory]
+    [InlineData(JeffOps.Authentication.Abstractions.Access.AccessLevel.Service)]
+    [InlineData(JeffOps.Authentication.Abstractions.Access.AccessLevel.Delegated)]
+    public async Task A_person_never_gets_a_service_or_delegated_level_from_the_directory(JeffOps.Authentication.Abstractions.Access.AccessLevel level)
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+        server.Tenants.AddMembership(account.Id, level);
+
+        var tokens = await server.SignInAsync(account.Id, scope: "openid api");
+
+        tokens.Claims("lvl").ShouldBe(["Tenant"]);
+    }
+}
+
 public sealed class SessionRevocationTests
 {
     [Fact]

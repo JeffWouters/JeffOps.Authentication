@@ -318,6 +318,51 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
 
     // ---- Helpers -------------------------------------------------------------------------------------------------------
 
+    [Fact]
+    public async Task Every_wrong_password_in_a_parallel_burst_counts_towards_lockout()
+    {
+        var host = await StartAsync();
+        await RegisterVerifiedAsync(host, "ada@example.com");
+        var browsers = Enumerable.Range(0, 12).Select(_ => new Browser(host)).ToList();
+        try
+        {
+            var outcomes = await Task.WhenAll(browsers.Select(browser => LoginAsync(browser, "ada@example.com", "a wrong passphrase guess")));
+
+            // A guess that was checked (invalid_credentials) was counted first; the rest were refused unchecked.
+            var checkedGuesses = outcomes.Count(location => location.Contains("error=invalid_credentials", StringComparison.Ordinal));
+            await using var scope = host.Services.CreateAsyncScope();
+            var accountId = (await scope.ServiceProvider.GetRequiredService<Application.Abstractions.IAccountRepository>().FindByEmailAsync("ada@example.com", TestContext.Current.CancellationToken))!.Id;
+            var credential = (await scope.ServiceProvider.GetRequiredService<ILocalCredentialRepository>().FindAsync(accountId, TestContext.Current.CancellationToken))!;
+            credential.FailedAttempts.ShouldBeGreaterThanOrEqualTo(checkedGuesses);
+            checkedGuesses.ShouldBeLessThanOrEqualTo(4, "the lockout stops the burst after a few checked guesses");
+        }
+        finally
+        {
+            browsers.ForEach(browser => browser.Dispose());
+        }
+    }
+
+    [Fact]
+    public async Task With_email_codes_a_correct_password_doesn_t_reset_the_count_and_codes_are_capped()
+    {
+        var host = await StartAsync(new() { ["JeffOps:LocalAccounts:EmailCodes"] = "true" });
+        await RegisterVerifiedAsync(host, "ada@example.com");
+
+        for (var round = 0; round < 8; round++)
+        {
+            using var browser = new Browser(host);
+            await LoginAsync(browser, "ada@example.com", Password);
+            host.Time.Advance(TimeSpan.FromMinutes(2));
+        }
+
+        _email.Codes.Count.ShouldBe(5, "at most five codes an hour");
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var accountId = (await scope.ServiceProvider.GetRequiredService<Application.Abstractions.IAccountRepository>().FindByEmailAsync("ada@example.com", TestContext.Current.CancellationToken))!.Id;
+        var credential = (await scope.ServiceProvider.GetRequiredService<ILocalCredentialRepository>().FindAsync(accountId, TestContext.Current.CancellationToken))!;
+        credential.FailedAttempts.ShouldBeGreaterThan(0, "the attempts stand until the emailed code is entered");
+    }
+
     // ---- Security review proofs (docs/security-review.md) ---------------------------------------------------------------
 
     [Fact]

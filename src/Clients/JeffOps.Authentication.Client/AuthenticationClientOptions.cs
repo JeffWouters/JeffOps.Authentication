@@ -57,10 +57,10 @@ public sealed class AuthenticationClientOptions
 /// </summary>
 public sealed class ServiceTokenTenantScopingOptions
 {
-    /// <summary>Scope Root-level service tokens by the headers.</summary>
-    public bool TrustForRootTokens { get; set; }
-
-    /// <summary>Scope Service-level (per-service) tokens by the headers.</summary>
+    /// <summary>
+    /// Scope Service-level (client credentials) tokens by the headers. Never applies to a person's token, platform
+    /// administrators included: they act in another tenant only through the token server's audited tenant switch.
+    /// </summary>
     public bool TrustForServiceTokens { get; set; }
 
     /// <summary>The header carrying the caller's tenant id. Default: <c>X-Tenant-Id</c>.</summary>

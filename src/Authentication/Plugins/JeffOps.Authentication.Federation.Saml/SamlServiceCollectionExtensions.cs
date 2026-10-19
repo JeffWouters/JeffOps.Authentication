@@ -62,10 +62,12 @@ public static class SamlServiceCollectionExtensions
         services.AddDataProtection();
         services.TryAddSingleton<SamlMetadata>();
         services.TryAddSingleton<SamlMetadataClient>();
-        services.AddHttpClient(SamlMetadataClient.HttpClientName);
+        services.AddHttpClient(SamlMetadataClient.HttpClientName).ConfigureHttpClient(client => client.Timeout = SamlMetadataClient.Timeout);
 
         // Tenants' metadata URLs: public addresses only (SSRF), no redirects.
-        services.AddHttpClient(SamlMetadataClient.TenantHttpClientName).ConfigurePrimaryHttpMessageHandler(PublicNetwork.Handler);
+        services.AddHttpClient(SamlMetadataClient.TenantHttpClientName)
+            .ConfigureHttpClient(client => client.Timeout = SamlMetadataClient.Timeout)
+            .ConfigurePrimaryHttpMessageHandler(PublicNetwork.Handler);
         services.AddOptions<SamlTenantProviderOptions>().Bind(builder.Configuration.GetSection(SamlTenantProviderOptions.SectionName));
         services.AddHostedService<SamlMetadataRefresher>();
         services.TryAddSingleton<SamlProviders>();

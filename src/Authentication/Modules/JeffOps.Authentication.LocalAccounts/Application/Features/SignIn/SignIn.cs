@@ -46,18 +46,38 @@ public sealed class PasswordSignInHandler(
             return LocalSignInResult.Failed;
         }
 
-        var outcome = credential.CheckPassword(command.Password ?? string.Empty, now, settings.Lockout(), settings.HashIterations);
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-
-        var result = outcome switch
+        // Reserve the attempt first (counted, saved), then check: parallel guesses each count, and a lockout stops the rest.
+        credential = await AttemptReservation.ReserveAsync(credentials, unitOfWork, account.Id, now, settings.Lockout(), cancellationToken).ConfigureAwait(false);
+        if (credential is null)
         {
-            PasswordSignInResult.LockedOut => new LocalSignInResult(LocalSignInStatus.LockedOut),
-            PasswordSignInResult.Success when !account.CanAuthenticate => new LocalSignInResult(LocalSignInStatus.AccountInactive),
-            PasswordSignInResult.Success when settings.RequireVerifiedEmail && !account.EmailVerified => new LocalSignInResult(LocalSignInStatus.EmailNotVerified, account.Id),
-            PasswordSignInResult.Success when credential.HasSecondFactor => new LocalSignInResult(LocalSignInStatus.SecondFactorRequired, account.Id) { SecondFactor = "authenticator" },
-            PasswordSignInResult.Success when settings.EmailCodes => new LocalSignInResult(LocalSignInStatus.SecondFactorRequired, account.Id) { SecondFactor = "email" },
-            PasswordSignInResult.Success => new LocalSignInResult(LocalSignInStatus.SignedIn, account.Id, ["pwd"]),
-            _ => LocalSignInResult.Failed,
+            PasswordHasher.VerifyNothing(command.Password, settings.HashIterations);
+            return new LocalSignInResult(LocalSignInStatus.LockedOut);
+        }
+
+        if (!credential.VerifyPassword(command.Password ?? string.Empty, settings.HashIterations))
+        {
+            return LocalSignInResult.Failed;
+        }
+
+        // The count resets only when the sign-in is complete: with a second factor (authenticator or emailed code) still to
+        // come, the attempts stand until that succeeds.
+        var secondFactor = credential.HasSecondFactor ? "authenticator" : settings.EmailCodes ? "email" : null;
+        if (secondFactor is null)
+        {
+            credential.ResetLockout();
+        }
+
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return LocalSignInResult.Failed;
+        }
+
+        var result = true switch
+        {
+            _ when !account.CanAuthenticate => new LocalSignInResult(LocalSignInStatus.AccountInactive),
+            _ when settings.RequireVerifiedEmail && !account.EmailVerified => new LocalSignInResult(LocalSignInStatus.EmailNotVerified, account.Id),
+            _ when secondFactor is not null => new LocalSignInResult(LocalSignInStatus.SecondFactorRequired, account.Id) { SecondFactor = secondFactor },
+            _ => new LocalSignInResult(LocalSignInStatus.SignedIn, account.Id, ["pwd"]),
         };
 
         if (result.SecondFactor == "email")
@@ -83,6 +103,12 @@ public sealed class SignInCodes(IAccountTokenRepository tokens, IAccountEmailSen
         var now = time.GetUtcNow();
         var live = await tokens.ListUnusedAsync(accountId, AccountTokenPurpose.SignInCode, cancellationToken).ConfigureAwait(false);
         if (!force && live.Any(token => token.IsUsableAt(now) && now - token.CreatedAt < ResendInterval))
+        {
+            return;
+        }
+
+        // At most so many codes an hour, whatever asks: the current one stays valid meanwhile.
+        if (await tokens.CountIssuedSinceAsync(accountId, AccountTokenPurpose.SignInCode, now.AddHours(-1), cancellationToken).ConfigureAwait(false) >= options.Value.MaxEmailCodesPerHour)
         {
             return;
         }
@@ -155,7 +181,9 @@ public sealed class SecondFactorHandler(
             return LocalSignInResult.Failed;
         }
 
-        if (credential.IsLockedOut(now))
+        // Reserve the attempt first (counted, saved), then check the code: parallel guesses each count.
+        credential = await AttemptReservation.ReserveAsync(credentials, unitOfWork, command.AccountId, now, options.Value.Lockout(), cancellationToken).ConfigureAwait(false);
+        if (credential is null)
         {
             return new LocalSignInResult(LocalSignInStatus.LockedOut);
         }
@@ -183,11 +211,13 @@ public sealed class SecondFactorHandler(
 
         if (!accepted)
         {
-            credential.Fail(now, options.Value.Lockout());
+            return LocalSignInResult.Failed;
         }
 
-        await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        if (!accepted)
+        // Accepted: the attempts reset, and the code (emailed code, TOTP step, recovery code) is spent. Of two requests racing
+        // with one code, only one saves.
+        credential.ResetLockout();
+        if (!await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
         {
             return LocalSignInResult.Failed;
         }
@@ -197,3 +227,36 @@ public sealed class SecondFactorHandler(
             : new LocalSignInResult(LocalSignInStatus.AccountInactive);
     }
 }
+
+/// <summary>Reserves a sign-in attempt on an account's credential, retrying when parallel attempts collide.</summary>
+internal static class AttemptReservation
+{
+    private const int MaxTries = 5;
+
+    /// <summary>The credential with this attempt counted and saved, or null when the account is locked out (or too busy).</summary>
+    public static async Task<LocalCredential?> ReserveAsync(
+        ILocalCredentialRepository credentials,
+        ILocalUnitOfWork unitOfWork,
+        Guid accountId,
+        DateTimeOffset now,
+        LockoutPolicy lockout,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < MaxTries; attempt++)
+        {
+            if (await credentials.FindAsync(accountId, cancellationToken).ConfigureAwait(false) is not { } credential
+                || !credential.ReserveAttempt(now, lockout))
+            {
+                return null;
+            }
+
+            if (await unitOfWork.TrySaveChangesAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return credential;
+            }
+        }
+
+        return null;
+    }
+}
+

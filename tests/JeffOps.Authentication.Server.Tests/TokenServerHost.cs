@@ -221,10 +221,10 @@ internal sealed class TokenServerHost : IAsyncDisposable
         return settings;
     }
 
-    public async Task<Account> CreateAccountAsync(string email = "ada@example.com")
+    public async Task<Account> CreateAccountAsync(string email = "ada@example.com", bool emailVerified = true)
     {
         await using var scope = Services.CreateAsyncScope();
-        var account = Account.Register(email, "Ada Lovelace", emailVerified: true, Time.GetUtcNow());
+        var account = Account.Register(email, "Ada Lovelace", emailVerified, Time.GetUtcNow());
         scope.ServiceProvider.GetRequiredService<IAccountRepository>().Add(account);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync(TestContext.Current.CancellationToken);
         return account;

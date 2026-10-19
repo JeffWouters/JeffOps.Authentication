@@ -31,6 +31,12 @@ First public preview (`0.1.0-alpha`).
   never act as the user's own session; platform administrators get no personal access tokens; a tenant's provider claims
   only accounts its provisioning created, other existing accounts are linked after their owner confirms; verified domains are
   re-checked daily and operators can revoke them.
+- Delegated administration is held to a ceiling; tenant headers scope only service tokens and the BFF strips them; ABAC
+  treats missing attributes as unknown (Deny fails closed); role-change requests expire and can't be decided twice;
+  device-flow confirmation names the real client; local sign-in counts parallel guesses and caps emailed codes.
+  `prompt=login` and `max_age` reach upstream providers, and their older authentication is refused. The email-domain
+  allow-list needs verified emails. SAML metadata downloads are bounded, and cached metadata is bound to its source.
+  Providers without certificates are refused. Suspended tenants' SCIM, providers and domains stop working.
 
 Fixed before the first release, from an independent review of DPoP, SAML, delegation and SCIM (see the commit history for
 details): DPoP-bound tokens are enforced on the token server's own APIs and as actor tokens; SAML responses are bound to the

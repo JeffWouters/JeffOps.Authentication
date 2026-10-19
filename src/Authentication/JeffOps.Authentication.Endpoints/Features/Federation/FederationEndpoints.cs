@@ -59,7 +59,8 @@ internal static class FederationEndpoints
         string? login_hint,
         IEnumerable<IExternalIdentityMapper> mappers,
         IEnumerable<IExternalProviderChallenge> challenges,
-        IOptions<TokenServerOptions> tokenServer)
+        IOptions<TokenServerOptions> tokenServer,
+        TimeProvider time)
     {
         // Providers tenants registered aren't listed; their own sign-in endpoint checks they exist and may still be used.
         if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal))
@@ -92,6 +93,14 @@ internal static class FederationEndpoints
             properties.Items[OpenIddictClientAspNetCoreConstants.Properties.LoginHint] = login_hint;
         }
 
+        // The client asked for a fresh sign-in: so does this server, of the provider.
+        var now = time.GetUtcNow();
+        if (FreshSignIn.RequiredAfter(LocalOrRoot(returnUrl), now) is { } after)
+        {
+            properties.Parameters[Parameters.Prompt] = PromptValues.Login;
+            properties.Parameters[Parameters.MaxAge] = FreshSignIn.MaxAge(after, now);
+        }
+
         return Results.Challenge(properties, [OpenIddictClientAspNetCoreDefaults.AuthenticationScheme]);
     }
 
@@ -115,6 +124,12 @@ internal static class FederationEndpoints
         if (mapper is null)
         {
             return BackToLogin(returnUrl, "provider_unknown");
+        }
+
+        // A fresh sign-in was asked for: the provider's own single sign-on session, from before, doesn't count.
+        if (!FreshSignIn.ProviderAuthenticatedInTime(FreshSignIn.AuthTime(principal.GetClaim(Claims.AuthenticationTime)), FreshSignIn.RequiredAfter(returnUrl, time.GetUtcNow())))
+        {
+            return BackToLogin(returnUrl, FreshSignIn.ReauthenticationRequired);
         }
 
         var identity = mapper.Map(provider, principal);

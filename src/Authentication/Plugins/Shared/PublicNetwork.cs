@@ -19,7 +19,13 @@ internal static class PublicNetwork
         ConnectCallback = ConnectAsync,
     };
 
-    /// <summary>The body as text, refusing (<see cref="InvalidOperationException"/>) anything larger than <paramref name="maxBytes"/>.</summary>
+    /// <summary>How long reading a body may take (the client's timeout ends at the headers when they're read first).</summary>
+    public static readonly TimeSpan BodyTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The body as text, refusing (<see cref="InvalidOperationException"/>) anything larger than <paramref name="maxBytes"/>
+    /// or slower than <see cref="BodyTimeout"/>.
+    /// </summary>
     public static async Task<string> ReadLimitedAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -28,6 +34,20 @@ internal static class PublicNetwork
             throw new InvalidOperationException("The response is too large.");
         }
 
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(BodyTimeout);
+        try
+        {
+            return await ReadAsync(response, maxBytes, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("The response took too long.");
+        }
+    }
+
+    private static async Task<string> ReadAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
+    {
         var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using (stream.ConfigureAwait(false))
         {

@@ -14,6 +14,7 @@ namespace JeffOps.Authorization.Domain.Policies;
 /// { "eq"|"ne"|"lt"|"le"|"gt"|"ge": [ left, right ] }  comparison
 /// { "in": [ value, [ literal, ... ] ] }               value is one of the literals
 /// { "contains": [ arrayRef, value ] }                 array attribute contains value
+/// { "exists": ref }                                   the attribute is present (and not null)
 /// </code>
 /// A string operand that is <c>action</c> or starts with <c>subject.</c>, <c>resource.</c> or <c>environment.</c> is an
 /// attribute reference; anything else is a literal.
@@ -92,6 +93,9 @@ public static class ConditionParser
                     ? new Condition.In(Operand.From(left), right.EnumerateArray().Select(Operand.From).ToList())
                     : throw new FormatException("The second operand of 'in' must be an array.")),
             "contains" => Pair(value, op, (left, right) => new Condition.Contains(Operand.From(left), Operand.From(right))),
+            "exists" => value.ValueKind == JsonValueKind.String
+                ? new Condition.Exists(Operand.From(value))
+                : throw new FormatException("'exists' expects an attribute name."),
             _ => throw new FormatException($"Unknown condition operator '{property.Name}'."),
         };
     }

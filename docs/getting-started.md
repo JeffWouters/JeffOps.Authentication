@@ -107,6 +107,9 @@ Configuration (`appsettings.json`; keep secrets in user secrets or a vault):
 }
 ```
 
+`AllowedEmailDomains` admits only emails the provider vouches for. For Entra, add the optional claim `xms_edov` to the
+app registration's ID token (Token configuration); without it the allow-list refuses Entra sign-ins.
+
 The reference host in [`hosts/TokenServer`](../hosts/TokenServer) is exactly this, ready to run against SQL Server
 LocalDB: `dotnet run --project hosts/TokenServer` starts it in Development on https://localhost:5001 and creates the database.
 

@@ -219,6 +219,44 @@ public sealed class LocalCredential : AggregateRoot<Guid>
         return PasswordSignInResult.Success;
     }
 
+    /// <summary>
+    /// Reserves one sign-in attempt before a secret is checked: it counts as failed up front (locking progressively), so each
+    /// of many parallel attempts counts, and an attempt is only checked once its reservation is saved. A successful check
+    /// resets the count. False when locked out (nothing is checked then).
+    /// </summary>
+    public bool ReserveAttempt(DateTimeOffset now, LockoutPolicy lockout)
+    {
+        ArgumentNullException.ThrowIfNull(lockout);
+        if (IsLockedOut(now))
+        {
+            return false;
+        }
+
+        Fail(now, lockout);
+        return true;
+    }
+
+    /// <summary>
+    /// Checks a password after <see cref="ReserveAttempt"/> (no lockout effects here). On success a hash in an old format is
+    /// replaced. Accounts without a password always fail, after the same work.
+    /// </summary>
+    public bool VerifyPassword(string password, int iterations)
+    {
+        if (PasswordHash is null)
+        {
+            PasswordHasher.VerifyNothing(password, iterations);
+            return false;
+        }
+
+        var check = PasswordHasher.Verify(PasswordHash, password, iterations);
+        if (check.Valid && check.NeedsRehash)
+        {
+            PasswordHash = PasswordHasher.Hash(password, iterations);
+        }
+
+        return check.Valid;
+    }
+
     /// <summary>Records a failed attempt (wrong password or second factor) and locks progressively.</summary>
     public void Fail(DateTimeOffset now, LockoutPolicy lockout)
     {

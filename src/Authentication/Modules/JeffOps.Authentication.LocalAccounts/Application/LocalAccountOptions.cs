@@ -46,6 +46,12 @@ public sealed class LocalAccountOptions
     /// <summary>How long an emailed sign-in code is valid. Default: 10 minutes.</summary>
     public TimeSpan EmailCodeLifetime { get; set; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// The most sign-in codes emailed to one account per hour; past it, sign-in waits for the current code (the address can't
+    /// be flooded, and codes can't be guessed through endless fresh ones). Default: 5.
+    /// </summary>
+    public int MaxEmailCodesPerHour { get; set; } = 5;
+
     public int RecoveryCodeCount { get; set; } = 10;
 
     /// <summary>The issuer name authenticator apps show. Default: <c>JeffOps</c>.</summary>
