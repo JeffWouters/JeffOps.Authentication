@@ -48,7 +48,7 @@ using Yarp.ReverseProxy.Forwarder;
 namespace JeffOps.Authentication.LoadTests;
 
 /// <summary>How the stack is set up for a run.</summary>
-internal sealed record StackOptions(bool Logging, TimeSpan DirectoryLatency, TimeSpan DatabaseLatency);
+internal sealed record StackOptions(bool Logging, TimeSpan DirectoryLatency, TimeSpan DatabaseLatency, bool RecommendedLogLevels = false);
 
 /// <summary>
 /// The platform in one process: the token server (with the Enterprise module for SCIM), the management service, a resource
@@ -126,6 +126,13 @@ internal sealed class Stack : IAsyncDisposable
             // What a host logs with its default configuration (Information; ASP.NET Core at Warning), formatted and discarded.
             builder.Logging.SetMinimumLevel(LogLevel.Information);
             builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+            if (options.RecommendedLogLevels)
+            {
+                // The levels docs/getting-started.md recommends (and the token server template sets).
+                builder.Logging.AddFilter("OpenIddict", LogLevel.Warning);
+                builder.Logging.AddFilter("Yarp", LogLevel.Warning);
+            }
+
             builder.Logging.AddProvider(new FormattingLoggerProvider());
         }
 

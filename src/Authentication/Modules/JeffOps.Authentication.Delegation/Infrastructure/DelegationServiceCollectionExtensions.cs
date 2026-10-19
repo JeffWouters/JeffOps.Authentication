@@ -9,6 +9,7 @@ using JeffOps.Authentication.Delegation.Application.Features.Tokens;
 using JeffOps.Authentication.SharedKernel.DependencyInjection;
 using JeffOps.Authentication.SharedKernel.Handlers;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -26,7 +27,13 @@ public sealed record DelegationBuilder(IServiceCollection Services)
     public DelegationBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContextPool<DelegationDbContext>(configure);
+        Services.AddDbContextPool<DelegationDbContext>((provider, options) =>
+        {
+            // Every SQL command at Debug, not Information: a host's default level would otherwise format each one. Set first, so
+            // the host's own configuration wins.
+            options.ConfigureWarnings(warnings => warnings.Log((RelationalEventId.CommandExecuted, LogLevel.Debug)));
+            configure(provider, options);
+        });
         return this;
     }
 

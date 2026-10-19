@@ -7,7 +7,8 @@ namespace JeffOps.Authentication.LoadTests;
 
 /// <summary>
 /// The load harness (docs/DESIGN.md §20). Options: --scenario NAME|all (mixed, for soak runs, only by name), --users N, --duration SECONDS, --warmup SECONDS,
-/// --logging (format every log message at Information, as a host's default configuration does), --directory-latency MS,
+/// --logging (format every log message at Information, as a host's default configuration does), --logging-recommended (the same with
+/// OpenIddict and YARP at Warning, as docs/getting-started.md recommends), --directory-latency MS,
 /// --database-latency MS (SQLite only), --report PATH, --prune (after the run, one timed pruning pass with every spent row eligible). The database is SQLite, or SQL Server with JEFFOPS_TEST_DATABASE=SqlServer.
 /// </summary>
 public static class Program
@@ -20,14 +21,15 @@ public static class Program
         var duration = TimeSpan.FromSeconds(double.Parse(Option("--duration", "20"), CultureInfo.InvariantCulture));
         var warmUp = TimeSpan.FromSeconds(double.Parse(Option("--warmup", "5"), CultureInfo.InvariantCulture));
         var options = new StackOptions(
-            Logging: args.Contains("--logging"),
+            Logging: args.Contains("--logging") || args.Contains("--logging-recommended"),
             DirectoryLatency: TimeSpan.FromMilliseconds(double.Parse(Option("--directory-latency", "0"), CultureInfo.InvariantCulture)),
-            DatabaseLatency: TimeSpan.FromMilliseconds(double.Parse(Option("--database-latency", "0"), CultureInfo.InvariantCulture)));
+            DatabaseLatency: TimeSpan.FromMilliseconds(double.Parse(Option("--database-latency", "0"), CultureInfo.InvariantCulture)),
+            RecommendedLogLevels: args.Contains("--logging-recommended"));
         var reportPath = Option("--report", Path.Combine(Path.GetTempPath(), "jeffops-load.md"));
 
         ThreadPool.GetMinThreads(out var minWorkers, out _);
         var report = new StringBuilder();
-        report.AppendLine(CultureInfo.InvariantCulture, $"# Load ({(TestDatabase.SqlServer ? "SQL Server" : "SQLite")}, {users} virtual users, {duration.TotalSeconds} s each, logging {(options.Logging ? "on" : "off")}, directory latency {options.DirectoryLatency.TotalMilliseconds} ms, database latency {options.DatabaseLatency.TotalMilliseconds} ms)");
+        report.AppendLine(CultureInfo.InvariantCulture, $"# Load ({(TestDatabase.SqlServer ? "SQL Server" : "SQLite")}, {users} virtual users, {duration.TotalSeconds} s each, logging {(options.RecommendedLogLevels ? "recommended" : options.Logging ? "on" : "off")}, directory latency {options.DirectoryLatency.TotalMilliseconds} ms, database latency {options.DatabaseLatency.TotalMilliseconds} ms)");
         report.AppendLine(CultureInfo.InvariantCulture, $"{Environment.ProcessorCount} cores, server GC {System.Runtime.GCSettings.IsServerGC}, thread pool minimum {minWorkers}, process {Environment.ProcessId}").AppendLine();
 
         var startup = Stopwatch.StartNew();

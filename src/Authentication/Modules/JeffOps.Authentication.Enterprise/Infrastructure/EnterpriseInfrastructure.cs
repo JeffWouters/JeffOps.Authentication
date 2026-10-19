@@ -15,10 +15,12 @@ using JeffOps.Authentication.SharedKernel.Domain;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace JeffOps.Authentication.Enterprise.Infrastructure;
@@ -444,7 +446,13 @@ public sealed record EnterpriseBuilder(IServiceCollection Services)
     public EnterpriseBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContextPool<EnterpriseDbContext>(configure);
+        Services.AddDbContextPool<EnterpriseDbContext>((provider, options) =>
+        {
+            // Every SQL command at Debug, not Information: a host's default level would otherwise format each one. Set first, so
+            // the host's own configuration wins.
+            options.ConfigureWarnings(warnings => warnings.Log((RelationalEventId.CommandExecuted, LogLevel.Debug)));
+            configure(provider, options);
+        });
         return this;
     }
 

@@ -286,6 +286,11 @@ client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 - **Data Protection.** Share and protect the key ring across instances (`JeffOps:DataProtection`); it protects the
   signing keys, cookies and sign-in state.
 - **Secrets.** Client secrets of at least 32 characters, kept out of `appsettings.json`.
+- **Log levels.** At the default `Information`, OpenIddict logs every protocol step (about five messages per token
+  request, twelve per refresh) and YARP two messages per proxied request, each written to every sink you configure. Keep
+  them at `Warning` unless you are diagnosing (the token server template does): `"OpenIddict": "Warning"`,
+  `"Yarp": "Warning"`. SQL commands are logged at `Debug` (set `Microsoft.EntityFrameworkCore.Database.Command` to `Debug`
+  to see them).
 - **Back-channel logout.** Give every client with server-side sessions a `BackchannelLogoutUri`, so signing out, disabling
   an account or a password change ends its sessions at once.
 - **SCIM.** Creating SCIM tokens needs the `auth.enterprise.scim_tokens` policy: define it to require at least the right

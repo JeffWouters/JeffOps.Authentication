@@ -10,10 +10,12 @@ using JeffOps.Authentication.Infrastructure.Persistence;
 using JeffOps.Authentication.Infrastructure.Server;
 using JeffOps.Authentication.SharedKernel.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenIddict.Server;
 using static OpenIddict.Abstractions.OpenIddictConstants;
@@ -33,6 +35,9 @@ public static class AuthenticationBuilderExtensions
 
         builder.Services.AddDbContextPool<AuthenticationDbContext>((provider, options) =>
         {
+            // Every SQL command at Debug, not Information: a host's default level would otherwise format each one. Set first, so
+            // the host's own configuration wins.
+            options.ConfigureWarnings(warnings => warnings.Log((RelationalEventId.CommandExecuted, LogLevel.Debug)));
             configure(provider, options);
             options.UseOpenIddict();
         });

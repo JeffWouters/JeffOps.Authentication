@@ -10,6 +10,7 @@ using JeffOps.Authentication.LocalAccounts.Application.Features.SignIn;
 using JeffOps.Authentication.SharedKernel.DependencyInjection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -28,7 +29,13 @@ public sealed record LocalAccountsBuilder(IServiceCollection Services)
     public LocalAccountsBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContextPool<LocalAccountsDbContext>(configure);
+        Services.AddDbContextPool<LocalAccountsDbContext>((provider, options) =>
+        {
+            // Every SQL command at Debug, not Information: a host's default level would otherwise format each one. Set first, so
+            // the host's own configuration wins.
+            options.ConfigureWarnings(warnings => warnings.Log((RelationalEventId.CommandExecuted, LogLevel.Debug)));
+            configure(provider, options);
+        });
         return this;
     }
 

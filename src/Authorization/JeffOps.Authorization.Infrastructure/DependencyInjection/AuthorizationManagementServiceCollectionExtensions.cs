@@ -9,6 +9,7 @@ using JeffOps.Authorization.Application.Management;
 using JeffOps.Authorization.Contracts;
 using JeffOps.Authorization.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -26,7 +27,13 @@ public sealed record AuthorizationManagementBuilder(IServiceCollection Services,
     public AuthorizationManagementBuilder UseDatabase(Action<IServiceProvider, DbContextOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
-        Services.AddDbContextPool<AuthorizationDbContext>(configure);
+        Services.AddDbContextPool<AuthorizationDbContext>((provider, options) =>
+        {
+            // Every SQL command at Debug, not Information: a host's default level would otherwise format each one. Set first, so
+            // the host's own configuration wins.
+            options.ConfigureWarnings(warnings => warnings.Log((RelationalEventId.CommandExecuted, LogLevel.Debug)));
+            configure(provider, options);
+        });
         return this;
     }
 }
