@@ -304,6 +304,10 @@ client.DefaultRequestHeaders.Authorization = new("Bearer", token);
   <RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows" Value="true" />
   ```
 
+  Managed networking with Windows authentication (`Integrated Security`, `Trusted_Connection`) looks up the process's
+  Windows identity on every connection taken from the pool, which under load costs the token server 12–28% of its CPU.
+  Use SQL or Microsoft Entra authentication in production.
+
 ## Where next
 
 - [DESIGN.md](DESIGN.md): every option, the security baseline, the claims contract and the decisions behind them.
