@@ -349,6 +349,21 @@ public sealed class DelegationTests : IAsyncLifetime
     // ---- Tenant switch and lockbox -------------------------------------------------------------------------------------
 
     [Fact]
+    public async Task An_actor_token_from_a_session_the_user_signed_out_of_mints_nothing()
+    {
+        var (partner, partnerToken) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
+        var session = new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(partnerToken!).GetClaim("sid").Value;
+
+        await using (var scope = _host.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<JeffOps.Authentication.Application.Abstractions.IEndedSessions>()
+                .EndAsync(session, partner, _host.Time.GetUtcNow(), TestContext.Current.CancellationToken);
+        }
+
+        (await MintTenantSwitchAsync(CustomerTenant, partnerToken)).Code.ShouldBe("session_revoked");
+    }
+
+    [Fact]
     public async Task A_partner_switches_into_a_managed_tenant_with_the_relationship_s_ceiling()
     {
         var (partner, partnerToken) = await UserAsync("partner@example.com", PartnerTenant, PartnerOrganization);
