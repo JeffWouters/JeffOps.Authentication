@@ -226,6 +226,29 @@ public sealed class DpopProofHardeningTests
     }
 
     [Fact]
+    public async Task The_replay_cache_never_holds_more_than_its_capacity_under_concurrency()
+    {
+        var cache = new MemoryReplayCache(capacity: 100);
+        var expires = DateTimeOffset.UtcNow.AddMinutes(10);
+        var ct = TestContext.Current.CancellationToken;
+
+        var results = await Task.WhenAll(Enumerable.Range(0, 1000).Select(index =>
+            Task.Run(async () => await cache.TryAddAsync($"value-{index}", expires, ct), ct)));
+
+        results.Count(admitted => admitted).ShouldBe(100);
+    }
+
+    [Fact]
+    public void A_proof_is_remembered_until_no_clock_would_accept_it()
+    {
+        // Accepted while iat is within the window of the validating clock: remembered that long, plus the clock margin.
+        var proof = new DpopProof("jkt", "jti", Now.AddSeconds(-90));
+
+        DpopProofValidator.ReplayExpiry(proof, Window).ShouldBe(Now.AddSeconds(-90) + Window + DpopProofValidator.ReplayClockSkew);
+        DpopProofValidator.ReplayClockSkew.ShouldBeGreaterThanOrEqualTo(TimeSpan.FromSeconds(1), "iat is whole seconds");
+    }
+
+    [Fact]
     public void Replay_keys_are_fixed_length_and_hide_the_value()
     {
         var key = ReplayKeys.For("dpop", new string('x', 10_000));

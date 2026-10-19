@@ -129,7 +129,7 @@ internal static class BoundAccessTokens
         }
 
         return await services.GetRequiredService<IReplayCache>()
-                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, request.HttpContext.RequestAborted).ConfigureAwait(false)
+                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), DpopProofValidator.ReplayExpiry(proof, Window), request.HttpContext.RequestAborted).ConfigureAwait(false)
             ? null
             : "This DPoP proof was already used.";
     }

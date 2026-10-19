@@ -38,13 +38,32 @@ public static class DpopProofValidator
     public const int MaxJtiLength = 128;
 
     /// <summary>
-    /// Imported public keys, by RFC 7638 thumbprint (which covers exactly the key material), so a client's key is turned into
-    /// a key object once rather than for every proof. Instances aren't shared between concurrent checks: each check rents
-    /// one and returns it. Bounded: at most <see cref="MaxCachedKeys"/> keys and <see cref="MaxInstancesPerKey"/> instances each.
+    /// How much later than its acceptance window a proof's replay entry expires: a margin for the clocks of instances that
+    /// share one replay cache (and for <c>iat</c> being whole seconds).
     /// </summary>
-    private static readonly ConcurrentDictionary<string, ConcurrentBag<AsymmetricAlgorithm>> ImportedKeys = new(StringComparer.Ordinal);
+    public static readonly TimeSpan ReplayClockSkew = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// Imported public keys, by RFC 7638 thumbprint (which covers exactly the key material), so a client's key is turned into
+    /// a key object once rather than for every proof. Instances aren't shared between concurrent checks: each check takes one
+    /// from a slot and puts it back. Bounded: about <see cref="MaxCachedKeys"/> keys and <see cref="MaxInstancesPerKey"/>
+    /// instances each. Lock-free: renting and returning only exchange slots, and nothing counts the whole collection.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, AsymmetricAlgorithm?[]> ImportedKeys = new(StringComparer.Ordinal);
     private const int MaxCachedKeys = 1024;
     private const int MaxInstancesPerKey = 8;
+    private static int s_cachedKeys;
+
+    /// <summary>
+    /// Until when <paramref name="proof"/> must be remembered in a replay cache: it is accepted only while its <c>iat</c> is
+    /// within <paramref name="window"/> of the validating clock, so after <c>iat + window</c> (plus
+    /// <see cref="ReplayClockSkew"/>) no instance accepts it and its entry can go.
+    /// </summary>
+    public static DateTimeOffset ReplayExpiry(DpopProof proof, TimeSpan window)
+    {
+        ArgumentNullException.ThrowIfNull(proof);
+        return proof.IssuedAt + window + ReplayClockSkew;
+    }
 
     /// <summary>
     /// Validates <paramref name="proof"/> for a request of <paramref name="method"/> to <paramref name="uri"/> at
@@ -205,8 +224,26 @@ public static class DpopProofValidator
 
     /// <summary>An imported instance of the key with <paramref name="thumbprint"/>, or a new one from <paramref name="import"/>.</summary>
     private static TKey Rent<TKey>(string thumbprint, Func<TKey> import)
-        where TKey : AsymmetricAlgorithm =>
-        ImportedKeys.TryGetValue(thumbprint, out var instances) && instances.TryTake(out var instance) && instance is TKey key ? key : import();
+        where TKey : AsymmetricAlgorithm
+    {
+        if (ImportedKeys.TryGetValue(thumbprint, out var slots))
+        {
+            for (var slot = 0; slot < slots.Length; slot++)
+            {
+                if (Volatile.Read(ref slots[slot]) is not null && Interlocked.Exchange(ref slots[slot], null) is { } instance)
+                {
+                    if (instance is TKey key)
+                    {
+                        return key;
+                    }
+
+                    instance.Dispose();
+                }
+            }
+        }
+
+        return import();
+    }
 
     /// <summary>
     /// Keeps <paramref name="key"/> for the next check of the same key. A failed check doesn't return it (the exception skips
@@ -214,20 +251,31 @@ public static class DpopProofValidator
     /// </summary>
     private static void Return(string thumbprint, AsymmetricAlgorithm key)
     {
-        if (ImportedKeys.Count >= MaxCachedKeys && !ImportedKeys.ContainsKey(thumbprint))
+        if (!ImportedKeys.TryGetValue(thumbprint, out var slots))
         {
-            ImportedKeys.Clear();
+            if (Volatile.Read(ref s_cachedKeys) >= MaxCachedKeys)
+            {
+                ImportedKeys.Clear();
+                Volatile.Write(ref s_cachedKeys, 0);
+            }
+
+            var fresh = new AsymmetricAlgorithm?[MaxInstancesPerKey];
+            slots = ImportedKeys.GetOrAdd(thumbprint, fresh);
+            if (ReferenceEquals(slots, fresh))
+            {
+                Interlocked.Increment(ref s_cachedKeys);
+            }
         }
 
-        var instances = ImportedKeys.GetOrAdd(thumbprint, static _ => []);
-        if (instances.Count < MaxInstancesPerKey)
+        for (var slot = 0; slot < slots.Length; slot++)
         {
-            instances.Add(key);
+            if (Interlocked.CompareExchange(ref slots[slot], key, null) is null)
+            {
+                return;
+            }
         }
-        else
-        {
-            key.Dispose();
-        }
+
+        key.Dispose();
     }
 
     /// <summary>The modulus size in bits, ignoring leading zero bytes (which would otherwise pass off a small key as a large one).</summary>

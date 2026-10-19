@@ -54,7 +54,7 @@ internal static class PushedAuthorizationDpop
                 }
 
                 if (!await services.GetRequiredService<IReplayCache>()
-                        .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, http.HttpContext.RequestAborted)
+                        .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), DpopProofValidator.ReplayExpiry(proof, Window), http.HttpContext.RequestAborted)
                         .ConfigureAwait(false))
                 {
                     context.Reject(InvalidProof, "This DPoP proof was already used.");

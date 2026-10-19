@@ -39,6 +39,13 @@ public sealed class AuthenticationClientOptions
     /// </summary>
     public bool DpopNonces { get; set; }
 
+    /// <summary>
+    /// How many DPoP proofs the in-process replay cache remembers at once (each for about six minutes). When it is full, new
+    /// proofs are refused until old ones expire, so size it for the peak DPoP request rate of one instance times 360 seconds;
+    /// about 64 bytes per proof. Ignored when the host registers its own <c>IReplayCache</c>. Default: 500,000.
+    /// </summary>
+    public int DpopReplayCapacity { get; set; } = Abstractions.Replay.MemoryReplayCache.DefaultCapacity;
+
     /// <summary>Which service tokens may be scoped to a tenant by trusted internal headers.</summary>
     public ServiceTokenTenantScopingOptions ServiceTokenTenantScoping { get; } = new();
 }

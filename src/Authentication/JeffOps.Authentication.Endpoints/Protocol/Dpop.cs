@@ -65,7 +65,7 @@ internal static class Dpop
 
         // Each proof works once.
         if (!await context.RequestServices.GetRequiredService<IReplayCache>()
-                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, context.RequestAborted).ConfigureAwait(false))
+                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), DpopProofValidator.ReplayExpiry(proof, Window), context.RequestAborted).ConfigureAwait(false))
         {
             return Error.Unauthorized(InvalidProof, "This DPoP proof was already used.");
         }

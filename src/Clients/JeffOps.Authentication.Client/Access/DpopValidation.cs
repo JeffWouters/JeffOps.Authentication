@@ -161,7 +161,7 @@ internal static class DpopValidation
         }
 
         return await http.RequestServices.GetRequiredService<IReplayCache>()
-                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), now + Window + Window, http.RequestAborted).ConfigureAwait(false)
+                .TryAddAsync(ReplayKeys.For("dpop", proof.Jkt + "\n" + proof.Jti), DpopProofValidator.ReplayExpiry(proof, Window), http.RequestAborted).ConfigureAwait(false)
             ? null
             : "This DPoP proof was already used.";
     }
