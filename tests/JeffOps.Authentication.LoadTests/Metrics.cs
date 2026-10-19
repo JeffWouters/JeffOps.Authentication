@@ -49,7 +49,7 @@ internal sealed class RuntimeSampler : IDisposable
     {
         _process.Refresh();
         _cpuStart = _process.TotalProcessorTime;
-        _allocatedStart = GC.GetTotalAllocatedBytes(precise: false);
+        _allocatedStart = GC.GetTotalAllocatedBytes(precise: true);
         _workingSetStart = _process.WorkingSet64;
         _workingSetPeak = _workingSetStart;
         _poller = PollAsync(_stop.Token);
@@ -91,7 +91,7 @@ internal sealed class RuntimeSampler : IDisposable
         var memory = GC.GetGCMemoryInfo();
         return new RuntimeSummary(
             CpuPercent: cpu.TotalMilliseconds / elapsed.TotalMilliseconds / Environment.ProcessorCount * 100,
-            AllocatedMbPerSecond: (GC.GetTotalAllocatedBytes(precise: false) - _allocatedStart) / 1_048_576.0 / elapsed.TotalSeconds,
+            AllocatedMbPerSecond: (GC.GetTotalAllocatedBytes(precise: true) - _allocatedStart) / 1_048_576.0 / elapsed.TotalSeconds,
             Gen0: GC.CollectionCount(0) - _collectionsStart[0],
             Gen1: GC.CollectionCount(1) - _collectionsStart[1],
             Gen2: GC.CollectionCount(2) - _collectionsStart[2],
