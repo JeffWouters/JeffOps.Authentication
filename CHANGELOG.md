@@ -15,6 +15,8 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
   provider's `acrs` through `UpstreamClaims`.
 - **Skipping the login page** (`Clients[].SkipLoginPage`): a client with exactly one provider can send its users straight
   to it.
+- **Session lifetime per client** (`Clients[].SessionLifetime`). Ended sessions and spent refresh tokens are kept for the
+  longest lifetime of any client.
 
 ## [0.1.0-alpha] - 2026-10-20
 

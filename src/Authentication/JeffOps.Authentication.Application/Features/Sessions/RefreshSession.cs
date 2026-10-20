@@ -38,7 +38,8 @@ public sealed class RefreshSessionHandler(
         }
 
         var signedInAt = DateTimeOffset.FromUnixTimeSeconds(signedInSeconds);
-        if (SessionLifetime.HasExpired(signedInAt, time.GetUtcNow(), options.Value.SessionLifetime))
+        var lifetime = options.Value.SessionLifetimeOf(command.ClientId);
+        if (SessionLifetime.HasExpired(signedInAt, time.GetUtcNow(), lifetime))
         {
             return Error.Unauthorized(GrantErrors.SessionExpired, "The session has reached its maximum lifetime. Sign in again.");
         }
@@ -89,7 +90,7 @@ public sealed class RefreshSessionHandler(
 
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {
-            SessionEndsAt = signedInAt + options.Value.SessionLifetime,
+            SessionEndsAt = signedInAt + lifetime,
         };
     }
 }

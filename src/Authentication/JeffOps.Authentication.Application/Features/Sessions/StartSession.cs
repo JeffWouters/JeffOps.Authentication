@@ -17,6 +17,7 @@ namespace JeffOps.Authentication.Application.Features.Sessions.StartSession;
 /// <param name="TenantHint">Start in this tenant when the account has a membership there.</param>
 /// <param name="SessionId">The sign-in session (<c>sid</c>) the tokens belong to.</param>
 /// <param name="Upstream">What the client receives of the provider's answer (<see cref="JeffOps.Authentication.Application.Federation.UpstreamIdentity"/>).</param>
+/// <param name="ClientId">The client the session is for: its own session lifetime applies.</param>
 public sealed record StartSessionCommand(
     Guid AccountId,
     AuthenticationStrength Strength,
@@ -24,7 +25,8 @@ public sealed record StartSessionCommand(
     IReadOnlyCollection<string> Scopes,
     Guid? TenantHint = null,
     string? SessionId = null,
-    IReadOnlyList<System.Security.Claims.Claim>? Upstream = null);
+    IReadOnlyList<System.Security.Claims.Claim>? Upstream = null,
+    string? ClientId = null);
 
 public sealed class StartSessionHandler(
     IAccountRepository accounts,
@@ -48,7 +50,8 @@ public sealed class StartSessionHandler(
 
         // The sign-in itself must still stand: not past its lifetime, not revoked for the account (a password change, a
         // provider's logout of every session), not ended by signing out (here, or at the provider through single logout).
-        if (SessionLifetime.HasExpired(command.SignedInAt, time.GetUtcNow(), options.Value.SessionLifetime))
+        var lifetime = options.Value.SessionLifetimeOf(command.ClientId);
+        if (SessionLifetime.HasExpired(command.SignedInAt, time.GetUtcNow(), lifetime))
         {
             return Error.Unauthorized(GrantErrors.SessionExpired, "The session has reached its maximum lifetime. Sign in again.");
         }
@@ -109,7 +112,7 @@ public sealed class StartSessionHandler(
 
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {
-            SessionEndsAt = command.SignedInAt + options.Value.SessionLifetime,
+            SessionEndsAt = command.SignedInAt + lifetime,
         };
     }
 }

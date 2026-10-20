@@ -10,8 +10,22 @@ public sealed class TokenServerOptions
     /// <summary>The issuer URL (absolute). Required outside Development.</summary>
     public Uri? Issuer { get; set; }
 
-    /// <summary>The absolute lifetime of an interactive session, from sign-in; refreshing never extends it.</summary>
+    /// <summary>
+    /// The absolute lifetime of an interactive session, from sign-in; refreshing never extends it. A client can have its own
+    /// (<see cref="ClientDefinition.SessionLifetime"/>).
+    /// </summary>
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromHours(8);
+
+    /// <summary>
+    /// The longest session lifetime of any client: what concerns a session (ended sessions, spent refresh tokens) is kept at
+    /// least this long, so it is still recognised while the session's tokens can be refreshed.
+    /// </summary>
+    public TimeSpan LongestSessionLifetime =>
+        Clients.Aggregate(SessionLifetime, (longest, client) => client.SessionLifetime is { } own && own > longest ? own : longest);
+
+    /// <summary>The session lifetime of <paramref name="clientId"/>'s grants: its own, else <see cref="SessionLifetime"/>.</summary>
+    public TimeSpan SessionLifetimeOf(string? clientId) =>
+        Federation.ClientProviders.Find(this, clientId)?.SessionLifetime ?? SessionLifetime;
 
     public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromMinutes(15);
 
@@ -67,7 +81,7 @@ public sealed class TokenServerOptions
 
     /// <summary>
     /// How long tokens and authorizations that can no longer be used (expired, redeemed, revoked, or of an ended
-    /// authorization) are kept before they are pruned. Never less than <see cref="SessionLifetime"/>: a redeemed refresh token
+    /// authorization) are kept before they are pruned. Never less than <see cref="LongestSessionLifetime"/>: a redeemed refresh token
     /// stays while it could be presented, so its reuse is still recognised. Valid tokens are never pruned. Default: 14 days.
     /// </summary>
     public TimeSpan PruneAfter { get; set; } = TimeSpan.FromDays(14);
@@ -212,6 +226,12 @@ public sealed class ClientDefinition
     /// login page finds by email, aren't offered to this client then. Default: false.
     /// </summary>
     public bool SkipLoginPage { get; set; }
+
+    /// <summary>
+    /// The absolute lifetime of this client's sessions, from sign-in, instead of <see cref="TokenServerOptions.SessionLifetime"/>:
+    /// its refresh tokens end then. Null: the server's.
+    /// </summary>
+    public TimeSpan? SessionLifetime { get; set; }
 
     /// <summary>
     /// For first-party clients only: put the identity the user signed in with at the provider in this client's access tokens,

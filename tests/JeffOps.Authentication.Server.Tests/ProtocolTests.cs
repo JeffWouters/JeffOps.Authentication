@@ -333,6 +333,29 @@ public sealed class RefreshTests
         refreshed.AccessToken.ShouldBeNull();
     }
 
+    [Theory]
+    [InlineData("1.00:00:00", 23, true)]
+    [InlineData("1.00:00:00", 25, false)]
+    [InlineData("01:00:00", 2, false)]
+    public async Task A_client_s_own_session_lifetime_decides_when_its_sessions_end(string lifetime, int hoursLater, bool refreshes)
+    {
+        await using var server = await TokenServerHost.StartAsync(new() { ["JeffOps:TokenServer:Clients:0:SessionLifetime"] = lifetime });
+        var account = await server.CreateAccountAsync();
+        var tokens = await server.SignInAsync(account.Id);
+
+        server.Time.Advance(TimeSpan.FromHours(hoursLater));
+        var refreshed = await server.RefreshAsync(tokens.RefreshToken!);
+
+        (refreshed.AccessToken is not null).ShouldBe(refreshes, refreshed.Body.ToString());
+    }
+
+    [Fact]
+    public async Task A_client_s_session_lifetime_must_be_positive() =>
+        (await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Clients:0:SessionLifetime"] = "00:00:00",
+        }))).Message.ShouldContain("SessionLifetime");
+
     [Fact]
     public async Task A_directory_outage_is_a_server_error_not_a_sign_out()
     {

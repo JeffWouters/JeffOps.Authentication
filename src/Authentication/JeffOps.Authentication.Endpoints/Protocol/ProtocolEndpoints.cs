@@ -142,7 +142,7 @@ internal static class ProtocolEndpoints
         var strength = new AuthenticationStrength(signedIn.Principal.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var result = await startSession.HandleAsync(
             new StartSessionCommand(accountId, strength, signedInAt ?? now, request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names),
-                UpstreamIdentity.FromSignIn(signedIn.Principal, client, names)),
+                UpstreamIdentity.FromSignIn(signedIn.Principal, client, names), request.ClientId),
             context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsFailure && result.Error.Code is GrantErrors.SessionRevoked or GrantErrors.SessionExpired)
@@ -311,7 +311,7 @@ internal static class ProtocolEndpoints
         var strength = new AuthenticationStrength(signedIn.Principal!.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var session = await startSession.HandleAsync(
             new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names),
-                UpstreamIdentity.FromSignIn(signedIn.Principal, ClientProviders.Find(options.Value, code.GetClaim(Claims.ClientId)), names)),
+                UpstreamIdentity.FromSignIn(signedIn.Principal, ClientProviders.Find(options.Value, code.GetClaim(Claims.ClientId)), names), code.GetClaim(Claims.ClientId)),
             context.RequestAborted).ConfigureAwait(false);
         if (session.IsFailure)
         {

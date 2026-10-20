@@ -12,7 +12,7 @@ namespace JeffOps.Authentication.Infrastructure.Server;
 
 /// <summary>
 /// Keeps the token store from growing without bound, off the request path. Every minute it deletes expired replay entries,
-/// expired external sessions and ended sessions older than <see cref="TokenServerOptions.SessionLifetime"/>, in batches.
+/// expired external sessions and ended sessions older than <see cref="TokenServerOptions.LongestSessionLifetime"/>, in batches.
 /// Every <see cref="TokenServerOptions.PruneInterval"/> it also removes tokens and authorizations that can no longer be
 /// used (expired, redeemed, revoked, or of an ended authorization) once they are older than
 /// <see cref="TokenServerOptions.PruneAfter"/>. Valid tokens are never removed. Every instance runs it, after a random first
@@ -56,7 +56,7 @@ internal sealed partial class StoreMaintenance(
     {
         var now = time.GetUtcNow();
         var nowMs = now.ToUnixTimeMilliseconds();
-        var endedBefore = (now - options.Value.SessionLifetime).ToUnixTimeMilliseconds();
+        var endedBefore = (now - options.Value.LongestSessionLifetime).ToUnixTimeMilliseconds();
         try
         {
             await using var scope = scopes.CreateAsyncScope();
@@ -103,7 +103,7 @@ internal sealed partial class StoreMaintenance(
 
         // A redeemed refresh token is kept while it could still be presented (refresh tokens live as long as the session),
         // so presenting it again is still recognised as reuse and revokes the chain.
-        var retention = settings.PruneAfter > settings.SessionLifetime ? settings.PruneAfter : settings.SessionLifetime;
+        var retention = settings.PruneAfter > settings.LongestSessionLifetime ? settings.PruneAfter : settings.LongestSessionLifetime;
         var threshold = time.GetUtcNow() - retention;
         try
         {
