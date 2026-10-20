@@ -16,12 +16,15 @@ namespace JeffOps.Authentication.Application.Features.Sessions.RefreshSession;
 /// </summary>
 /// <param name="Stored">The principal stored with the refresh token or code.</param>
 /// <param name="Scopes">The scopes of the grant.</param>
-public sealed record RefreshSessionCommand(ClaimsPrincipal Stored, IReadOnlyCollection<string> Scopes);
+/// <param name="ClientId">The client redeeming the grant: what it may receive of the provider's answer is checked again.</param>
+public sealed record RefreshSessionCommand(ClaimsPrincipal Stored, IReadOnlyCollection<string> Scopes, string? ClientId = null);
 
 public sealed class RefreshSessionHandler(
     IAccountRepository accounts,
+    IUnitOfWork unitOfWork,
     SessionBuilder sessions,
     IEndedSessions endedSessions,
+    JeffOps.Authentication.Application.Federation.ProviderSessionGuard providerSessions,
     ClaimNames names,
     IOptions<TokenServerOptions> options,
     TimeProvider time) : ICommandHandler<RefreshSessionCommand, IssuedIdentity>
@@ -37,7 +40,8 @@ public sealed class RefreshSessionHandler(
         }
 
         var signedInAt = DateTimeOffset.FromUnixTimeSeconds(signedInSeconds);
-        if (SessionLifetime.HasExpired(signedInAt, time.GetUtcNow(), options.Value.SessionLifetime))
+        var lifetime = options.Value.SessionLifetimeOf(command.ClientId);
+        if (SessionLifetime.HasExpired(signedInAt, time.GetUtcNow(), lifetime))
         {
             return Error.Unauthorized(GrantErrors.SessionExpired, "The session has reached its maximum lifetime. Sign in again.");
         }
@@ -65,6 +69,12 @@ public sealed class RefreshSessionHandler(
             return Error.Unauthorized(GrantErrors.SessionRevoked, "You signed out of this session. Sign in again.");
         }
 
+        // The provider the user signed in through may have ended the session since: asked again at most once per its interval.
+        if (!await providerSessions.StandsAsync(account.Id, sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "Your identity provider ended this session. Sign in again.");
+        }
+
         var strength = new AuthenticationStrength(stored.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         if (!sessions.AllowsSignIn(strength))
         {
@@ -84,9 +94,16 @@ public sealed class RefreshSessionHandler(
             claims.Add(new Claim(names.SessionId, sessionId));
         }
 
+        claims.AddRange(JeffOps.Authentication.Application.Federation.UpstreamIdentity.FromGrant(stored, JeffOps.Authentication.Application.Federation.ClientProviders.Find(options.Value, command.ClientId), names));
+
+        if (account.RecordActivity(time.GetUtcNow()))
+        {
+            await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {
-            SessionEndsAt = signedInAt + options.Value.SessionLifetime,
+            SessionEndsAt = signedInAt + lifetime,
         };
     }
 }

@@ -262,6 +262,31 @@ public sealed partial class BffTests
     }
 
     [Fact]
+    public async Task A_tenant_hint_at_login_starts_the_session_in_that_tenant()
+    {
+        await using var stack = await StartAsync();
+        var account = await stack.TokenServer.CreateAccountAsync();
+        var first = stack.TokenServer.Tenants.AddMembership(account.Id);
+        var second = stack.TokenServer.Tenants.AddMembership(account.Id);
+
+        async Task<string?> TenantAfterLoginAsync(string hint)
+        {
+            var login = await stack.Browser.GetAsync(new Uri($"bff/login?returnUrl=/app&tenant_hint={hint}", UriKind.Relative), TestContext.Current.CancellationToken);
+            using var authorize = new HttpRequestMessage(HttpMethod.Get, login.Headers.Location);
+            authorize.Headers.Add(HeaderSignIn.Header, $"{account.Id}|pwd,mfa|{stack.TokenServer.Time.GetUtcNow().ToUnixTimeSeconds()}");
+            var code = await stack.Browser.SendAsync(authorize, TestContext.Current.CancellationToken);
+            await stack.Browser.GetAsync(code.Headers.Location, TestContext.Current.CancellationToken);
+            var me = await stack.Browser.GetFromJsonAsync<JsonElement>(new Uri("bff/me", UriKind.Relative), TestContext.Current.CancellationToken);
+            return me.GetProperty("tid").GetString();
+        }
+
+        (await TenantAfterLoginAsync(second.ToString())).ShouldBe(second.ToString());
+
+        // Only a tenant id is passed on: anything else is dropped, and the session starts in the first tenant.
+        (await TenantAfterLoginAsync(Uri.EscapeDataString($"{second}&prompt=none"))).ShouldBe(first.ToString());
+    }
+
+    [Fact]
     public async Task The_session_cookie_is_host_prefixed_http_only_and_lax()
     {
         await using var stack = await StartAsync();

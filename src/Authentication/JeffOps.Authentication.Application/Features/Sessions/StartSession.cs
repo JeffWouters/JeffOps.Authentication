@@ -16,19 +16,26 @@ namespace JeffOps.Authentication.Application.Features.Sessions.StartSession;
 /// <param name="Scopes">The scopes granted to the client.</param>
 /// <param name="TenantHint">Start in this tenant when the account has a membership there.</param>
 /// <param name="SessionId">The sign-in session (<c>sid</c>) the tokens belong to.</param>
+/// <param name="Upstream">What the client receives of the provider's answer (<see cref="JeffOps.Authentication.Application.Federation.UpstreamIdentity"/>).</param>
+/// <param name="ClientId">The client the session is for: its own session lifetime applies.</param>
 public sealed record StartSessionCommand(
     Guid AccountId,
     AuthenticationStrength Strength,
     DateTimeOffset SignedInAt,
     IReadOnlyCollection<string> Scopes,
     Guid? TenantHint = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    IReadOnlyList<System.Security.Claims.Claim>? Upstream = null,
+    string? ClientId = null);
 
 public sealed class StartSessionHandler(
     IAccountRepository accounts,
+    IUnitOfWork unitOfWork,
     IEndedSessions endedSessions,
     SessionBuilder sessions,
+    JeffOps.Authentication.Application.Federation.ProviderSessionGuard providerSessions,
     IEventPublisher events,
+    JeffOps.Authentication.Abstractions.Auditing.IAuditSink audit,
     JeffOps.Authentication.Abstractions.Claims.ClaimNames names,
     Microsoft.Extensions.Options.IOptions<TokenServerOptions> options,
     TimeProvider time) : ICommandHandler<StartSessionCommand, IssuedIdentity>
@@ -45,7 +52,8 @@ public sealed class StartSessionHandler(
 
         // The sign-in itself must still stand: not past its lifetime, not revoked for the account (a password change, a
         // provider's logout of every session), not ended by signing out (here, or at the provider through single logout).
-        if (SessionLifetime.HasExpired(command.SignedInAt, time.GetUtcNow(), options.Value.SessionLifetime))
+        var lifetime = options.Value.SessionLifetimeOf(command.ClientId);
+        if (SessionLifetime.HasExpired(command.SignedInAt, time.GetUtcNow(), lifetime))
         {
             return Error.Unauthorized(GrantErrors.SessionExpired, "The session has reached its maximum lifetime. Sign in again.");
         }
@@ -54,6 +62,12 @@ public sealed class StartSessionHandler(
             || (command.SessionId is { } ended && await endedSessions.IsEndedAsync(ended, cancellationToken).ConfigureAwait(false)))
         {
             return Error.Unauthorized(GrantErrors.SessionRevoked, "This session was ended. Sign in again.");
+        }
+
+        // The provider the user signed in through may have ended the session since: asked again at most once per its interval.
+        if (!await providerSessions.StandsAsync(account.Id, command.SessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "Your identity provider ended this session. Sign in again.");
         }
 
         if (!sessions.AllowsSignIn(command.Strength))
@@ -82,13 +96,36 @@ public sealed class StartSessionHandler(
             claims.Add(new System.Security.Claims.Claim(names.SessionId, sessionId));
         }
 
+        // A first-party client receives the identity the user signed in with at the provider: recorded, as it says who they are there.
+        if (command.Upstream is { Count: > 0 } upstream)
+        {
+            claims.AddRange(upstream);
+            await audit.WriteAsync(new JeffOps.Authentication.Abstractions.Auditing.AuditRecord("session.upstream_identity_forwarded", "account", account.Id.ToString())
+            {
+                ActorId = account.Id,
+                OccurredAt = time.GetUtcNow(),
+                Details = new Dictionary<string, string?>
+                {
+                    ["provider"] = upstream.FirstOrDefault(claim => claim.Type == JeffOps.Authentication.Application.Federation.UpstreamIdentity.ProviderClaim)?.Value,
+                    ["issuer"] = upstream.FirstOrDefault(claim => claim.Type == JeffOps.Authentication.Application.Federation.UpstreamIdentity.IssuerClaim)?.Value,
+                    ["subject"] = upstream.FirstOrDefault(claim => claim.Type == JeffOps.Authentication.Application.Federation.UpstreamIdentity.SubjectClaim)?.Value,
+                    ["claims"] = string.Join(' ', upstream.Select(claim => claim.Type).Distinct(StringComparer.Ordinal)),
+                },
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (account.RecordActivity(time.GetUtcNow()))
+        {
+            await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         await events.PublishAsync(
             new AccountSignedInEvent(account.Id, standing.Value.Membership?.TenantId) { OccurredAt = time.GetUtcNow() },
             cancellationToken).ConfigureAwait(false);
 
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {
-            SessionEndsAt = command.SignedInAt + options.Value.SessionLifetime,
+            SessionEndsAt = command.SignedInAt + lifetime,
         };
     }
 }

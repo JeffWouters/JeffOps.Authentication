@@ -10,8 +10,22 @@ public sealed class TokenServerOptions
     /// <summary>The issuer URL (absolute). Required outside Development.</summary>
     public Uri? Issuer { get; set; }
 
-    /// <summary>The absolute lifetime of an interactive session, from sign-in; refreshing never extends it.</summary>
+    /// <summary>
+    /// The absolute lifetime of an interactive session, from sign-in; refreshing never extends it. A client can have its own
+    /// (<see cref="ClientDefinition.SessionLifetime"/>).
+    /// </summary>
     public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromHours(8);
+
+    /// <summary>
+    /// The longest session lifetime of any client: what concerns a session (ended sessions, spent refresh tokens) is kept at
+    /// least this long, so it is still recognised while the session's tokens can be refreshed.
+    /// </summary>
+    public TimeSpan LongestSessionLifetime =>
+        Clients.Aggregate(SessionLifetime, (longest, client) => client.SessionLifetime is { } own && own > longest ? own : longest);
+
+    /// <summary>The session lifetime of <paramref name="clientId"/>'s grants: its own, else <see cref="SessionLifetime"/>.</summary>
+    public TimeSpan SessionLifetimeOf(string? clientId) =>
+        Federation.ClientProviders.Find(this, clientId)?.SessionLifetime ?? SessionLifetime;
 
     public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromMinutes(15);
 
@@ -67,7 +81,7 @@ public sealed class TokenServerOptions
 
     /// <summary>
     /// How long tokens and authorizations that can no longer be used (expired, redeemed, revoked, or of an ended
-    /// authorization) are kept before they are pruned. Never less than <see cref="SessionLifetime"/>: a redeemed refresh token
+    /// authorization) are kept before they are pruned. Never less than <see cref="LongestSessionLifetime"/>: a redeemed refresh token
     /// stays while it could be presented, so its reuse is still recognised. Valid tokens are never pruned. Default: 14 days.
     /// </summary>
     public TimeSpan PruneAfter { get; set; } = TimeSpan.FromDays(14);
@@ -78,6 +92,9 @@ public sealed class TokenServerOptions
     /// entries and sessions are still deleted every minute. Default: 1 hour.
     /// </summary>
     public TimeSpan PruneInterval { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>Deleting accounts nobody uses any more. Off by default.</summary>
+    public InactiveAccountOptions InactiveAccounts { get; } = new();
 
     /// <summary>
     /// The grant type of the extension grant <paramref name="name"/>: <c>{ExtensionGrantNamespace}:{name}</c>, or the name itself
@@ -205,6 +222,34 @@ public sealed class ClientDefinition
     /// screen) at the provider. Providers tenants registered themselves (per-tenant SSO) are always allowed.
     /// </summary>
     public IList<string> Providers { get; } = [];
+
+    /// <summary>
+    /// Send this client's users straight to its only provider (<see cref="Providers"/> lists exactly one, not <c>local</c>)
+    /// instead of the login page. The login page still shows the provider's errors. Providers tenants registered, which the
+    /// login page finds by email, aren't offered to this client then. Default: false.
+    /// </summary>
+    public bool SkipLoginPage { get; set; }
+
+    /// <summary>
+    /// The absolute lifetime of this client's sessions, from sign-in, instead of <see cref="TokenServerOptions.SessionLifetime"/>:
+    /// its refresh tokens end then. Null: the server's.
+    /// </summary>
+    public TimeSpan? SessionLifetime { get; set; }
+
+    /// <summary>
+    /// For first-party clients only: put the identity the user signed in with at the provider in this client's access tokens,
+    /// as <c>idp</c> (the provider), <c>idp_iss</c> and <c>idp_sub</c> (for Entra the directory's issuer and the user's
+    /// <c>oid</c>), so a product that knew its users by their provider identity can find them again. Only for sign-ins through
+    /// providers configured on this server, never a provider a tenant registered. Default: false.
+    /// </summary>
+    public bool ForwardUpstreamIdentity { get; set; }
+
+    /// <summary>
+    /// For first-party clients only: claims of the provider's answer to put in this client's access tokens unchanged, for
+    /// example <c>groups</c>, <c>wids</c>, <c>acct</c>. The same rule as <see cref="ForwardUpstreamIdentity"/>; this server's own
+    /// claim types (<c>sub</c>, <c>tid</c>, <c>email</c>, …) can't be listed.
+    /// </summary>
+    public IList<string> UpstreamClaims { get; } = [];
 }
 
 /// <summary>
@@ -227,4 +272,22 @@ public sealed class FederatedCredential
     /// most. Default: 2 hours (CI tokens live minutes, Kubernetes service account tokens an hour).
     /// </summary>
     public TimeSpan MaxTokenLifetime { get; set; } = TimeSpan.FromHours(2);
+}
+
+/// <summary>
+/// Deleting accounts that haven't signed in or used their tokens for a long time (<see cref="Domain.Accounts.Account.LastActiveAt"/>).
+/// The user is told <see cref="WarnBefore"/> ahead (a user notification of kind <c>account.deletion_scheduled</c>, which the
+/// host delivers, for example by email), and any sign-in cancels it. Accounts that can't be deleted (the only administrator of
+/// a tenant, an account an organization provisions) are kept.
+/// </summary>
+public sealed class InactiveAccountOptions
+{
+    /// <summary>Delete accounts inactive this long, for example <c>395.00:00:00</c> (13 months). Null (the default): never.</summary>
+    public TimeSpan? DeleteAfter { get; set; }
+
+    /// <summary>How long before the deletion the user is told. Default: 30 days.</summary>
+    public TimeSpan WarnBefore { get; set; } = TimeSpan.FromDays(30);
+
+    /// <summary>How often each instance looks for inactive accounts. Default: 1 hour.</summary>
+    public TimeSpan CheckInterval { get; set; } = TimeSpan.FromHours(1);
 }

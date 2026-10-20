@@ -522,6 +522,7 @@ public static class EnterpriseServiceCollectionExtensions
         services.AddDataProtection();
         services.TryAddSingleton<IClientSecretProtector, DataProtectionClientSecrets>();
         services.TryAddScoped<IEnterpriseUnitOfWork, EnterpriseUnitOfWork>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<JeffOps.Authentication.Application.Abstractions.IAccountDataEraser, EnterpriseAccountData>());
         services.TryAddScoped<IDnsTxtResolver, DnsOverHttpsResolver>();
         services.AddHttpClient(DnsOverHttpsResolver.HttpClientName);
         services.TryAddScoped<IScimTokenRepository, ScimTokenRepository>();

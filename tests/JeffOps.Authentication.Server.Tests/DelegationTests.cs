@@ -112,6 +112,22 @@ public sealed class DelegationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Deleting_an_account_ends_the_grants_it_takes_part_in()
+    {
+        var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);
+        var (customer, customerToken) = await UserAsync("customer@example.com", CustomerTenant, CustomerOrganization);
+        var grantId = await ApprovedImpersonationAsync(supportToken, customer, customerToken);
+
+        (await _host.SendAsync(HttpMethod.Delete, "account", customerToken)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+
+        (await MintImpersonationAsync(grantId, supportToken)).Code.ShouldBe("grant_invalid");
+        await using var scope = _host.Services.CreateAsyncScope();
+        var grant = await scope.ServiceProvider.GetRequiredService<Delegation.Infrastructure.DelegationDbContext>().ImpersonationGrants
+            .SingleAsync(candidate => candidate.Id == Guid.Parse(grantId), TestContext.Current.CancellationToken);
+        grant.EndedReason.ShouldBe("account-deleted");
+    }
+
+    [Fact]
     public async Task An_impersonation_session_cannot_start_more_delegation_but_can_end_itself()
     {
         var (_, supportToken) = await UserAsync("support@example.com", PlatformTenant, null, AccessLevel.Root);

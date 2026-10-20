@@ -5,6 +5,28 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 
 ## [Unreleased]
 
+### Added
+
+- **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): the
+  provider, the user's issuer and subject there (`idp`, `idp_iss`, `idp_sub`) and chosen provider claims in the client's
+  access tokens, only from providers configured on the server, audited.
+- **Authentication contexts through providers** (`acr_values`): passed to the provider (Entra: the `claims` parameter
+  with `acrs`); a sign-in through a configured provider that didn't report them signs in again once. Clients receive the
+  provider's `acrs` through `UpstreamClaims`.
+- **Skipping the login page** (`Clients[].SkipLoginPage`): a client with exactly one provider can send its users straight
+  to it.
+- **Checking sessions with their provider again** (`Providers:{name}:SessionCheckInterval`, Entra and OIDC providers): the
+  provider's refresh token is kept with the session and redeemed at most once per interval; a provider that refuses it ends
+  the session, with back-channel logout. New table `ProviderSessions` (migration `ProviderSessions`).
+- **Deleting accounts**: by the user (`DELETE account`) or an operator (`DELETE admin/accounts/{id}`), both with step-up,
+  and for inactivity (`InactiveAccounts:DeleteAfter`, warned `WarnBefore` ahead through `INotifier`). Modules erase their
+  own data (`IAccountDataEraser`); the only administrator of a tenant and SCIM-provisioned accounts can't be deleted.
+  Event `auth.account.deleted.v1`. New columns `Accounts.LastActiveAtUnixMs` and `DeletionWarnedAtUnixMs` (migration
+  `AccountActivity`; existing accounts count as active from the migration).
+- **`tenant_hint` on the BFF's `/bff/login`**, passed on to the token server (tenant ids only).
+- **Session lifetime per client** (`Clients[].SessionLifetime`). Ended sessions and spent refresh tokens are kept for the
+  longest lifetime of any client.
+
 ## [0.1.0-alpha] - 2026-10-20
 
 First public preview.

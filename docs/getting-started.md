@@ -133,8 +133,11 @@ migrations in your deployment pipeline, for example with `dotnet ef database upd
 **One deployment, several products.** Give each product its own app registration at the provider (its own name on the
 consent screen), add each as a provider (`.AddEntra("entra-time")`, `.AddEntra("entra-tickets")`), and list them per client:
 `"Providers": [ "entra-time" ]`. The login page then offers a client only its providers and names it, and a session from
-another product's registration signs in again. For an Entra registration tenants consented to without `email`, set
-`Providers:entra-time:Scopes` to `[ "profile" ]` so reusing it asks no one again.
+another product's registration signs in again. A client with one provider can skip the login page
+(`"SkipLoginPage": true`): its users go straight to that provider. For an Entra registration tenants consented to without `email`, set
+`Providers:entra-time:Scopes` to `[ "profile" ]` so reusing it asks no one again. Set
+`Providers:entra-time:SessionCheckInterval` (for example `00:15:00`) to check sessions with Entra again that often: a user
+Entra disabled, or whose sessions were revoked, is then signed out here within the interval.
 
 **Signing keys** live in the database by default, protected by the Data Protection key ring and rotated automatically.
 Use `.AddKeyVaultSigning()` (package `JeffOps.Authentication.KeyVault`) to sign with Azure Key Vault instead, or

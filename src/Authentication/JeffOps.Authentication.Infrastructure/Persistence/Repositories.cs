@@ -51,7 +51,23 @@ internal sealed class AccountRepository(AuthenticationDbContext db) : IAccountRe
                 .ToDictionaryAsync(account => account.Id, account => account.Email, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<Account>> ListToWarnOfDeletionAsync(DateTimeOffset inactiveSince, int max, CancellationToken cancellationToken) =>
+        await db.Accounts
+            .Where(account => account.DeletionWarnedAt == null && account.LastActiveAt <= inactiveSince)
+            .OrderBy(account => account.LastActiveAt)
+            .Take(max)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<Account>> ListDueForDeletionAsync(DateTimeOffset inactiveSince, DateTimeOffset warnedBefore, int max, CancellationToken cancellationToken) =>
+        await db.Accounts
+            .Where(account => account.DeletionWarnedAt != null && account.DeletionWarnedAt <= warnedBefore && account.LastActiveAt <= inactiveSince)
+            .OrderBy(account => account.DeletionWarnedAt)
+            .Take(max)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
     public void Add(Account account) => db.Accounts.Add(account);
+
+    public void Remove(Account account) => db.Accounts.Remove(account);
 }
 
 internal sealed class PersonalAccessTokenRepository(AuthenticationDbContext db) : IPersonalAccessTokenRepository

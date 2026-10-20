@@ -31,31 +31,8 @@ public static class FreshSignIn
             : null;
 
     /// <summary>The time a sign-in must follow, from a local return URL's <see cref="Parameter"/>; null when it has none.</summary>
-    public static DateTimeOffset? RequiredAfter(string? returnUrl, DateTimeOffset now)
-    {
-        var start = returnUrl?.IndexOf('?', StringComparison.Ordinal) ?? -1;
-        if (returnUrl is null || start < 0)
-        {
-            return null;
-        }
-
-        var query = returnUrl[(start + 1)..];
-        if (query.IndexOf('#', StringComparison.Ordinal) is var fragment and >= 0)
-        {
-            query = query[..fragment];
-        }
-
-        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var separator = pair.IndexOf('=', StringComparison.Ordinal);
-            if (separator > 0 && string.Equals(Uri.UnescapeDataString(pair[..separator]), Parameter, StringComparison.Ordinal))
-            {
-                return Parse(Uri.UnescapeDataString(pair[(separator + 1)..]), now);
-            }
-        }
-
-        return null;
-    }
+    public static DateTimeOffset? RequiredAfter(string? returnUrl, DateTimeOffset now) =>
+        ReturnUrlQuery.Value(returnUrl, Parameter) is { } value ? Parse(value, now) : null;
 
     /// <summary>The <c>max_age</c> (seconds) to ask a provider for, to authenticate after <paramref name="requiredAfter"/>.</summary>
     public static long MaxAge(DateTimeOffset requiredAfter, DateTimeOffset now) =>

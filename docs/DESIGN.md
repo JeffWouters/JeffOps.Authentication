@@ -259,7 +259,7 @@ A layered module also ships a separate persistence project per database provider
 
 | Project | Layer | Contents | Depends on |
 |---|---|---|---|
-| `JeffOps.Authentication.Domain` | Domain | `Account`, `ExternalLogin`, `LocalCredential`, `PersonalAccessToken`, `TokenKey`, `AccountErasure`; value objects (`Issuer`, `Subject`, `PatHash`, `SessionLifetime`); domain events; invariants (PAT expiry caps, status transitions) | SharedKernel |
+| `JeffOps.Authentication.Domain` | Domain | `Account`, `ExternalLogin`, `LocalCredential`, `PersonalAccessToken`, `TokenKey`; value objects (`Issuer`, `Subject`, `PatHash`, `SessionLifetime`); domain events; invariants (PAT expiry caps, status transitions) | SharedKernel |
 | `JeffOps.Authentication.Application` | Application | Slices: `Grants/*`, `Accounts/*`, `PersonalAccessTokens/*`, `Sessions/Revalidate`, `Federation/*` (account linking on `(issuer, subject)`, home realm discovery, per-tenant provider registry). Ports: `IAccountRepository`, `IPatRepository`, `ITokenKeyProvider`, `IExternalIdentityProvider`, `IPasswordHasher`, `IUnitOfWork`. Time comes from `TimeProvider`. | Domain, Abstractions |
 | `JeffOps.Authentication.Infrastructure` | Infrastructure | OpenIddict server configuration, key providers (database, certificate) and rotation, hashing, provider-neutral EF Core `DbContext` and repositories, client seeder, background sweepers | Application, OpenIddict, EF Core |
 | `JeffOps.Authentication.Persistence.SqlServer` | Infrastructure | SQL Server provider registration and migrations | Infrastructure |
@@ -500,12 +500,18 @@ The `external` token-exchange grant is **kept** as an optional extension for cli
 
 ### 7.3.1 As built (phase 2)
 
-- **Routes:** `connect/authorize`, `connect/token`, `connect/userinfo`, `connect/endsession` (passthrough to the use cases), `connect/revoke`, `connect/introspect`, `.well-known/openid-configuration` and `.well-known/jwks` (served by OpenIddict). The caller's PATs at `account/pats`; operators at `admin/accounts/{id}/disable|enable`; services at `directory/accounts` (I8).
+- **Routes:** `connect/authorize`, `connect/token`, `connect/userinfo`, `connect/endsession` (passthrough to the use cases), `connect/revoke`, `connect/introspect`, `.well-known/openid-configuration` and `.well-known/jwks` (served by OpenIddict). The caller's PATs at `account/pats`; operators at `admin/accounts/{id}/disable|enable` and `DELETE admin/accounts/{id}`; users delete their own account at `DELETE account`; services at `directory/accounts` (I8).
 - **Options** bind from `JeffOps:TokenServer` (`TokenServerOptions`): issuer (required outside Development), lifetimes, API scopes and their audiences, MFA policy, PAT policy, clients, the sign-in scheme the authorize endpoint challenges, and the permissions for account administration and directory lookups.
 - **Sign-in contract:** the login UI or a federation callback signs the user into the sign-in scheme (default `JeffOps.SignIn`) with `SignInPrincipal.Create(accountId, strength, signedInAt, …)`. The authorize endpoint honours `prompt=login|none` and `max_age`, and strips them from the return URL so the user isn't asked again forever.
 - **Refusals** at the token endpoint are `invalid_grant` with a `code` parameter (`mfa_required`, `account_inactive`, `session_expired`, `no_membership`, `tenant_inactive`, `token_invalid`); a tenant-directory outage is `server_error` with `directory_unavailable`, so clients retry instead of signing the user out.
 - **Refresh token reuse:** OpenIddict's reuse leeway is exposed as `RefreshTokenReuseLeeway` (default 30 s, so concurrent refreshes don't sign the user out); outside it, reuse revokes the token chain. Refresh tokens never outlive the session's absolute lifetime.
-- **Store pruning:** every token and authorization OpenIddict issues is a row (a sign-in leaves four tokens and an authorization, a refresh three, a client-credentials token one), so `StoreMaintenance` prunes every `PruneInterval` (default hourly, starting at a random moment within a minute of startup; zero disables) the tokens and authorizations that can no longer be used (expired, redeemed, revoked, or of an ended authorization) once older than `PruneAfter` (default 14 days, never less than `SessionLifetime`, so a redeemed refresh token is kept while it could be presented and its reuse still revokes the chain). Valid tokens are never pruned, and a pruned entry of a revoked token stays refused. Every instance prunes; deletes are the same from any of them. The same service deletes, every minute and in batches of 5,000, expired DPoP/SAML replay entries, expired external sessions and ended sessions older than `SessionLifetime`; requests never prune (an expired replay entry still present is taken over, and expired external sessions are ignored).
+- **Session lifetime per client** (`Clients[].SessionLifetime`, default the server's `SessionLifetime`, 8 h): a client's
+  grants end that long after sign-in (authorize, device approval, refresh, and the refresh token's own lifetime). What
+  concerns sessions is kept for the longest lifetime of any client (`LongestSessionLifetime`): ended sessions, spent
+  refresh tokens and tenant providers' sessions, so a sign-out or a reused refresh token still counts while a longer
+  session's tokens can be refreshed. The sign-in cookie's lifetime is the host's; a client whose sessions outlive it
+  refreshes without it, and only a new authorization request signs the user in again.
+- **Store pruning:** every token and authorization OpenIddict issues is a row (a sign-in leaves four tokens and an authorization, a refresh three, a client-credentials token one), so `StoreMaintenance` prunes every `PruneInterval` (default hourly, starting at a random moment within a minute of startup; zero disables) the tokens and authorizations that can no longer be used (expired, redeemed, revoked, or of an ended authorization) once older than `PruneAfter` (default 14 days, never less than the longest session lifetime, so a redeemed refresh token is kept while it could be presented and its reuse still revokes the chain). Valid tokens are never pruned, and a pruned entry of a revoked token stays refused. Every instance prunes; deletes are the same from any of them. The same service deletes, every minute and in batches of 5,000, expired DPoP/SAML replay entries, expired external sessions and ended sessions older than the longest session lifetime; requests never prune (an expired replay entry still present is taken over, and expired external sessions are ignored).
 - **MFA defaults:** `RequireForSignIn` is off (whether MFA is available depends on the provider); `RequireForSensitiveActions` is on.
 - **Clients** are seeded from configuration at startup and kept in sync; confidential clients need a secret of at least 32 characters outside Development; PKCE is required for every code-flow client.
 - **`AuthenticationBuilder`** lives in Application (it is only the service collection and configuration), so plug-ins that may reference Application only can extend it. EF-specific extensions (`UseDatabase`) live in Infrastructure. Every module's DbContext is pooled (`AddDbContextPool`): building a context's internal services per request cost 10–25% of the token server's CPU and about 40% of SCIM's allocations, so the `UseDatabase` delegate runs once with the root service provider and must not resolve scoped services.
@@ -526,7 +532,7 @@ All opt-in per client (`ClientDefinition`), except the endpoints themselves, whi
 | Token | Format | Lifetime (default) | Notes |
 |---|---|---|---|
 | Access token | JWT, RS256 (ES256 optional), not encrypted | 15 min | Audience = shared API audience + per-service audiences. |
-| Refresh token | Opaque reference, encrypted | sliding none; absolute 8 h | Rotation; reuse detection revokes the family. |
+| Refresh token | Opaque reference, encrypted | sliding none; absolute 8 h (per client: `SessionLifetime`) | Rotation; reuse detection revokes the family. |
 | ID token | JWT | 5 min | Only for code flow clients. |
 | PAT exchange token | JWT | 15 min | Carries `pat_id`, `cred=pat`, ceiling claims. |
 | Tenant-switch token | JWT | 10 min | `act_tid`, delegation ceiling. |
@@ -594,8 +600,25 @@ Upstream dependency failure → `server_error` (5xx), **not** `invalid_grant`, s
   - The login page offers only the client's providers and names the client ("to continue to …"); home realm discovery
     and `signin/{provider}` skip providers the client doesn't list.
   - Providers that tenants registered themselves (§8.4) are always allowed: a tenant's SSO choice applies to every product.
+  - **Skipping the login page** (`Clients[].SkipLoginPage`, opt-in): the authorize endpoint sends the client's users straight
+    to `signin/{provider}` (with `login_hint`) when the client lists exactly one provider that isn't `local`; anything else
+    fails validation at startup. The provider is asked for the same fresh sign-in and authentication contexts as from the
+    login page, and its errors still show there. Opt-in, because tenants' own providers are reached only through the login
+    page's home realm discovery.
   - The client is read from the return URL's authorization request (`client_id`, which pushed requests repeat). The device
-    flow isn't limited: its verification page doesn't know the client until the code is entered.
+    flow checks it when the code is approved, since its verification page doesn't know the client before.
+- **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): a product
+  that knew its users by their provider identity before moving its sign-in here (for example by Entra directory and `oid`)
+  receives it in its access tokens: `idp` (the provider), `idp_iss` and `idp_sub` (the login as this server links it:
+  lowercase, no trailing slash; for Entra the directory's issuer and the `oid`), and the provider claims it lists (for
+  example `groups`, `wids`, `acct`), unchanged.
+  - Only sign-ins through providers configured on this server count: never a provider a tenant registered (its issuer and
+    claims are the tenant's to choose), never a local account.
+  - Access tokens only, never ID tokens. `idp` comes with anything forwarded. This server's own claim types (`sub`, `tid`,
+    `email`, `amr`, `sid`, …) can't be listed; startup fails if they are.
+  - The sign-in cookie keeps them under a private prefix (`jeffops:upstream:`), only what the client in the return URL lists.
+    A refresh keeps what the stored grant carries, within the client's settings at that moment.
+  - Each forwarding is audited (`session.upstream_identity_forwarded`, with provider, issuer, subject and claim types).
 
 ---
 
@@ -707,6 +730,30 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Hosted UI**: the login page shows a password form (with antiforgery) when the email has no federated provider; `account/login/code` takes the authenticator or a recovery code. Credential management is a JSON API under `account/local/manage/*` for the signed-in user's own session (never under impersonation, delegation or PAT tokens).
 - **Events**: every credential change is audited and the user is notified (`INotifier`).
 - **Session revocation** (release readiness): changing or resetting the password, removing the authenticator or a passkey ends every session of the account (`Account.RevokeSessions`): all its tokens are revoked at once, clients with a back-channel logout URI are notified, and refreshes of sessions that signed in earlier are refused (`session_revoked`) as a second line of defence. Users can also sign out everywhere (`POST account/sessions/revoke`) and operators can do it for an account (`POST admin/accounts/{id}/sessions/revoke`). Personal access tokens are separate credentials and stay valid.
+- **Deleting accounts.** An account is deleted in three ways:
+  - by its user (`DELETE account`, from their own session);
+  - by an operator (`DELETE admin/accounts/{id}`, as themselves);
+  - for inactivity.
+
+  The first two need a recent multi-factor sign-in when sensitive actions do (`step_up_required`). A deletion is immediate and can't be undone.
+  - **Order:** each module's data goes first (`IAccountDataEraser`, one per module), then the account and its logins. A failure half-way leaves the account in place, and the deletion runs again.
+  - **What goes:**
+    - token server: personal access tokens, session records, providers' refresh tokens, and its OpenIddict tokens and authorizations, deleted rather than revoked because their payloads hold its claims;
+    - LocalAccounts: the password, authenticator, passkeys, recovery codes and pending email links;
+    - Tenancy: memberships;
+    - Enterprise: SCIM group memberships;
+    - Delegation: open grants it takes part in, revoked (`account-deleted`). Finished grants stay as the audit trail.
+  - **Afterwards:** clients get a back-channel logout (`sub`), other services `auth.account.deleted.v1` (reason `requested`, `operator` or `inactive`), and audit records `account.deleted`. Audit records and who-created-what references stay; they name the account by its id only.
+  - **Refusals** (409):
+    - `last_tenant_admin`: the only administrator of a tenant that isn't deleted;
+    - `managed_by_organization`: an account an organization provisions through SCIM, which is the organization's to remove (deprovision, then an operator deletes it).
+  - **Inactivity** (`InactiveAccounts:DeleteAfter`, off by default; Authn uses 395 days):
+    - `LastActiveAt` records sign-ins, refreshes and PAT exchanges, at most one write a day.
+    - When an account has been inactive for `DeleteAfter` − `WarnBefore` (30 days), the user is told: user notification `account.deletion_scheduled`, which the host's `INotifier` delivers.
+    - It is deleted `WarnBefore` later if still unused. Any sign-in cancels the warning.
+    - Accounts that can't be deleted are kept without telling the user, and tried again a notice period later, behind the others, so a crowd of them never holds up the rest.
+    - The migration counts existing accounts as active from the moment it runs.
+    - Every instance runs a pass every `CheckInterval` (1 h), at most 100 deletions and 100 warnings each.
 - **Email codes** (`EmailCodes`): accounts without an authenticator app complete a password sign-in with a six-digit code sent by email (`IAccountEmailSender.SendSignInCodeAsync`), valid `EmailCodeLifetime` (10 min), accepted once, stored as a hash bound to the account; wrong codes count towards lockout, a new code can be asked for at most once a minute, and it counts as a second factor (`otp`, `mfa`).
 - **Hosted pages** for the emailed links: `account/verify-email` (verifies only when the button is pressed, not when a mail scanner opens the link), `account/forgot-password` (the same answer for every address) and `account/reset-password`, posting to antiforgery-checked form endpoints; the login page links to the reset.
 
@@ -788,7 +835,8 @@ All models consume the same token server. The library provides a package or docu
 ### 9.2 As built (phase 4)
 
 - **`JeffOps.Authentication.Bff`** is a confidential OIDC client built on the OpenIddict client (code + PKCE, state, ID token validation, refresh and revocation come from the library, not hand-written protocol code). `AddJeffOpsBff`, `UseJeffOpsBff` (CSRF, then cookie-to-bearer), `MapJeffOpsBff`.
-- **Endpoints:** `GET /bff/login?returnUrl=` (local return URLs only), `/bff/callback`, `POST /bff/logout` (CSRF header; revokes the refresh token and answers `{ endSessionUrl }` so the SPA also ends the token-server session), `GET /bff/me`, `POST /bff/backchannel-logout`.
+- **Endpoints:** `GET /bff/login?returnUrl=` (local return URLs only; optional `prompt=login|none`, and `tenant_hint` with a
+  tenant id, passed on to the token server), `/bff/callback`, `POST /bff/logout` (CSRF header; revokes the refresh token and answers `{ endSessionUrl }` so the SPA also ends the token-server session), `GET /bff/me`, `POST /bff/backchannel-logout`.
 - **Sessions** live in `IDistributedCache` under the SHA-256 of a 256-bit id, encrypted with Data Protection, with the absolute deadline and idle timeout as cache expirations. A per-user index serves back-channel logout.
 - **Refresh** is single-flight per session; a refusal ends the session, an outage keeps it and backs off for 5 s; `StoreOutageGrace` optionally serves the last known copy to reads while the store is down (else 503).
 - **Back-channel logout:** when an operator disables an account the token server revokes all its tokens and posts a signed `logout_token` to every client with a `BackchannelLogoutUri`. The BFF validates signature, audience, event, freshness and `jti` replay, then ends every session of that user.
@@ -983,7 +1031,7 @@ app.MapJeffOpsBff();
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `Accounts` | `Id`, `Status`, `Email`, `DisplayName`, `CreatedAt` | Email not unique. Status: Active, Disabled, Locked, PendingErasure. |
+| `Accounts` | `Id`, `Status`, `Email`, `DisplayName`, `CreatedAt`, `LastActiveAtUnixMs`, `DeletionWarnedAtUnixMs` | Email not unique. Status: Active, Disabled, Locked. |
 | `ExternalLogins` | `AccountId`, `Issuer`, `Subject`, `Provider` | **New** (was columns on User). Unique `(Issuer, Subject)`. Allows multiple providers per account. |
 | `LocalCredentials` | `AccountId`, `PasswordHash`, `HashVersion` | |
 | `Passkeys` | `AccountId`, `CredentialId`, `PublicKey`, `SignCount` | new |
@@ -992,7 +1040,6 @@ app.MapJeffOpsBff();
 | `PersonalAccessTokens` | `Id`, `AccountId`, `TenantId`, `Hash`, `ExpiresAt`, `Ceiling`, `AllowSensitive` | |
 | `TokenKeys` | `Id`, `Use`, `Algorithm`, `ProtectedKey`, `NotBefore`, `NotAfter` | |
 | `ImpersonationGrants`, `TenantAccessGrants` | | Delegation module; `Status` is a concurrency token |
-| `AccountErasures` | | |
 | OpenIddict tables | | applications, authorizations, scopes, tokens |
 
 ### 14.2 Tenancy store (optional module, §8.6)
@@ -1096,6 +1143,31 @@ Non-negotiable defaults. Each has a test.
   only (a pushed request keeps them). Providers are asked again (`prompt=login` and `max_age`, SAML `ForceAuthn`). An
   answer whose `auth_time` or `AuthnInstant` predates the request (one minute of clock skew) gets
   `reauthentication_required`. `auth_time` in tokens is when the user signed in here.
+- **Checking sessions with their provider again** (`Providers:{name}:SessionCheckInterval`, Entra and OIDC providers;
+  off by default). The provider's decisions reach the sessions here within the interval rather than at the end of the
+  session lifetime: a disabled or deleted user, revoked sessions, a Conditional Access condition or sign-in frequency
+  no longer met. Not real time like Continuous Access Evaluation.
+  - `offline_access` is requested. The provider's refresh token is kept with the session (table `ProviderSessions`,
+    protected with Data Protection) until the session expires or ends. A sign-in without one doesn't count
+    (`provider_error`), since the session couldn't be checked.
+  - When the session's tokens are issued (authorize, device approval) or refreshed, and the last check is older than the
+    interval, the token is redeemed at the provider, and a rotated one is kept.
+  - `invalid_grant`, `interaction_required`, `login_required` or `consent_required` ends the session as signing out
+    would: its tokens stop working, clients get a back-channel logout (`sid`), and audit records
+    `session.ended_by_provider`. The grant is refused with `session_revoked`.
+  - Anything else is no verdict on the user and the session continues, checked again at its next refresh. That covers an
+    unreachable provider, a server error, and `invalid_client` (this server's own secret expired).
+  - A token the key ring can no longer read ends the session.
+  - A check that takes longer than 10 seconds counts as unreachable, so a slow provider doesn't hold up the refresh.
+  - Sessions that started before the interval was set aren't checked.
+- **Authentication contexts through providers** (`acr_values`, such as an Entra Conditional Access context `c1`): the
+  token server asks the provider for them (`acr_values`; Entra the `claims` parameter with `acrs`, which is how it takes
+  the request) and keeps the provider's `acrs`/`acr` with the sign-in. A sign-in through a configured provider that
+  didn't report every requested context signs in again, once: `jeffops_acr_values` in the return URL marks the round,
+  and back from it the client gets its tokens whatever the provider gave. A local sign-in or one through a tenant's
+  provider can't report contexts and isn't sent round. At most five values of up to 64 characters
+  (`[A-Za-z0-9._:/-]`); anything else asks for nothing. This server grants nothing for them: a client that lists `acrs`
+  in `UpstreamClaims` receives the provider's answer and judges it itself.
 - **Email-domain allow-list:** only emails the provider marks verified count (Entra: optional claim `xms_edov`).
 - **SAML metadata:** 10 s and 1 MB per download (headers and body). Tenants' downloads are single-flight per provider,
   with a 1-minute back-off after a failure. Cached metadata counts only for the URL and entity id it came from, and for at

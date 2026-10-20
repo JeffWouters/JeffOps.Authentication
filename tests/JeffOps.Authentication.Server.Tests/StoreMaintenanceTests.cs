@@ -62,6 +62,9 @@ public sealed class StoreMaintenanceTests
             db.ExternalSessions.Add(new ExternalSessionEntry("live-session", "provider", null, Guid.NewGuid(), future));
             db.EndedSessions.Add(new EndedSession("ended-long-ago", Guid.NewGuid(), longAgo));
             db.EndedSessions.Add(new EndedSession("ended-recently", Guid.NewGuid(), past));
+            db.ProviderSessions.Add(new ProviderSessionEntry("expired-provider-session", "provider", Guid.NewGuid(), "token", past, past));
+            db.ProviderSessions.Add(new ProviderSessionEntry("ended-recently", "provider", Guid.NewGuid(), "token", past, future));
+            db.ProviderSessions.Add(new ProviderSessionEntry("live-provider-session", "provider", Guid.NewGuid(), "token", past, future));
             await db.SaveChangesAsync(ct);
         }
 
@@ -73,7 +76,43 @@ public sealed class StoreMaintenanceTests
             (await db.ReplayEntries.Select(entry => entry.Key).ToListAsync(ct)).ShouldBe(["live"], "more than two batches of expired entries");
             (await db.ExternalSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["live-session"]);
             (await db.EndedSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["ended-recently"], "its tokens could still be refreshed");
+            (await db.ProviderSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["live-provider-session"], "expired or ended: the provider's token goes");
         }
+    }
+
+    [Fact]
+    public async Task Ended_sessions_and_spent_refresh_tokens_are_kept_as_long_as_any_client_s_session_lasts()
+    {
+        // One client's sessions last 24 hours: an ended session must still count, and a spent refresh token still be
+        // recognised, after the server's own 8.
+        await using var server = await TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:PruneAfter"] = "00:01:00",
+            ["JeffOps:TokenServer:Clients:0:SessionLifetime"] = "1.00:00:00",
+        });
+        var ct = TestContext.Current.CancellationToken;
+        var account = await server.CreateAccountAsync();
+        var tokens = await server.SignInAsync(account.Id);
+        (await server.RefreshAsync(tokens.RefreshToken!)).Status.ShouldBe(HttpStatusCode.OK);
+        var endedAt = (server.Time.GetUtcNow() - TimeSpan.FromHours(9)).ToUnixTimeMilliseconds();
+        await using (var scope = server.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
+            db.EndedSessions.Add(new EndedSession("ended-nine-hours-ago", Guid.NewGuid(), endedAt));
+            await db.SaveChangesAsync(ct);
+        }
+
+        server.Time.Advance(TimeSpan.FromHours(9));
+        await Maintenance(server).SweepAsync(ct);
+        await Maintenance(server).PruneAsync(ct);
+
+        await using (var scope = server.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
+            (await db.EndedSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldContain("ended-nine-hours-ago");
+        }
+
+        (await RedeemedAsync(server)).ShouldBeGreaterThan(0);
     }
 
     private static StoreMaintenance Maintenance(TokenServerHost server) =>

@@ -1,3 +1,4 @@
+using JeffOps.Authentication.Abstractions.Access;
 using JeffOps.Authentication.Abstractions.Claims;
 using JeffOps.Authentication.Abstractions.Contracts;
 using JeffOps.Authentication.Application;
@@ -28,6 +29,12 @@ internal static class AccountEndpoints
         admin.MapPost("/{id:guid}/enable", (Guid id, HttpContext context, ICommandHandler<SetAccountStatusCommand> handler, ClaimNames names) =>
             SetStatusAsync(id, disable: false, context, handler, names));
 
+        // Irreversible, so with a recent multi-factor sign-in (when sensitive actions need one), as the operator themselves.
+        admin.MapDelete("/{id:guid}", (Guid id, HttpContext context, ICommandHandler<DeleteAccountCommand> handler, ClaimNames names) =>
+            Callers.OwnSessionAccount(context.User, names) is { } operatorId
+                ? DeleteAsync(new DeleteAccountCommand(operatorId, id, AccountDeletionReasons.Operator), context, handler, names, options)
+                : Task.FromResult<IResult>(TypedResults.NotFound()));
+
         admin.MapPost("/{id:guid}/sessions/revoke", async (Guid id, HttpContext context, ICommandHandler<RevokeSessionsCommand> handler, ClaimNames names) =>
             Callers.OwnSessionAccount(context.User, names) is { } operatorId
                 ? (await handler.HandleAsync(new RevokeSessionsCommand(operatorId, id), context.RequestAborted).ConfigureAwait(false)).ToHttpResult()
@@ -38,6 +45,14 @@ internal static class AccountEndpoints
             Callers.OwnSessionAccount(context.User, names) is { } accountId
                 ? (await handler.HandleAsync(new RevokeSessionsCommand(accountId, accountId), context.RequestAborted).ConfigureAwait(false)).ToHttpResult()
                 : TypedResults.Forbid())
+            .WithTags("Account")
+            .RequireAuthorization(Callers.TokenPolicy);
+
+        // Users: delete their own account, from their own session (not through a PAT or while acting as someone else).
+        endpoints.MapDelete("account", (HttpContext context, ICommandHandler<DeleteAccountCommand> handler, ClaimNames names) =>
+            Callers.OwnSessionAccount(context.User, names) is { } accountId
+                ? DeleteAsync(new DeleteAccountCommand(accountId, accountId, AccountDeletionReasons.Requested), context, handler, names, options)
+                : Task.FromResult<IResult>(TypedResults.Forbid()))
             .WithTags("Account")
             .RequireAuthorization(Callers.TokenPolicy);
 
@@ -68,6 +83,22 @@ internal static class AccountEndpoints
         }
 
         return (await handler.HandleAsync(new SetAccountStatusCommand(operatorId, id, disable), context.RequestAborted).ConfigureAwait(false)).ToHttpResult();
+    }
+
+    private static async Task<IResult> DeleteAsync(
+        DeleteAccountCommand command, HttpContext context, ICommandHandler<DeleteAccountCommand> handler, ClaimNames names, TokenServerOptions options)
+    {
+        if (options.Mfa.RequireForSensitiveActions && !AccessContextReader.IsSteppedUp(context.User, names))
+        {
+            context.Response.Headers.WWWAuthenticate =
+                "Bearer error=\"insufficient_user_authentication\", error_description=\"A multi-factor sign-in is required.\"";
+            return TypedResults.Problem(
+                detail: "Deleting an account requires a multi-factor sign-in (step-up).",
+                statusCode: StatusCodes.Status403Forbidden,
+                extensions: new Dictionary<string, object?> { ["code"] = "step_up_required" });
+        }
+
+        return (await handler.HandleAsync(command, context.RequestAborted).ConfigureAwait(false)).ToHttpResult();
     }
 
     private static IResult ToDto(AccountContact contact) =>

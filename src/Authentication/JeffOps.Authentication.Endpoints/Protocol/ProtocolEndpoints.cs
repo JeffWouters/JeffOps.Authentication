@@ -61,6 +61,12 @@ internal static class ProtocolEndpoints
         var freshAfter = FreshSignIn.Parse(Single(context, FreshSignIn.Parameter), now);
         var reauthenticated = FreshSignInCookie.Read(context) is { } resumed && signedInAt >= resumed;
 
+        // Authentication contexts (acr_values) the provider hasn't reported for this sign-in: sign in again, asking the provider
+        // for them, once. Back from that sign-in (the parameter is in the URL), the client gets what the provider gave.
+        var contexts = AuthenticationContexts.Parse(request.AcrValues);
+        var contextsMissing = Single(context, AuthenticationContexts.Parameter) is null
+            && AuthenticationContexts.Missing(signedIn.Principal, contexts);
+
         // A client limited to some providers (its own app registration and consent screen at each) gets only sign-ins that came
         // through one of them: a session from another product's registration signs in again here.
         var client = ClientProviders.Find(options.Value, request.ClientId);
@@ -68,6 +74,7 @@ internal static class ProtocolEndpoints
             || (!reauthenticated && request.HasPromptValue(PromptValues.Login))
             || (!reauthenticated && request.MaxAge is { } maxAge && signedInAt is { } at && now - at > TimeSpan.FromSeconds(maxAge))
             || (freshAfter is { } after && (signedInAt is not { } since || since < after))
+            || contextsMissing
             || !ClientProviders.Allows(client, SignInPrincipal.ProviderOf(signedIn.Principal));
 
         IResult SignInAgain()
@@ -87,7 +94,7 @@ internal static class ProtocolEndpoints
                 freshAfter,
             }.Max();
             var parameters = (context.Request.HasFormContentType ? context.Request.Form.AsEnumerable() : context.Request.Query)
-                .Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge or FreshSignIn.Parameter))
+                .Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge or FreshSignIn.Parameter or AuthenticationContexts.Parameter))
                 .SelectMany(pair => pair.Value.Select(value => KeyValuePair.Create(pair.Key, value)))
                 .ToList();
             if (required is { } since)
@@ -95,10 +102,23 @@ internal static class ProtocolEndpoints
                 parameters.Add(KeyValuePair.Create(FreshSignIn.Parameter, (string?)since.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture)));
             }
 
+            if (contexts.Count > 0)
+            {
+                parameters.Add(KeyValuePair.Create(AuthenticationContexts.Parameter, (string?)string.Join(' ', contexts)));
+            }
+
             var returnUrl = context.Request.PathBase + context.Request.Path + QueryString.Create(parameters);
             if (required is { } mustFollow)
             {
                 FreshSignInCookie.Set(context, returnUrl, mustFollow);
+            }
+
+            // A client that skips the login page goes straight to its only provider, with the login hint. The provider is asked
+            // for what the return URL carries (a fresh sign-in, authentication contexts), as from the login page.
+            if (client is { SkipLoginPage: true, Providers: [var only] } && only != ClientProviders.Local)
+            {
+                var hint = string.IsNullOrEmpty(request.LoginHint) ? string.Empty : $"&login_hint={Uri.EscapeDataString(request.LoginHint)}";
+                return Results.Redirect($"/signin/{Uri.EscapeDataString(only)}?returnUrl={Uri.EscapeDataString(returnUrl)}{hint}");
             }
 
             return Results.Challenge(new AuthenticationProperties { RedirectUri = returnUrl }, [signInScheme]);
@@ -121,7 +141,8 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var result = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, signedInAt ?? now, request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names)),
+            new StartSessionCommand(accountId, strength, signedInAt ?? now, request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names),
+                UpstreamIdentity.FromSignIn(signedIn.Principal, client, names), request.ClientId),
             context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsFailure && result.Error.Code is GrantErrors.SessionRevoked or GrantErrors.SessionExpired)
@@ -185,7 +206,7 @@ internal static class ProtocolEndpoints
                 return TokenIssuance.Refuse(Error.Unauthorized(Dpop.InvalidProof, "This grant is bound to a DPoP key; prove possession of it."), Dpop.InvalidProof);
             }
 
-            result = await refreshSession.HandleAsync(new RefreshSessionCommand(stored, stored.GetScopes()), cancellationToken).ConfigureAwait(false);
+            result = await refreshSession.HandleAsync(new RefreshSessionCommand(stored, stored.GetScopes(), request.ClientId), cancellationToken).ConfigureAwait(false);
         }
         else if (request.GrantType == options.Value.PatGrantType)
         {
@@ -289,7 +310,8 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal!.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var session = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names)),
+            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names),
+                UpstreamIdentity.FromSignIn(signedIn.Principal, ClientProviders.Find(options.Value, code.GetClaim(Claims.ClientId)), names), code.GetClaim(Claims.ClientId)),
             context.RequestAborted).ConfigureAwait(false);
         if (session.IsFailure)
         {

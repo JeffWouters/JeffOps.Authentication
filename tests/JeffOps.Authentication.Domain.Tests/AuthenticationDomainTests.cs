@@ -74,6 +74,32 @@ public sealed class AccountTests
         account.IsSessionRevoked(Now.AddSeconds(1)).ShouldBeFalse();
         account.DomainEvents.OfType<AccountSessionsRevoked>().ShouldHaveSingleItem().Reason.ShouldBe("password_changed");
     }
+
+    [Fact]
+    public void Activity_is_recorded_once_a_day_and_at_once_when_it_cancels_a_deletion_warning()
+    {
+        var account = Account.Register("ada@example.com", "Ada", true, Now);
+        account.LastActiveAt.ShouldBe(Now);
+
+        account.RecordActivity(Now.AddHours(23)).ShouldBeFalse("one write a day is enough");
+        account.RecordActivity(Now.AddDays(1)).ShouldBeTrue();
+        account.LastActiveAt.ShouldBe(Now.AddDays(1));
+
+        account.WarnOfDeletion(Now.AddDays(1).AddMinutes(1));
+        account.RecordActivity(Now.AddDays(1).AddMinutes(2)).ShouldBeTrue("a pending warning is cancelled at once");
+        account.DeletionWarnedAt.ShouldBeNull();
+    }
+
+    [Fact]
+    public void Deleting_an_account_says_why()
+    {
+        var account = Account.Register("ada@example.com", "Ada", true, Now);
+        account.ClearDomainEvents();
+
+        account.Delete(Now, "requested");
+
+        account.DomainEvents.ShouldHaveSingleItem().ShouldBe(new AccountDeleted(account.Id, "requested"));
+    }
 }
 
 public sealed class PersonalAccessTokenTests

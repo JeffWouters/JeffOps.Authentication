@@ -28,7 +28,14 @@ public sealed record ExternalIdentity(
 }
 
 /// <summary>An external provider as the login page lists it.</summary>
-public sealed record ExternalProviderInfo(string Name, string DisplayName);
+public sealed record ExternalProviderInfo(string Name, string DisplayName)
+{
+    /// <summary>
+    /// How often sessions started through this provider are checked with it again (<see cref="IProviderSessionChecks"/>);
+    /// null: never, the session lasts its lifetime.
+    /// </summary>
+    public TimeSpan? SessionCheckInterval { get; init; }
+}
 
 /// <summary>
 /// Turns the claims a provider returned into an <see cref="ExternalIdentity"/>. Each provider plug-in registers one.

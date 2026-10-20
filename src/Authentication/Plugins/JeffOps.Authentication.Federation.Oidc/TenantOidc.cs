@@ -293,7 +293,7 @@ public static partial class TenantOidcEndpoints
         session.AddClaim(new System.Security.Claims.Claim(ProviderClaim, provider));
         session.AddClaim(new System.Security.Claims.Claim(IdTokenClaim, rawIdToken));
         await externalSessions.RecordAsync(
-            provider, Claim(idToken, "sid"), signedIn.Value.AccountId, SignInPrincipal.SessionId(principal, names)!, now + tokenServer.Value.SessionLifetime, context.RequestAborted).ConfigureAwait(false);
+            provider, Claim(idToken, "sid"), signedIn.Value.AccountId, SignInPrincipal.SessionId(principal, names)!, now + tokenServer.Value.LongestSessionLifetime, context.RequestAborted).ConfigureAwait(false);
 
         await context.SignInAsync(scheme, principal).ConfigureAwait(false);
         return Results.Redirect(pending.ReturnUrl);

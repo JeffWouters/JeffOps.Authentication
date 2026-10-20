@@ -35,6 +35,14 @@ public sealed class EntraOptions
     /// account's email then comes from <c>preferred_username</c>.
     /// </summary>
     public IList<string>? Scopes { get; set; }
+
+    /// <summary>
+    /// Check sessions started through this provider with Entra again at most this often, when their tokens are issued or
+    /// refreshed: <c>offline_access</c> is requested, Entra's refresh token kept with the session, and when Entra refuses it
+    /// (user disabled or deleted, sessions revoked, a Conditional Access condition or sign-in frequency no longer met) the
+    /// session ends. Null (the default): never.
+    /// </summary>
+    public TimeSpan? SessionCheckInterval { get; set; }
 }
 
 /// <summary>Registers Microsoft Entra ID as an external identity provider.</summary>
@@ -61,6 +69,11 @@ public static class EntraFederationExtensions
             throw new InvalidOperationException($"Entra provider '{name}' needs a ClientId.");
         }
 
+        if (options.SessionCheckInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException($"Entra provider '{name}' needs a positive SessionCheckInterval.");
+        }
+
         builder.AddOpenIddictClient().UseWebProviders().AddMicrosoft(microsoft =>
         {
             microsoft.SetProviderName(name)
@@ -70,6 +83,11 @@ public static class EntraFederationExtensions
                 .SetRedirectUri(OidcFederationExtensions.CallbackPathPrefix + name)
                 .AddScopes(options.Scopes is { Count: > 0 } scopes ? [.. scopes] : [Scopes.Email, Scopes.Profile]);
 
+            if (options.SessionCheckInterval is not null)
+            {
+                microsoft.AddScopes(Scopes.OfflineAccess);
+            }
+
             if (!string.IsNullOrEmpty(options.ClientSecret))
             {
                 microsoft.SetClientSecret(options.ClientSecret);
@@ -77,7 +95,7 @@ public static class EntraFederationExtensions
         });
 
         builder.Services.AddSingleton<IExternalIdentityMapper>(provider => new EntraIdentityMapper(
-            new ExternalProviderInfo(name, options.DisplayName),
+            new ExternalProviderInfo(name, options.DisplayName) { SessionCheckInterval = options.SessionCheckInterval },
             provider.GetRequiredService<IOptions<FederationOptions>>()));
         return builder;
     }

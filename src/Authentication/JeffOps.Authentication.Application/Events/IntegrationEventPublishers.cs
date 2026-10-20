@@ -11,6 +11,7 @@ namespace JeffOps.Authentication.Application.Events;
 public sealed class IntegrationEventPublishers(IEventPublisher publisher, TimeProvider time) :
     IDomainEventHandler<AccountRegistered>,
     IDomainEventHandler<AccountStatusChanged>,
+    IDomainEventHandler<AccountDeleted>,
     IDomainEventHandler<PersonalAccessTokenCreated>,
     IDomainEventHandler<PersonalAccessTokenRevoked>
 {
@@ -24,6 +25,12 @@ public sealed class IntegrationEventPublishers(IEventPublisher publisher, TimePr
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
         return publisher.PublishAsync(new AccountStatusChangedEvent(domainEvent.AccountId, domainEvent.Disabled) { OccurredAt = time.GetUtcNow() }, cancellationToken);
+    }
+
+    public Task HandleAsync(AccountDeleted domainEvent, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(domainEvent);
+        return publisher.PublishAsync(new AccountDeletedEvent(domainEvent.AccountId, domainEvent.Reason) { OccurredAt = time.GetUtcNow() }, cancellationToken);
     }
 
     public Task HandleAsync(PersonalAccessTokenCreated domainEvent, CancellationToken cancellationToken)

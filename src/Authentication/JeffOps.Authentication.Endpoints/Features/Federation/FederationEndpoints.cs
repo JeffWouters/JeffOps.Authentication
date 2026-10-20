@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OpenIddict.Abstractions;
 using OpenIddict.Client.AspNetCore;
@@ -19,7 +20,7 @@ namespace JeffOps.Authentication.Endpoints.Features.Federation;
 /// Signing in through external providers (docs/DESIGN.md §8): home realm discovery, the challenge that sends the user to the
 /// provider, and the callback that links the account and signs it into the sign-in scheme.
 /// </summary>
-internal static class FederationEndpoints
+internal static partial class FederationEndpoints
 {
     public const string LoginPath = "/account/login";
 
@@ -53,14 +54,15 @@ internal static class FederationEndpoints
             : Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(local)}&email={Uri.EscapeDataString(email ?? string.Empty)}");
     }
 
-    private static IResult Challenge(
+    private static async Task<IResult> Challenge(
         string provider,
         string? returnUrl,
         string? login_hint,
         IEnumerable<IExternalIdentityMapper> mappers,
         IEnumerable<IExternalProviderChallenge> challenges,
         IOptions<TokenServerOptions> tokenServer,
-        TimeProvider time)
+        TimeProvider time,
+        HttpContext context)
     {
         // Providers tenants registered aren't listed; their own sign-in endpoint checks they exist and may still be used.
         if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal))
@@ -101,15 +103,40 @@ internal static class FederationEndpoints
             properties.Parameters[Parameters.MaxAge] = FreshSignIn.MaxAge(after, now);
         }
 
+        // The client asked for authentication contexts (acr_values): so does this server, of the provider. Entra takes them as
+        // the claims parameter (acrs); other providers as acr_values.
+        if (AuthenticationContexts.RequestedIn(LocalOrRoot(returnUrl)) is { Count: > 0 } contexts)
+        {
+            properties.Parameters[Parameters.AcrValues] = string.Join(' ', contexts);
+            if (await IsEntraAsync(context, provider).ConfigureAwait(false))
+            {
+                properties.Parameters[Parameters.Claims] = AuthenticationContexts.EntraClaimsParameter(contexts);
+            }
+        }
+
         return Results.Challenge(properties, [OpenIddictClientAspNetCoreDefaults.AuthenticationScheme]);
+    }
+
+    private static async Task<bool> IsEntraAsync(HttpContext context, string provider)
+    {
+        // Read only when contexts are asked for: a server without OpenID Connect providers has no client service.
+        if (context.RequestServices.GetService(typeof(OpenIddict.Client.OpenIddictClientService)) is not OpenIddict.Client.OpenIddictClientService clients)
+        {
+            return false;
+        }
+
+        var registration = await clients.GetClientRegistrationByProviderNameAsync(provider, context.RequestAborted).ConfigureAwait(false);
+        return string.Equals(registration.Issuer?.Host, "login.microsoftonline.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IResult> CallbackAsync(
         HttpContext context,
         IEnumerable<IExternalIdentityMapper> mappers,
         ICommandHandler<CompleteExternalSignInCommand, ExternalSignInResult> completeSignIn,
+        IProviderSessionChecks providerSessions,
         ClaimNames names,
         IOptions<TokenServerOptions> options,
+        ILoggerFactory loggers,
         TimeProvider time)
     {
         var result = await context.AuthenticateAsync(OpenIddictClientAspNetCoreDefaults.AuthenticationScheme).ConfigureAwait(false);
@@ -145,9 +172,30 @@ internal static class FederationEndpoints
         }
 
         var signInScheme = options.Value.SignInScheme;
-        await context.SignInAsync(
-            signInScheme,
-            SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, signInScheme, provider)).ConfigureAwait(false);
+
+        // Keep what the client being signed in to may receive of the provider's answer (its UpstreamClaims).
+        // The contexts the provider reported are kept too: the authorize endpoint checks them against acr_values.
+        var upstream = UpstreamIdentity.Capture(provider, identity.Value.Login, principal,
+            (ClientProviders.ForReturnUrl(options.Value, returnUrl)?.UpstreamClaims ?? []).Concat(AuthenticationContexts.ProviderClaims));
+        var now = time.GetUtcNow();
+        var signIn = SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, now, names, signInScheme, provider, upstream);
+
+        // A provider whose sessions are checked again: keep its refresh token with the session. Without one the session couldn't
+        // be checked, so the sign-in doesn't count (grant this server offline_access at the provider).
+        if (mapper.Providers.First(known => string.Equals(known.Name, provider, StringComparison.Ordinal)).SessionCheckInterval is not null)
+        {
+            if (result.Properties?.GetTokenValue(OpenIddictClientAspNetCoreConstants.Tokens.RefreshToken) is not { Length: > 0 } refreshToken)
+            {
+                LogNoRefreshToken(loggers.CreateLogger(typeof(FederationEndpoints).FullName!), provider);
+                return BackToLogin(returnUrl, "provider_error");
+            }
+
+            await providerSessions.KeepAsync(
+                provider, SignInPrincipal.SessionId(signIn, names)!, signedIn.Value.AccountId, refreshToken, now + options.Value.LongestSessionLifetime, context.RequestAborted)
+                .ConfigureAwait(false);
+        }
+
+        await context.SignInAsync(signInScheme, signIn).ConfigureAwait(false);
 
         return Results.Redirect(returnUrl);
     }
@@ -155,6 +203,9 @@ internal static class FederationEndpoints
     /// <summary>Only local paths: a return URL pointing elsewhere would make sign-in an open redirect.</summary>
     internal static string LocalOrRoot(string? returnUrl) =>
         Abstractions.Http.LocalRedirect.OrRoot(returnUrl);
+
+    [LoggerMessage(EventId = 8834, Level = LogLevel.Warning, Message = "Provider {Provider} returned no refresh token, so its sessions can't be checked again; the sign-in was refused. Grant this server offline_access at the provider.")]
+    private static partial void LogNoRefreshToken(ILogger logger, string provider);
 
     private static IResult BackToLogin(string returnUrl, string error) =>
         Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(returnUrl)}&error={Uri.EscapeDataString(error)}");

@@ -31,6 +31,13 @@ public sealed class OidcProviderOptions
 
     /// <summary>Scopes to request besides <c>openid</c>. Default: <c>profile</c>, <c>email</c>.</summary>
     public IList<string> Scopes { get; } = [OpenIddict.Abstractions.OpenIddictConstants.Scopes.Profile, OpenIddict.Abstractions.OpenIddictConstants.Scopes.Email];
+
+    /// <summary>
+    /// Check sessions started through this provider with it again at most this often, when their tokens are issued or
+    /// refreshed: <c>offline_access</c> is requested, the provider's refresh token kept with the session, and a provider that
+    /// refuses it ends the session. Null (the default): never.
+    /// </summary>
+    public TimeSpan? SessionCheckInterval { get; set; }
 }
 
 /// <summary>Registers upstream OpenID Connect providers and the OpenIddict client they share.</summary>
@@ -58,6 +65,11 @@ public static class OidcFederationExtensions
             throw new InvalidOperationException($"OIDC provider '{name}' needs an Authority and a ClientId.");
         }
 
+        if (options.SessionCheckInterval <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException($"OIDC provider '{name}' needs a positive SessionCheckInterval.");
+        }
+
         var registration = new OpenIddictClientRegistration
         {
             Issuer = options.Authority,
@@ -73,9 +85,14 @@ public static class OidcFederationExtensions
             registration.Scopes.Add(scope);
         }
 
+        if (options.SessionCheckInterval is not null && !registration.Scopes.Contains(Scopes.OfflineAccess))
+        {
+            registration.Scopes.Add(Scopes.OfflineAccess);
+        }
+
         builder.AddOpenIddictClient().AddRegistration(registration);
         builder.Services.AddSingleton<IExternalIdentityMapper>(provider => new OidcIdentityMapper(
-            new ExternalProviderInfo(name, options.DisplayName ?? name),
+            new ExternalProviderInfo(name, options.DisplayName ?? name) { SessionCheckInterval = options.SessionCheckInterval },
             provider.GetRequiredService<IOptions<FederationOptions>>()));
         return builder;
     }
@@ -98,7 +115,8 @@ public static class OidcFederationExtensions
         builder.Services.AddSingleton<OpenIddictClientMarker>();
         builder.Services.AddDataProtection();
 
-        client.AllowAuthorizationCodeFlow();
+        // Refresh tokens only for providers whose sessions are checked again (SessionCheckInterval).
+        client.AllowAuthorizationCodeFlow().AllowRefreshTokenFlow();
 
         // State tokens are protected with Data Protection; these keys only satisfy the client's configuration checks.
         client.AddEphemeralEncryptionKey().AddEphemeralSigningKey();

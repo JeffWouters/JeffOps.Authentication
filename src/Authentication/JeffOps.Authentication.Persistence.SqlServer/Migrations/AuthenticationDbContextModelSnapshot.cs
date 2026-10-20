@@ -31,6 +31,10 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<long?>("DeletionWarnedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("DeletionWarnedAtUnixMs");
+
                     b.Property<bool>("DisabledByOperator")
                         .HasColumnType("bit");
 
@@ -47,6 +51,10 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.Property<bool>("EmailVerified")
                         .HasColumnType("bit");
 
+                    b.Property<long>("LastActiveAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("LastActiveAtUnixMs");
+
                     b.Property<DateTimeOffset?>("SessionsRevokedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -60,7 +68,11 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DeletionWarnedAt");
+
                     b.HasIndex("Email");
+
+                    b.HasIndex("LastActiveAt");
 
                     b.ToTable("Accounts", "auth");
                 });
@@ -221,6 +233,37 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.HasIndex("Provider", "ProviderSessionHash");
 
                     b.ToTable("ExternalSessions", "auth");
+                });
+
+            modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.ProviderSessionEntry", b =>
+                {
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("CheckedAtUnixMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ExpiresAtUnixMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProtectedRefreshToken")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("SessionId");
+
+                    b.HasIndex("ExpiresAtUnixMs");
+
+                    b.ToTable("ProviderSessions", "auth");
                 });
 
             modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.ReplayEntry", b =>

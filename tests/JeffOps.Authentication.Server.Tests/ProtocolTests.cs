@@ -151,6 +151,26 @@ public sealed class AuthorizationCodeTests
     }
 
     [Fact]
+    public async Task A_local_sign_in_isn_t_sent_round_for_an_authentication_context_it_can_t_report()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+
+        var (code, _) = await server.AuthorizeAsync(account.Id, extra: "&acr_values=c1");
+        code.OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+    }
+
+    [Fact]
+    public async Task An_unusable_acr_values_asks_for_nothing()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+
+        var (code, _) = await server.AuthorizeAsync(account.Id, extra: "&acr_values=" + Uri.EscapeDataString("<script>"));
+        code.OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+    }
+
+    [Fact]
     public async Task Prompt_none_without_a_sign_in_answers_login_required()
     {
         await using var server = await TokenServerHost.StartAsync();
@@ -312,6 +332,29 @@ public sealed class RefreshTests
         refreshed.Error.ShouldBe("invalid_grant", refreshed.Body.ToString());
         refreshed.AccessToken.ShouldBeNull();
     }
+
+    [Theory]
+    [InlineData("1.00:00:00", 23, true)]
+    [InlineData("1.00:00:00", 25, false)]
+    [InlineData("01:00:00", 2, false)]
+    public async Task A_client_s_own_session_lifetime_decides_when_its_sessions_end(string lifetime, int hoursLater, bool refreshes)
+    {
+        await using var server = await TokenServerHost.StartAsync(new() { ["JeffOps:TokenServer:Clients:0:SessionLifetime"] = lifetime });
+        var account = await server.CreateAccountAsync();
+        var tokens = await server.SignInAsync(account.Id);
+
+        server.Time.Advance(TimeSpan.FromHours(hoursLater));
+        var refreshed = await server.RefreshAsync(tokens.RefreshToken!);
+
+        (refreshed.AccessToken is not null).ShouldBe(refreshes, refreshed.Body.ToString());
+    }
+
+    [Fact]
+    public async Task A_client_s_session_lifetime_must_be_positive() =>
+        (await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Clients:0:SessionLifetime"] = "00:00:00",
+        }))).Message.ShouldContain("SessionLifetime");
 
     [Fact]
     public async Task A_directory_outage_is_a_server_error_not_a_sign_out()

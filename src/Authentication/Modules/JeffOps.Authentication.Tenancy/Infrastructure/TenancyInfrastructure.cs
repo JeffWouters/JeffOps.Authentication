@@ -450,6 +450,7 @@ public static class TenancyServiceCollectionExtensions
         services.TryAddScoped<IDirectoryLinkRepository, DirectoryLinkRepository>();
         services.TryAddScoped<IInvitationRepository, InvitationRepository>();
         services.TryAddScoped<ITenancyUnitOfWork, TenancyUnitOfWork>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IAccountDataEraser, TenancyAccountData>());
         services.TryAddScoped<MembershipJoin>();
 
         // Tenancy is the source of truth for memberships, whichever module was added first.

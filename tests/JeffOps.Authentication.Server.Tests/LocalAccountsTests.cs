@@ -28,6 +28,24 @@ public sealed partial class LocalAccountsTests : IAsyncDisposable
     private TokenServerHost? _host;
 
     [Fact]
+    public async Task A_deleted_account_s_password_goes_with_it()
+    {
+        var host = await StartAsync();
+        using var browser = new Browser(host);
+        var accountId = await RegisterVerifiedAsync(host, "gone@example.com");
+
+        (await host.SendAsync(HttpMethod.Delete, "account", (await host.SignInAsync(accountId)).AccessToken)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+
+        await using (var scope = host.Services.CreateAsyncScope())
+        {
+            (await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.AnyAsync(scope.ServiceProvider.GetRequiredService<LocalAccounts.Infrastructure.LocalAccountsDbContext>().Credentials,
+                credential => credential.Id == accountId, TestContext.Current.CancellationToken)).ShouldBeFalse();
+        }
+
+        (await LoginAsync(browser, "gone@example.com", Password)).ShouldContain("error=invalid_credentials");
+    }
+
+    [Fact]
     public async Task A_registered_user_verifies_their_email_and_signs_in_with_a_password()
     {
         var host = await StartAsync();

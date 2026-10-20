@@ -86,6 +86,7 @@ public sealed class ExchangePatHandler(
         sessions.AddTenantClaims(claims, standing.Value);
 
         pat.MarkUsed(now);
+        account.RecordActivity(now);
         await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)

@@ -65,6 +65,30 @@ public sealed class ScimTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_provisioned_account_is_the_organization_s_to_remove_and_leaves_its_groups_when_deleted()
+    {
+        await StartAsync();
+        var ann = await UserIdAsync("ann@contoso.com");
+        var group = await JsonAsync(await ScimAsync(HttpMethod.Post, "Groups", $$"""{"displayName":"Engineers","members":[{"value":"{{ann}}"}]}"""));
+
+        var refused = await _host.SendAsync(HttpMethod.Delete, "account", (await _host.SignInAsync(ann)).AccessToken);
+        refused.StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        (await refused.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).ShouldContain("managed_by_organization");
+
+        // Deprovisioned, it is no longer the organization's: an operator can delete it, and it leaves the group.
+        (await ScimAsync(HttpMethod.Delete, $"Users/{ann}")).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        await using (var scope = _host.Services.CreateAsyncScope())
+        {
+            var deleted = await scope.ServiceProvider.GetRequiredService<ICommandHandler<Application.Features.Accounts.DeleteAccountCommand>>()
+                .HandleAsync(new Application.Features.Accounts.DeleteAccountCommand(null, ann, Application.Features.Accounts.AccountDeletionReasons.Operator), TestContext.Current.CancellationToken);
+            deleted.IsSuccess.ShouldBeTrue(deleted.IsSuccess ? null : deleted.Error.Message);
+        }
+
+        var after = await JsonAsync(await ScimAsync(HttpMethod.Get, $"Groups/{group.GetProperty("id").GetString()}"));
+        (after.TryGetProperty("members", out var members) ? members.GetArrayLength() : 0).ShouldBe(0, after.ToString());
+    }
+
+    [Fact]
     public async Task An_existing_verified_account_is_linked_not_disabled_on_deprovisioning()
     {
         await StartAsync();

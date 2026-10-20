@@ -1,6 +1,10 @@
 using System.Net;
 using System.Security.Claims;
+using JeffOps.Authentication.Abstractions.Claims;
+using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Federation;
+using JeffOps.Authentication.Application.Sessions;
+using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Domain.Accounts;
 using JeffOps.Authentication.Federation.Entra;
@@ -28,15 +32,21 @@ public sealed class FederationTests
             ["JeffOps:TokenServer:Clients:3:ClientId"] = "downstream",
             ["JeffOps:TokenServer:Clients:3:ClientSecret"] = DownstreamSecret,
             ["JeffOps:TokenServer:Clients:3:GrantTypes:0"] = "authorization_code",
+            ["JeffOps:TokenServer:Clients:3:GrantTypes:1"] = "refresh_token",
             ["JeffOps:TokenServer:Clients:3:RedirectUris:0"] = "https://localhost/signin/callback/upstream",
             ["JeffOps:TokenServer:Clients:3:Scopes:0"] = "openid",
             ["JeffOps:TokenServer:Clients:3:Scopes:1"] = "profile",
             ["JeffOps:TokenServer:Clients:3:Scopes:2"] = "email",
+            ["JeffOps:TokenServer:Clients:3:Scopes:3"] = "offline_access",
         });
 
-    private static Task<TokenServerHost> StartDownstreamAsync(TokenServerHost upstream, Dictionary<string, string?>? settings = null)
+    private static Task<TokenServerHost> StartDownstreamAsync(
+        TokenServerHost upstream,
+        Dictionary<string, string?>? settings = null,
+        Action<OidcProviderOptions>? configureProvider = null,
+        Func<HttpMessageHandler, HttpMessageHandler>? backChannel = null)
     {
-        var upstreamHandler = upstream.CreateHandler();
+        var upstreamHandler = backChannel is null ? upstream.CreateHandler() : backChannel(upstream.CreateHandler());
         return TokenServerHost.StartAsync(
             new Dictionary<string, string?>(settings ?? new() { ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true" })
             {
@@ -50,6 +60,7 @@ public sealed class FederationTests
                     provider.ClientId = "downstream";
                     provider.ClientSecret = DownstreamSecret;
                     provider.DisplayName = "Upstream IdP";
+                    configureProvider?.Invoke(provider);
                 });
 
                 // The OpenIddict client's back channel (discovery, token endpoint) goes to the upstream test server.
@@ -88,7 +99,6 @@ public sealed class FederationTests
 
         var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id);
 
-        callback.StatusCode.ShouldBe(HttpStatusCode.Redirect, await callback.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         callback.Headers.Location!.OriginalString.ShouldBe("/done");
 
         await using var scope = downstream.Services.CreateAsyncScope();
@@ -101,6 +111,193 @@ public sealed class FederationTests
         var (location, _) = await AuthorizeWithBrowserAsync(downstream, browser);
         location.ToString().ShouldStartWith(TokenServerHost.BffRedirect);
     }
+
+    [Fact]
+    public async Task A_first_party_client_receives_the_upstream_identity_and_its_chosen_claims_also_after_a_refresh()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, new()
+        {
+            ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true",
+            ["JeffOps:TokenServer:Clients:0:ForwardUpstreamIdentity"] = "true",
+            ["JeffOps:TokenServer:Clients:0:UpstreamClaims:0"] = "email_verified",
+        });
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+
+        // The sign-in starts from the client's authorization request, so it knows which claims that client takes.
+        var (authorize, verifier) = AuthorizePath("openid offline_access api");
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id, returnUrl: authorize);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        var tokens = await RedeemAsync(downstream, code.Headers.Location!, verifier);
+
+        tokens.Claims("idp").ShouldBe(["upstream"]);
+        tokens.Claims("idp_iss").ShouldBe(["https://upstream.test"]);
+        tokens.Claims("idp_sub").ShouldBe([upstreamAccount.Id.ToString()]);
+        tokens.Claims("email_verified").ShouldBe(["true"]);
+        new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(tokens.IdToken!).Claims.ShouldNotContain(claim => claim.Type.StartsWith("idp", StringComparison.Ordinal), "access tokens only");
+
+        var refreshed = await downstream.RefreshAsync(tokens.RefreshToken!);
+        refreshed.Claims("idp_sub").ShouldBe([upstreamAccount.Id.ToString()]);
+        refreshed.Claims("email_verified").ShouldBe(["true"]);
+    }
+
+    [Fact]
+    public async Task A_session_the_provider_ended_ends_here_at_its_next_check()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, configureProvider: provider => provider.SessionCheckInterval = TimeSpan.FromMinutes(15));
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        var tokens = await SignInForTokensAsync(downstream, upstream, upstreamAccount.Id);
+
+        // The provider disables the user. Within the interval it isn't asked …
+        await upstream.WithAccountAsync(upstreamAccount.Id, account => account.Disable(upstream.Time.GetUtcNow()));
+        Advance(TimeSpan.FromMinutes(5), upstream, downstream);
+        var early = await downstream.RefreshAsync(tokens.RefreshToken!);
+        early.AccessToken.ShouldNotBeNull(early.Body.ToString());
+
+        // … at the next check it refuses, and the session ends: for this client and every other one.
+        Advance(TimeSpan.FromMinutes(11), upstream, downstream);
+        var late = await downstream.RefreshAsync(early.RefreshToken!);
+        late.Error.ShouldBe("invalid_grant", late.Body.ToString());
+        late.Code.ShouldBe(GrantErrors.SessionRevoked);
+        await using var scope = downstream.Services.CreateAsyncScope();
+        (await scope.ServiceProvider.GetRequiredService<IEndedSessions>().IsEndedAsync(SessionOf(tokens), TestContext.Current.CancellationToken)).ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task A_provider_that_accepts_the_session_or_can_t_be_reached_keeps_it()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        Outage? outage = null;
+        await using var downstream = await StartDownstreamAsync(
+            upstream,
+            configureProvider: provider => provider.SessionCheckInterval = TimeSpan.FromMinutes(15),
+            backChannel: inner => outage = new Outage(inner));
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        var tokens = await SignInForTokensAsync(downstream, upstream, upstreamAccount.Id);
+
+        // Checked and accepted: the check is recorded, so the next one waits another interval.
+        Advance(TimeSpan.FromMinutes(16), upstream, downstream);
+        var checkedAgain = await downstream.RefreshAsync(tokens.RefreshToken!);
+        checkedAgain.AccessToken.ShouldNotBeNull(checkedAgain.Body.ToString());
+        (await CheckedAtAsync(downstream, SessionOf(tokens))).ShouldBe(downstream.Time.GetUtcNow().ToUnixTimeMilliseconds());
+
+        // The provider can't be reached: no verdict, so the session continues, and is checked at its next refresh.
+        outage!.Down = true;
+        Advance(TimeSpan.FromMinutes(16), upstream, downstream);
+        var unreachable = await downstream.RefreshAsync(checkedAgain.RefreshToken!);
+        unreachable.AccessToken.ShouldNotBeNull(unreachable.Body.ToString());
+    }
+
+    [Fact]
+    public async Task An_authentication_context_a_provider_can_t_give_doesn_t_keep_the_user_signing_in()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream);
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+
+        // The client asks for c1; the user isn't signed in, so the token server sends them to the provider, asking for c1.
+        var (authorize, verifier) = AuthorizePath("openid api");
+        var first = await browser.GetAsync(downstream, authorize + "&acr_values=c1");
+        var returnUrl = TokenServerHost.QueryValue(new Uri(new Uri("https://localhost/"), first.Headers.Location!), "returnUrl").ShouldNotBeNull();
+        returnUrl.ShouldContain("jeffops_acr_values=c1");
+
+        // This provider doesn't report authentication contexts: the client still gets its code, once.
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id, returnUrl: returnUrl);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        code.Headers.Location!.OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+        (await RedeemAsync(downstream, code.Headers.Location, verifier)).Access.Claims.ShouldNotContain(claim => claim.Type == "acrs");
+
+        // Signed in through that provider without c1: a new request for it signs the user in again, asking for it.
+        var (again, _) = AuthorizePath("openid api");
+        var asked = await browser.GetAsync(downstream, again + "&acr_values=c1");
+        TokenServerHost.QueryValue(new Uri(new Uri("https://localhost/"), asked.Headers.Location!), "returnUrl").ShouldNotBeNull()
+            .ShouldContain("jeffops_acr_values=c1");
+    }
+
+    [Fact]
+    public async Task Other_clients_receive_nothing_of_the_upstream_identity()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream);
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+
+        var (authorize, verifier) = AuthorizePath("openid offline_access api");
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id, returnUrl: authorize);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        var tokens = await RedeemAsync(downstream, code.Headers.Location!, verifier);
+
+        tokens.Access.Claims.ShouldNotContain(claim => claim.Type == "idp" || claim.Type == "idp_iss" || claim.Type == "idp_sub" || claim.Type == "email_verified");
+    }
+
+    [Fact]
+    public async Task A_client_can_t_take_this_server_s_own_claims_from_a_provider() =>
+        (await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Clients:0:UpstreamClaims:0"] = "tid",
+        }))).Message.ShouldContain("UpstreamClaims");
+
+    private static (string Path, string Verifier) AuthorizePath(string scope)
+    {
+        var verifier = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var challenge = Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier)))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return ($"/connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
+            $"&scope={Uri.EscapeDataString(scope)}&code_challenge={challenge}&code_challenge_method=S256&state=xyz", verifier);
+    }
+
+    /// <summary>Signs in through the upstream provider for the BFF client and redeems the code: tokens with a refresh token.</summary>
+    private static async Task<TokenResponse> SignInForTokensAsync(TokenServerHost downstream, TokenServerHost upstream, Guid upstreamAccount)
+    {
+        using var browser = new Browser(downstream);
+        var (authorize, verifier) = AuthorizePath("openid offline_access api");
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount, returnUrl: authorize);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        var tokens = await RedeemAsync(downstream, code.Headers.Location!, verifier);
+        tokens.RefreshToken.ShouldNotBeNull(tokens.Body.ToString());
+        return tokens;
+    }
+
+    private static void Advance(TimeSpan by, params TokenServerHost[] servers)
+    {
+        foreach (var server in servers)
+        {
+            server.Time.Advance(by);
+        }
+    }
+
+    private static string SessionOf(TokenResponse tokens) =>
+        new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(tokens.IdToken.ShouldNotBeNull()).GetClaim("sid").Value;
+
+    private static async Task<long> CheckedAtAsync(TokenServerHost server, string sessionId)
+    {
+        await using var scope = server.Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>().ProviderSessions
+            .Where(entry => entry.SessionId == sessionId).Select(entry => entry.CheckedAtUnixMs).SingleAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>The upstream server's back channel, which a test can take down.</summary>
+    private sealed class Outage(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        public bool Down { get; set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Down ? throw new HttpRequestException("The provider can't be reached.") : base.SendAsync(request, cancellationToken);
+    }
+
+    private static Task<TokenResponse> RedeemAsync(TokenServerHost server, Uri redirect, string verifier) =>
+        server.TokenAsync(new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = TokenServerHost.QueryValue(redirect, "code").ShouldNotBeNull(redirect.ToString()),
+            ["redirect_uri"] = TokenServerHost.BffRedirect,
+            ["code_verifier"] = verifier,
+            ["client_id"] = TokenServerHost.BffClient,
+            ["client_secret"] = TokenServerHost.BffSecret,
+        });
 
     [Fact]
     public async Task A_second_sign_in_reuses_the_linked_account()
@@ -324,6 +521,54 @@ public sealed class FederationTests
     }
 
     [Fact]
+    public async Task A_client_that_skips_the_login_page_sends_the_user_straight_to_its_provider()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        var clients = ProductClients();
+        clients["JeffOps:TokenServer:Clients:3:SkipLoginPage"] = "true";
+        await using var downstream = await StartDownstreamAsync(upstream, clients);
+        using var browser = new Browser(downstream);
+        var authorize = AuthorizePath("time", "https://time.test/callback");
+
+        var first = await browser.GetAsync(downstream, authorize + "&login_hint=lin%40upstream.example");
+        first.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        var location = new Uri(new Uri("https://localhost/"), first.Headers.Location!);
+        location.AbsolutePath.ShouldBe("/signin/upstream");
+        TokenServerHost.QueryValue(location, "returnUrl").ShouldNotBeNull().ShouldStartWith(authorize);
+        TokenServerHost.QueryValue(location, "login_hint").ShouldBe("lin@upstream.example");
+
+        // On to the provider, without the login page.
+        var challenge = await browser.GetAsync(downstream, first.Headers.Location!.OriginalString);
+        challenge.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        challenge.Headers.Location!.Host.ShouldBe("upstream.test");
+
+        // With prompt=none there is still no one to ask: login_required.
+        var silent = await browser.GetAsync(downstream, authorize + "&prompt=none&state=s");
+        silent.Headers.Location!.ToString().ShouldStartWith("https://time.test/callback?error=login_required");
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("local", null)]
+    [InlineData("upstream", "other")]
+    public async Task Only_a_client_with_one_provider_can_skip_the_login_page(string? first, string? second)
+    {
+        var settings = new Dictionary<string, string?> { ["JeffOps:TokenServer:Clients:0:SkipLoginPage"] = "true" };
+        if (first is not null)
+        {
+            settings["JeffOps:TokenServer:Clients:0:Providers:0"] = first;
+        }
+
+        if (second is not null)
+        {
+            settings["JeffOps:TokenServer:Clients:0:Providers:1"] = second;
+        }
+
+        (await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(settings)))
+            .Message.ShouldContain("SkipLoginPage");
+    }
+
+    [Fact]
     public async Task A_provider_the_client_does_not_accept_is_neither_started_nor_discovered()
     {
         await using var upstream = await StartUpstreamAsync();
@@ -363,6 +608,114 @@ public sealed class FederationTests
         response.StatusCode.ShouldBe(HttpStatusCode.Redirect);
         return (response.Headers.Location!, verifier);
     }
+}
+
+public sealed class UpstreamIdentityTests
+{
+    private static readonly ExternalLoginKey Login = new("https://login.microsoftonline.com/0d6f.../v2.0", "1234");
+
+    private static ClaimsPrincipal Provider(params (string Type, string Value)[] claims) =>
+        new(new ClaimsIdentity(claims.Select(claim => new Claim(claim.Type, claim.Value)), "entra"));
+
+    [Fact]
+    public void Nothing_is_kept_of_a_provider_a_tenant_registered()
+    {
+        UpstreamIdentity.Capture(TenantProviderNames.OidcPrefix + Guid.NewGuid().ToString("N"), Login, Provider(("groups", "g1")), ["groups"]).ShouldBeEmpty();
+        UpstreamIdentity.Capture(TenantProviderNames.Prefix + Guid.NewGuid().ToString("N"), Login, Provider(("groups", "g1")), ["groups"]).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void A_client_gets_only_what_it_asked_for_and_never_from_a_local_sign_in()
+    {
+        var names = ClaimNames.Default;
+        var captured = UpstreamIdentity.Capture("entra-time", Login, Provider(("groups", "g1"), ("groups", "g2"), ("wids", "w1"), ("acct", "0")), ["groups", "wids"]);
+        var signIn = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, names, "test", "entra-time", captured);
+
+        var client = new ClientDefinition { ClientId = "time-web", ForwardUpstreamIdentity = true };
+        client.UpstreamClaims.Add("groups");
+        var forwarded = UpstreamIdentity.FromSignIn(signIn, client, names);
+        forwarded.Select(claim => $"{claim.Type}={claim.Value}").ShouldBe(
+            ["idp=entra-time", $"idp_iss={Login.Issuer}", $"idp_sub={Login.Subject}", "groups=g1", "groups=g2"], ignoreOrder: true);
+
+        UpstreamIdentity.FromSignIn(signIn, new ClientDefinition { ClientId = "other" }, names).ShouldBeEmpty();
+        var local = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, names, "test", ClientProviders.Local, captured);
+        UpstreamIdentity.FromSignIn(local, client, names).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void A_sign_in_counts_for_the_contexts_its_provider_reported()
+    {
+        var captured = UpstreamIdentity.Capture("entra-time", Login, Provider(("acrs", "c1")), AuthenticationContexts.ProviderClaims);
+        var signIn = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, ClaimNames.Default, "test", "entra-time", captured);
+
+        AuthenticationContexts.Satisfied(signIn, ["c1"]).ShouldBeTrue();
+        AuthenticationContexts.Satisfied(signIn, ["c1", "c2"]).ShouldBeFalse();
+        AuthenticationContexts.Satisfied(SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, ClaimNames.Default, "test"), ["c1"])
+            .ShouldBeFalse();
+
+        // Signing in again helps only where a provider whose claims are kept can report the context.
+        AuthenticationContexts.Missing(signIn, ["c1"]).ShouldBeFalse();
+        AuthenticationContexts.Missing(signIn, ["c2"]).ShouldBeTrue();
+        AuthenticationContexts.Missing(signIn, []).ShouldBeFalse();
+        foreach (var provider in new[] { ClientProviders.Local, TenantProviderNames.OidcPrefix + Guid.NewGuid().ToString("N"), null })
+        {
+            AuthenticationContexts.Missing(SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, ClaimNames.Default, "test", provider), ["c1"])
+                .ShouldBeFalse(provider);
+        }
+    }
+
+    [Fact]
+    public void Acr_values_are_read_strictly_and_asked_of_entra_as_its_claims_parameter()
+    {
+        AuthenticationContexts.Parse("c1 c2 c1").ShouldBe(["c1", "c2"]);
+        AuthenticationContexts.Parse("c1 <script>").ShouldBeEmpty();
+        AuthenticationContexts.Parse(string.Join(' ', Enumerable.Range(1, 6).Select(i => "c" + i))).ShouldBeEmpty("at most five");
+
+        AuthenticationContexts.EntraClaimsParameter(["c1"]).ShouldBe("""{"id_token":{"acrs":{"essential":true,"value":"c1"}}}""");
+        AuthenticationContexts.EntraClaimsParameter(["c1", "c2"]).ShouldBe("""{"id_token":{"acrs":{"essential":true,"values":["c1","c2"]}}}""");
+    }
+
+    [Theory]
+    [InlineData("sub")]
+    [InlineData("tid")]
+    [InlineData("email")]
+    [InlineData("act")]
+    [InlineData("idp_sub")]
+    [InlineData("jeffops:idp")]
+    public void This_server_s_own_claims_are_reserved(string type) => UpstreamIdentity.IsReserved(type, ClaimNames.Default).ShouldBeTrue();
+}
+
+public sealed class EntraRegistrationTests
+{
+    private static ServiceProvider Register(TimeSpan? sessionCheckInterval)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        new Application.DependencyInjection.AuthenticationBuilder(services, new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build())
+            .AddEntra("entra-time", entra =>
+            {
+                entra.ClientId = Guid.NewGuid().ToString();
+                entra.ClientSecret = "not-a-real-secret";
+                entra.SessionCheckInterval = sessionCheckInterval;
+            });
+        return services.BuildServiceProvider();
+    }
+
+    [Fact]
+    public void An_Entra_provider_whose_sessions_are_checked_asks_for_offline_access()
+    {
+        using var checkedProvider = Register(TimeSpan.FromMinutes(15));
+        using var plain = Register(null);
+
+        Scopes(checkedProvider).ShouldContain("offline_access");
+        checkedProvider.GetServices<IExternalIdentityMapper>().SelectMany(mapper => mapper.Providers).Single().SessionCheckInterval.ShouldBe(TimeSpan.FromMinutes(15));
+        Scopes(plain).ShouldNotContain("offline_access");
+        Should.Throw<InvalidOperationException>(() => Register(TimeSpan.Zero)).Message.ShouldContain("SessionCheckInterval");
+    }
+
+    private static HashSet<string> Scopes(ServiceProvider provider) =>
+        provider.GetRequiredService<IOptions<OpenIddict.Client.OpenIddictClientOptions>>().Value.Registrations
+            .Single(registration => registration.ProviderName == "entra-time").Scopes;
 }
 
 public sealed class EntraMapperTests

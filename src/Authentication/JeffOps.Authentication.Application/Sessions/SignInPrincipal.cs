@@ -17,7 +17,14 @@ public static class SignInPrincipal
     /// </summary>
     public const string ProviderClaim = "jeffops:idp";
 
-    public static ClaimsPrincipal Create(Guid accountId, AuthenticationStrength strength, DateTimeOffset signedInAt, ClaimNames names, string authenticationType, string? provider = null)
+    public static ClaimsPrincipal Create(
+        Guid accountId,
+        AuthenticationStrength strength,
+        DateTimeOffset signedInAt,
+        ClaimNames names,
+        string authenticationType,
+        string? provider = null,
+        IEnumerable<Claim>? upstream = null)
     {
         ArgumentNullException.ThrowIfNull(strength);
         ArgumentNullException.ThrowIfNull(names);
@@ -35,6 +42,9 @@ public static class SignInPrincipal
         {
             claims.Add(new Claim(ProviderClaim, provider));
         }
+
+        // What first-party clients may receive of the provider's answer (Federation.UpstreamIdentity).
+        claims.AddRange(upstream ?? []);
 
         return new ClaimsPrincipal(new ClaimsIdentity(claims, authenticationType, names.Name, "role"));
     }
