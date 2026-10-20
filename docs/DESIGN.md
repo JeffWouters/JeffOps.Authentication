@@ -1108,6 +1108,14 @@ Non-negotiable defaults. Each has a test.
   only (a pushed request keeps them). Providers are asked again (`prompt=login` and `max_age`, SAML `ForceAuthn`). An
   answer whose `auth_time` or `AuthnInstant` predates the request (one minute of clock skew) gets
   `reauthentication_required`. `auth_time` in tokens is when the user signed in here.
+- **Authentication contexts through providers** (`acr_values`, such as an Entra Conditional Access context `c1`): the
+  token server asks the provider for them (`acr_values`; Entra the `claims` parameter with `acrs`, which is how it takes
+  the request) and keeps the provider's `acrs`/`acr` with the sign-in. A sign-in through a configured provider that
+  didn't report every requested context signs in again, once: `jeffops_acr_values` in the return URL marks the round,
+  and back from it the client gets its tokens whatever the provider gave. A local sign-in or one through a tenant's
+  provider can't report contexts and isn't sent round. At most five values of up to 64 characters
+  (`[A-Za-z0-9._:/-]`); anything else asks for nothing. This server grants nothing for them: a client that lists `acrs`
+  in `UpstreamClaims` receives the provider's answer and judges it itself.
 - **Email-domain allow-list:** only emails the provider marks verified count (Entra: optional claim `xms_edov`).
 - **SAML metadata:** 10 s and 1 MB per download (headers and body). Tenants' downloads are single-flight per provider,
   with a 1-minute back-off after a failure. Cached metadata counts only for the URL and entity id it came from, and for at

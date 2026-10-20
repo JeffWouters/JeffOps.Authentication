@@ -92,7 +92,6 @@ public sealed class FederationTests
 
         var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id);
 
-        callback.StatusCode.ShouldBe(HttpStatusCode.Redirect, await callback.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         callback.Headers.Location!.OriginalString.ShouldBe("/done");
 
         await using var scope = downstream.Services.CreateAsyncScope();
@@ -134,6 +133,33 @@ public sealed class FederationTests
         var refreshed = await downstream.RefreshAsync(tokens.RefreshToken!);
         refreshed.Claims("idp_sub").ShouldBe([upstreamAccount.Id.ToString()]);
         refreshed.Claims("email_verified").ShouldBe(["true"]);
+    }
+
+    [Fact]
+    public async Task An_authentication_context_a_provider_can_t_give_doesn_t_keep_the_user_signing_in()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream);
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+
+        // The client asks for c1; the user isn't signed in, so the token server sends them to the provider, asking for c1.
+        var (authorize, verifier) = AuthorizePath("openid api");
+        var first = await browser.GetAsync(downstream, authorize + "&acr_values=c1");
+        var returnUrl = TokenServerHost.QueryValue(new Uri(new Uri("https://localhost/"), first.Headers.Location!), "returnUrl").ShouldNotBeNull();
+        returnUrl.ShouldContain("jeffops_acr_values=c1");
+
+        // This provider doesn't report authentication contexts: the client still gets its code, once.
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id, returnUrl: returnUrl);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        code.Headers.Location!.OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+        (await RedeemAsync(downstream, code.Headers.Location, verifier)).Access.Claims.ShouldNotContain(claim => claim.Type == "acrs");
+
+        // Signed in through that provider without c1: a new request for it signs the user in again, asking for it.
+        var (again, _) = AuthorizePath("openid api");
+        var asked = await browser.GetAsync(downstream, again + "&acr_values=c1");
+        TokenServerHost.QueryValue(new Uri(new Uri("https://localhost/"), asked.Headers.Location!), "returnUrl").ShouldNotBeNull()
+            .ShouldContain("jeffops_acr_values=c1");
     }
 
     [Fact]
@@ -472,6 +498,39 @@ public sealed class UpstreamIdentityTests
         UpstreamIdentity.FromSignIn(signIn, new ClientDefinition { ClientId = "other" }, names).ShouldBeEmpty();
         var local = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, names, "test", ClientProviders.Local, captured);
         UpstreamIdentity.FromSignIn(local, client, names).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void A_sign_in_counts_for_the_contexts_its_provider_reported()
+    {
+        var captured = UpstreamIdentity.Capture("entra-time", Login, Provider(("acrs", "c1")), AuthenticationContexts.ProviderClaims);
+        var signIn = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, ClaimNames.Default, "test", "entra-time", captured);
+
+        AuthenticationContexts.Satisfied(signIn, ["c1"]).ShouldBeTrue();
+        AuthenticationContexts.Satisfied(signIn, ["c1", "c2"]).ShouldBeFalse();
+        AuthenticationContexts.Satisfied(SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, ClaimNames.Default, "test"), ["c1"])
+            .ShouldBeFalse();
+
+        // Signing in again helps only where a provider whose claims are kept can report the context.
+        AuthenticationContexts.Missing(signIn, ["c1"]).ShouldBeFalse();
+        AuthenticationContexts.Missing(signIn, ["c2"]).ShouldBeTrue();
+        AuthenticationContexts.Missing(signIn, []).ShouldBeFalse();
+        foreach (var provider in new[] { ClientProviders.Local, TenantProviderNames.OidcPrefix + Guid.NewGuid().ToString("N"), null })
+        {
+            AuthenticationContexts.Missing(SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, ClaimNames.Default, "test", provider), ["c1"])
+                .ShouldBeFalse(provider);
+        }
+    }
+
+    [Fact]
+    public void Acr_values_are_read_strictly_and_asked_of_entra_as_its_claims_parameter()
+    {
+        AuthenticationContexts.Parse("c1 c2 c1").ShouldBe(["c1", "c2"]);
+        AuthenticationContexts.Parse("c1 <script>").ShouldBeEmpty();
+        AuthenticationContexts.Parse(string.Join(' ', Enumerable.Range(1, 6).Select(i => "c" + i))).ShouldBeEmpty("at most five");
+
+        AuthenticationContexts.EntraClaimsParameter(["c1"]).ShouldBe("""{"id_token":{"acrs":{"essential":true,"value":"c1"}}}""");
+        AuthenticationContexts.EntraClaimsParameter(["c1", "c2"]).ShouldBe("""{"id_token":{"acrs":{"essential":true,"values":["c1","c2"]}}}""");
     }
 
     [Theory]

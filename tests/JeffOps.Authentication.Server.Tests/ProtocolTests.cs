@@ -151,6 +151,26 @@ public sealed class AuthorizationCodeTests
     }
 
     [Fact]
+    public async Task A_local_sign_in_isn_t_sent_round_for_an_authentication_context_it_can_t_report()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+
+        var (code, _) = await server.AuthorizeAsync(account.Id, extra: "&acr_values=c1");
+        code.OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+    }
+
+    [Fact]
+    public async Task An_unusable_acr_values_asks_for_nothing()
+    {
+        await using var server = await TokenServerHost.StartAsync();
+        var account = await server.CreateAccountAsync();
+
+        var (code, _) = await server.AuthorizeAsync(account.Id, extra: "&acr_values=" + Uri.EscapeDataString("<script>"));
+        code.OriginalString.ShouldStartWith(TokenServerHost.BffRedirect);
+    }
+
+    [Fact]
     public async Task Prompt_none_without_a_sign_in_answers_login_required()
     {
         await using var server = await TokenServerHost.StartAsync();

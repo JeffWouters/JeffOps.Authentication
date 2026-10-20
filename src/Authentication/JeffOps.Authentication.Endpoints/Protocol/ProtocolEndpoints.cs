@@ -61,6 +61,12 @@ internal static class ProtocolEndpoints
         var freshAfter = FreshSignIn.Parse(Single(context, FreshSignIn.Parameter), now);
         var reauthenticated = FreshSignInCookie.Read(context) is { } resumed && signedInAt >= resumed;
 
+        // Authentication contexts (acr_values) the provider hasn't reported for this sign-in: sign in again, asking the provider
+        // for them, once. Back from that sign-in (the parameter is in the URL), the client gets what the provider gave.
+        var contexts = AuthenticationContexts.Parse(request.AcrValues);
+        var contextsMissing = Single(context, AuthenticationContexts.Parameter) is null
+            && AuthenticationContexts.Missing(signedIn.Principal, contexts);
+
         // A client limited to some providers (its own app registration and consent screen at each) gets only sign-ins that came
         // through one of them: a session from another product's registration signs in again here.
         var client = ClientProviders.Find(options.Value, request.ClientId);
@@ -68,6 +74,7 @@ internal static class ProtocolEndpoints
             || (!reauthenticated && request.HasPromptValue(PromptValues.Login))
             || (!reauthenticated && request.MaxAge is { } maxAge && signedInAt is { } at && now - at > TimeSpan.FromSeconds(maxAge))
             || (freshAfter is { } after && (signedInAt is not { } since || since < after))
+            || contextsMissing
             || !ClientProviders.Allows(client, SignInPrincipal.ProviderOf(signedIn.Principal));
 
         IResult SignInAgain()
@@ -87,12 +94,17 @@ internal static class ProtocolEndpoints
                 freshAfter,
             }.Max();
             var parameters = (context.Request.HasFormContentType ? context.Request.Form.AsEnumerable() : context.Request.Query)
-                .Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge or FreshSignIn.Parameter))
+                .Where(pair => pair.Key is not (Parameters.Prompt or Parameters.MaxAge or FreshSignIn.Parameter or AuthenticationContexts.Parameter))
                 .SelectMany(pair => pair.Value.Select(value => KeyValuePair.Create(pair.Key, value)))
                 .ToList();
             if (required is { } since)
             {
                 parameters.Add(KeyValuePair.Create(FreshSignIn.Parameter, (string?)since.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            }
+
+            if (contexts.Count > 0)
+            {
+                parameters.Add(KeyValuePair.Create(AuthenticationContexts.Parameter, (string?)string.Join(' ', contexts)));
             }
 
             var returnUrl = context.Request.PathBase + context.Request.Path + QueryString.Create(parameters);

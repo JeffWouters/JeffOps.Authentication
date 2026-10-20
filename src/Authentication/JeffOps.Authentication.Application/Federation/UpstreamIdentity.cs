@@ -136,7 +136,11 @@ public static class UpstreamIdentity
         return claims;
     }
 
-    private static bool Forwards(string? provider) =>
+    /// <summary>The values of the provider's <paramref name="claimType"/> the sign-in cookie kept.</summary>
+    public static IEnumerable<string> SignInValues(ClaimsPrincipal? signIn, string claimType) =>
+        signIn?.FindAll(SignInPrefix + claimType).Select(claim => claim.Value) ?? [];
+
+    internal static bool Forwards(string? provider) =>
         !string.IsNullOrEmpty(provider) && provider != ClientProviders.Local && !TenantProviderNames.IsTenantProvider(provider);
 
     private static IEnumerable<string> Allowed(ClientDefinition client, ClaimNames names) =>

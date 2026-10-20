@@ -53,14 +53,15 @@ internal static class FederationEndpoints
             : Results.Redirect($"{LoginPath}?returnUrl={Uri.EscapeDataString(local)}&email={Uri.EscapeDataString(email ?? string.Empty)}");
     }
 
-    private static IResult Challenge(
+    private static async Task<IResult> Challenge(
         string provider,
         string? returnUrl,
         string? login_hint,
         IEnumerable<IExternalIdentityMapper> mappers,
         IEnumerable<IExternalProviderChallenge> challenges,
         IOptions<TokenServerOptions> tokenServer,
-        TimeProvider time)
+        TimeProvider time,
+        HttpContext context)
     {
         // Providers tenants registered aren't listed; their own sign-in endpoint checks they exist and may still be used.
         if (!mappers.SelectMany(mapper => mapper.Providers).Any(known => string.Equals(known.Name, provider, StringComparison.Ordinal))
@@ -101,7 +102,30 @@ internal static class FederationEndpoints
             properties.Parameters[Parameters.MaxAge] = FreshSignIn.MaxAge(after, now);
         }
 
+        // The client asked for authentication contexts (acr_values): so does this server, of the provider. Entra takes them as
+        // the claims parameter (acrs); other providers as acr_values.
+        if (AuthenticationContexts.RequestedIn(LocalOrRoot(returnUrl)) is { Count: > 0 } contexts)
+        {
+            properties.Parameters[Parameters.AcrValues] = string.Join(' ', contexts);
+            if (await IsEntraAsync(context, provider).ConfigureAwait(false))
+            {
+                properties.Parameters[Parameters.Claims] = AuthenticationContexts.EntraClaimsParameter(contexts);
+            }
+        }
+
         return Results.Challenge(properties, [OpenIddictClientAspNetCoreDefaults.AuthenticationScheme]);
+    }
+
+    private static async Task<bool> IsEntraAsync(HttpContext context, string provider)
+    {
+        // Read only when contexts are asked for: a server without OpenID Connect providers has no client service.
+        if (context.RequestServices.GetService(typeof(OpenIddict.Client.OpenIddictClientService)) is not OpenIddict.Client.OpenIddictClientService clients)
+        {
+            return false;
+        }
+
+        var registration = await clients.GetClientRegistrationByProviderNameAsync(provider, context.RequestAborted).ConfigureAwait(false);
+        return string.Equals(registration.Issuer?.Host, "login.microsoftonline.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<IResult> CallbackAsync(
@@ -147,7 +171,9 @@ internal static class FederationEndpoints
         var signInScheme = options.Value.SignInScheme;
 
         // Keep what the client being signed in to may receive of the provider's answer (its UpstreamClaims).
-        var upstream = UpstreamIdentity.Capture(provider, identity.Value.Login, principal, ClientProviders.ForReturnUrl(options.Value, returnUrl)?.UpstreamClaims ?? []);
+        // The contexts the provider reported are kept too: the authorize endpoint checks them against acr_values.
+        var upstream = UpstreamIdentity.Capture(provider, identity.Value.Login, principal,
+            (ClientProviders.ForReturnUrl(options.Value, returnUrl)?.UpstreamClaims ?? []).Concat(AuthenticationContexts.ProviderClaims));
         await context.SignInAsync(
             signInScheme,
             SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, signInScheme, provider, upstream)).ConfigureAwait(false);

@@ -10,6 +10,9 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 - **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): the
   provider, the user's issuer and subject there (`idp`, `idp_iss`, `idp_sub`) and chosen provider claims in the client's
   access tokens, only from providers configured on the server, audited.
+- **Authentication contexts through providers** (`acr_values`): passed to the provider (Entra: the `claims` parameter
+  with `acrs`); a sign-in through a configured provider that didn't report them signs in again once. Clients receive the
+  provider's `acrs` through `UpstreamClaims`.
 
 ## [0.1.0-alpha] - 2026-10-20
 
