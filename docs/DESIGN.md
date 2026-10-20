@@ -259,7 +259,7 @@ A layered module also ships a separate persistence project per database provider
 
 | Project | Layer | Contents | Depends on |
 |---|---|---|---|
-| `JeffOps.Authentication.Domain` | Domain | `Account`, `ExternalLogin`, `LocalCredential`, `PersonalAccessToken`, `TokenKey`, `AccountErasure`; value objects (`Issuer`, `Subject`, `PatHash`, `SessionLifetime`); domain events; invariants (PAT expiry caps, status transitions) | SharedKernel |
+| `JeffOps.Authentication.Domain` | Domain | `Account`, `ExternalLogin`, `LocalCredential`, `PersonalAccessToken`, `TokenKey`; value objects (`Issuer`, `Subject`, `PatHash`, `SessionLifetime`); domain events; invariants (PAT expiry caps, status transitions) | SharedKernel |
 | `JeffOps.Authentication.Application` | Application | Slices: `Grants/*`, `Accounts/*`, `PersonalAccessTokens/*`, `Sessions/Revalidate`, `Federation/*` (account linking on `(issuer, subject)`, home realm discovery, per-tenant provider registry). Ports: `IAccountRepository`, `IPatRepository`, `ITokenKeyProvider`, `IExternalIdentityProvider`, `IPasswordHasher`, `IUnitOfWork`. Time comes from `TimeProvider`. | Domain, Abstractions |
 | `JeffOps.Authentication.Infrastructure` | Infrastructure | OpenIddict server configuration, key providers (database, certificate) and rotation, hashing, provider-neutral EF Core `DbContext` and repositories, client seeder, background sweepers | Application, OpenIddict, EF Core |
 | `JeffOps.Authentication.Persistence.SqlServer` | Infrastructure | SQL Server provider registration and migrations | Infrastructure |
@@ -500,7 +500,7 @@ The `external` token-exchange grant is **kept** as an optional extension for cli
 
 ### 7.3.1 As built (phase 2)
 
-- **Routes:** `connect/authorize`, `connect/token`, `connect/userinfo`, `connect/endsession` (passthrough to the use cases), `connect/revoke`, `connect/introspect`, `.well-known/openid-configuration` and `.well-known/jwks` (served by OpenIddict). The caller's PATs at `account/pats`; operators at `admin/accounts/{id}/disable|enable`; services at `directory/accounts` (I8).
+- **Routes:** `connect/authorize`, `connect/token`, `connect/userinfo`, `connect/endsession` (passthrough to the use cases), `connect/revoke`, `connect/introspect`, `.well-known/openid-configuration` and `.well-known/jwks` (served by OpenIddict). The caller's PATs at `account/pats`; operators at `admin/accounts/{id}/disable|enable` and `DELETE admin/accounts/{id}`; users delete their own account at `DELETE account`; services at `directory/accounts` (I8).
 - **Options** bind from `JeffOps:TokenServer` (`TokenServerOptions`): issuer (required outside Development), lifetimes, API scopes and their audiences, MFA policy, PAT policy, clients, the sign-in scheme the authorize endpoint challenges, and the permissions for account administration and directory lookups.
 - **Sign-in contract:** the login UI or a federation callback signs the user into the sign-in scheme (default `JeffOps.SignIn`) with `SignInPrincipal.Create(accountId, strength, signedInAt, …)`. The authorize endpoint honours `prompt=login|none` and `max_age`, and strips them from the return URL so the user isn't asked again forever.
 - **Refusals** at the token endpoint are `invalid_grant` with a `code` parameter (`mfa_required`, `account_inactive`, `session_expired`, `no_membership`, `tenant_inactive`, `token_invalid`); a tenant-directory outage is `server_error` with `directory_unavailable`, so clients retry instead of signing the user out.
@@ -730,6 +730,30 @@ Each provider is responsible for mapping its own MFA signals (`amr`, `acr`, `acr
 - **Hosted UI**: the login page shows a password form (with antiforgery) when the email has no federated provider; `account/login/code` takes the authenticator or a recovery code. Credential management is a JSON API under `account/local/manage/*` for the signed-in user's own session (never under impersonation, delegation or PAT tokens).
 - **Events**: every credential change is audited and the user is notified (`INotifier`).
 - **Session revocation** (release readiness): changing or resetting the password, removing the authenticator or a passkey ends every session of the account (`Account.RevokeSessions`): all its tokens are revoked at once, clients with a back-channel logout URI are notified, and refreshes of sessions that signed in earlier are refused (`session_revoked`) as a second line of defence. Users can also sign out everywhere (`POST account/sessions/revoke`) and operators can do it for an account (`POST admin/accounts/{id}/sessions/revoke`). Personal access tokens are separate credentials and stay valid.
+- **Deleting accounts.** An account is deleted in three ways:
+  - by its user (`DELETE account`, from their own session);
+  - by an operator (`DELETE admin/accounts/{id}`, as themselves);
+  - for inactivity.
+
+  The first two need a recent multi-factor sign-in when sensitive actions do (`step_up_required`). A deletion is immediate and can't be undone.
+  - **Order:** each module's data goes first (`IAccountDataEraser`, one per module), then the account and its logins. A failure half-way leaves the account in place, and the deletion runs again.
+  - **What goes:**
+    - token server: personal access tokens, session records, providers' refresh tokens, and its OpenIddict tokens and authorizations, deleted rather than revoked because their payloads hold its claims;
+    - LocalAccounts: the password, authenticator, passkeys, recovery codes and pending email links;
+    - Tenancy: memberships;
+    - Enterprise: SCIM group memberships;
+    - Delegation: open grants it takes part in, revoked (`account-deleted`). Finished grants stay as the audit trail.
+  - **Afterwards:** clients get a back-channel logout (`sub`), other services `auth.account.deleted.v1` (reason `requested`, `operator` or `inactive`), and audit records `account.deleted`. Audit records and who-created-what references stay; they name the account by its id only.
+  - **Refusals** (409):
+    - `last_tenant_admin`: the only administrator of a tenant that isn't deleted;
+    - `managed_by_organization`: an account an organization provisions through SCIM, which is the organization's to remove (deprovision, then an operator deletes it).
+  - **Inactivity** (`InactiveAccounts:DeleteAfter`, off by default; Authn uses 395 days):
+    - `LastActiveAt` records sign-ins, refreshes and PAT exchanges, at most one write a day.
+    - When an account has been inactive for `DeleteAfter` − `WarnBefore` (30 days), the user is told: user notification `account.deletion_scheduled`, which the host's `INotifier` delivers.
+    - It is deleted `WarnBefore` later if still unused. Any sign-in cancels the warning.
+    - Accounts that can't be deleted are kept without telling the user, and tried again a notice period later, behind the others, so a crowd of them never holds up the rest.
+    - The migration counts existing accounts as active from the moment it runs.
+    - Every instance runs a pass every `CheckInterval` (1 h), at most 100 deletions and 100 warnings each.
 - **Email codes** (`EmailCodes`): accounts without an authenticator app complete a password sign-in with a six-digit code sent by email (`IAccountEmailSender.SendSignInCodeAsync`), valid `EmailCodeLifetime` (10 min), accepted once, stored as a hash bound to the account; wrong codes count towards lockout, a new code can be asked for at most once a minute, and it counts as a second factor (`otp`, `mfa`).
 - **Hosted pages** for the emailed links: `account/verify-email` (verifies only when the button is pressed, not when a mail scanner opens the link), `account/forgot-password` (the same answer for every address) and `account/reset-password`, posting to antiforgery-checked form endpoints; the login page links to the reset.
 
@@ -1007,7 +1031,7 @@ app.MapJeffOpsBff();
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `Accounts` | `Id`, `Status`, `Email`, `DisplayName`, `CreatedAt` | Email not unique. Status: Active, Disabled, Locked, PendingErasure. |
+| `Accounts` | `Id`, `Status`, `Email`, `DisplayName`, `CreatedAt`, `LastActiveAtUnixMs`, `DeletionWarnedAtUnixMs` | Email not unique. Status: Active, Disabled, Locked. |
 | `ExternalLogins` | `AccountId`, `Issuer`, `Subject`, `Provider` | **New** (was columns on User). Unique `(Issuer, Subject)`. Allows multiple providers per account. |
 | `LocalCredentials` | `AccountId`, `PasswordHash`, `HashVersion` | |
 | `Passkeys` | `AccountId`, `CredentialId`, `PublicKey`, `SignCount` | new |
@@ -1016,7 +1040,6 @@ app.MapJeffOpsBff();
 | `PersonalAccessTokens` | `Id`, `AccountId`, `TenantId`, `Hash`, `ExpiresAt`, `Ceiling`, `AllowSensitive` | |
 | `TokenKeys` | `Id`, `Use`, `Algorithm`, `ProtectedKey`, `NotBefore`, `NotAfter` | |
 | `ImpersonationGrants`, `TenantAccessGrants` | | Delegation module; `Status` is a concurrency token |
-| `AccountErasures` | | |
 | OpenIddict tables | | applications, authorizations, scopes, tokens |
 
 ### 14.2 Tenancy store (optional module, §8.6)

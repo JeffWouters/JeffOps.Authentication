@@ -21,6 +21,7 @@ public sealed record RefreshSessionCommand(ClaimsPrincipal Stored, IReadOnlyColl
 
 public sealed class RefreshSessionHandler(
     IAccountRepository accounts,
+    IUnitOfWork unitOfWork,
     SessionBuilder sessions,
     IEndedSessions endedSessions,
     JeffOps.Authentication.Application.Federation.ProviderSessionGuard providerSessions,
@@ -94,6 +95,11 @@ public sealed class RefreshSessionHandler(
         }
 
         claims.AddRange(JeffOps.Authentication.Application.Federation.UpstreamIdentity.FromGrant(stored, JeffOps.Authentication.Application.Federation.ClientProviders.Find(options.Value, command.ClientId), names));
+
+        if (account.RecordActivity(time.GetUtcNow()))
+        {
+            await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {

@@ -19,6 +19,9 @@ public sealed class Account : AggregateRoot<Guid>
     /// <summary>The longest display name kept; longer ones (from a provider or SCIM) are cut.</summary>
     public const int MaxDisplayNameLength = 200;
 
+    /// <summary>How precisely activity is recorded (<see cref="LastActiveAt"/>): at most one write a day per account.</summary>
+    public static readonly TimeSpan ActivityPrecision = TimeSpan.FromDays(1);
+
     private readonly List<ExternalLogin> _externalLogins = [];
 
     private Account(Guid id, string email, string displayName, bool emailVerified, DateTimeOffset now)
@@ -30,6 +33,7 @@ public sealed class Account : AggregateRoot<Guid>
         Status = AccountStatus.Active;
         CreatedAt = now;
         UpdatedAt = now;
+        LastActiveAt = now;
     }
 
     private Account()
@@ -60,6 +64,15 @@ public sealed class Account : AggregateRoot<Guid>
     /// everywhere. Null when sessions were never revoked.
     /// </summary>
     public DateTimeOffset? SessionsRevokedAt { get; private set; }
+
+    /// <summary>
+    /// When the account last signed in or used its tokens, to the day (<see cref="ActivityPrecision"/>). Inactive accounts are
+    /// deleted from it, when the host turns that on.
+    /// </summary>
+    public DateTimeOffset LastActiveAt { get; private set; }
+
+    /// <summary>When the user was told the account will be deleted for inactivity; any activity clears it.</summary>
+    public DateTimeOffset? DeletionWarnedAt { get; private set; }
 
     public IReadOnlyCollection<ExternalLogin> ExternalLogins => _externalLogins.AsReadOnly();
 
@@ -186,6 +199,36 @@ public sealed class Account : AggregateRoot<Guid>
         Raise(new AccountSessionsRevoked(Id, reason));
     }
 
+    /// <summary>
+    /// Records that the account signed in or used its tokens. Returns true when that changed something to save: at most once per
+    /// <see cref="ActivityPrecision"/>, and at once while a deletion warning is pending, which it cancels.
+    /// </summary>
+    public bool RecordActivity(DateTimeOffset now)
+    {
+        if (DeletionWarnedAt is null && now - LastActiveAt < ActivityPrecision)
+        {
+            return false;
+        }
+
+        LastActiveAt = now;
+        DeletionWarnedAt = null;
+        return true;
+    }
+
+    /// <summary>Records that the user was told the account will be deleted for inactivity.</summary>
+    public void WarnOfDeletion(DateTimeOffset now) => DeletionWarnedAt = now;
+
+    /// <summary>
+    /// Deletes the account; the repository removes it. <paramref name="reason"/> is a stable code such as <c>requested</c>, and
+    /// clients and other services are told (<see cref="AccountDeleted"/>).
+    /// </summary>
+    public void Delete(DateTimeOffset now, string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        UpdatedAt = now;
+        Raise(new AccountDeleted(Id, reason));
+    }
+
     /// <summary>Whether a session that signed in at <paramref name="signedInAt"/> has been revoked since (second precision, as <c>auth_time</c>).</summary>
     public bool IsSessionRevoked(DateTimeOffset signedInAt) =>
         SessionsRevokedAt is { } revoked && signedInAt.ToUnixTimeSeconds() < revoked.ToUnixTimeSeconds();
@@ -212,3 +255,6 @@ public sealed record AccountStatusChanged(Guid AccountId, bool Disabled) : IDoma
 
 /// <summary>Every session of the account was ended (<paramref name="Reason"/> is a stable code such as <c>password_changed</c>).</summary>
 public sealed record AccountSessionsRevoked(Guid AccountId, string Reason) : IDomainEvent;
+
+/// <summary>The account was deleted (<see cref="Account.Delete"/>); <paramref name="Reason"/> is a stable code.</summary>
+public sealed record AccountDeleted(Guid AccountId, string Reason) : IDomainEvent;

@@ -23,7 +23,8 @@ internal sealed partial class BackchannelLogoutNotifier(
     IHttpClientFactory httpClientFactory,
     IOptions<TokenServerOptions> options,
     TimeProvider time,
-    ILogger<BackchannelLogoutNotifier> logger) : IDomainEventHandler<AccountStatusChanged>, IDomainEventHandler<AccountSessionsRevoked>, ISessionLogoutNotifier
+    ILogger<BackchannelLogoutNotifier> logger)
+    : IDomainEventHandler<AccountStatusChanged>, IDomainEventHandler<AccountSessionsRevoked>, IDomainEventHandler<AccountDeleted>, ISessionLogoutNotifier
 {
     public const string HttpClientName = "JeffOps.BackchannelLogout";
     private const string BackchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout";
@@ -41,6 +42,13 @@ internal sealed partial class BackchannelLogoutNotifier(
 
     /// <summary>Signing out everywhere (a password change, a user's or operator's request) ends sessions the same way.</summary>
     public Task HandleAsync(AccountSessionsRevoked domainEvent, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(domainEvent);
+        return EndSessionsAsync(domainEvent.AccountId, cancellationToken);
+    }
+
+    /// <summary>A deleted account's sessions end everywhere, like a disabled one's.</summary>
+    public Task HandleAsync(AccountDeleted domainEvent, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(domainEvent);
         return EndSessionsAsync(domainEvent.AccountId, cancellationToken);

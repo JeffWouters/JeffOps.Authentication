@@ -31,6 +31,10 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<long?>("DeletionWarnedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("DeletionWarnedAtUnixMs");
+
                     b.Property<bool>("DisabledByOperator")
                         .HasColumnType("bit");
 
@@ -47,6 +51,10 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.Property<bool>("EmailVerified")
                         .HasColumnType("bit");
 
+                    b.Property<long>("LastActiveAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("LastActiveAtUnixMs");
+
                     b.Property<DateTimeOffset?>("SessionsRevokedAt")
                         .HasColumnType("datetimeoffset");
 
@@ -60,7 +68,11 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DeletionWarnedAt");
+
                     b.HasIndex("Email");
+
+                    b.HasIndex("LastActiveAt");
 
                     b.ToTable("Accounts", "auth");
                 });

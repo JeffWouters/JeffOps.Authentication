@@ -53,6 +53,8 @@ public static class ApplicationServiceCollectionExtensions
             .AddHandler<RevokePatHandler>()
             .AddHandler<SetAccountStatusHandler>()
             .AddHandler<RevokeSessionsHandler>()
+            .AddHandler<DeleteAccountHandler>()
+            .AddHandler<DeleteInactiveAccountsHandler>()
             .AddHandler<GetAccountContactHandler>()
             .AddHandler<FindAccountByEmailHandler>()
             .AddHandler<CompleteExternalSignInHandler>()

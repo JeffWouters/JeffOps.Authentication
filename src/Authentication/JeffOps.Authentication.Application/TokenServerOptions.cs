@@ -93,6 +93,9 @@ public sealed class TokenServerOptions
     /// </summary>
     public TimeSpan PruneInterval { get; set; } = TimeSpan.FromHours(1);
 
+    /// <summary>Deleting accounts nobody uses any more. Off by default.</summary>
+    public InactiveAccountOptions InactiveAccounts { get; } = new();
+
     /// <summary>
     /// The grant type of the extension grant <paramref name="name"/>: <c>{ExtensionGrantNamespace}:{name}</c>, or the name itself
     /// when it is already a URN (standard grants such as RFC 7523's JWT bearer grant).
@@ -269,4 +272,22 @@ public sealed class FederatedCredential
     /// most. Default: 2 hours (CI tokens live minutes, Kubernetes service account tokens an hour).
     /// </summary>
     public TimeSpan MaxTokenLifetime { get; set; } = TimeSpan.FromHours(2);
+}
+
+/// <summary>
+/// Deleting accounts that haven't signed in or used their tokens for a long time (<see cref="Domain.Accounts.Account.LastActiveAt"/>).
+/// The user is told <see cref="WarnBefore"/> ahead (a user notification of kind <c>account.deletion_scheduled</c>, which the
+/// host delivers, for example by email), and any sign-in cancels it. Accounts that can't be deleted (the only administrator of
+/// a tenant, an account an organization provisions) are kept.
+/// </summary>
+public sealed class InactiveAccountOptions
+{
+    /// <summary>Delete accounts inactive this long, for example <c>395.00:00:00</c> (13 months). Null (the default): never.</summary>
+    public TimeSpan? DeleteAfter { get; set; }
+
+    /// <summary>How long before the deletion the user is told. Default: 30 days.</summary>
+    public TimeSpan WarnBefore { get; set; } = TimeSpan.FromDays(30);
+
+    /// <summary>How often each instance looks for inactive accounts. Default: 1 hour.</summary>
+    public TimeSpan CheckInterval { get; set; } = TimeSpan.FromHours(1);
 }

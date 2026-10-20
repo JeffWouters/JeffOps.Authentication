@@ -113,6 +113,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddHostedService<AuthenticationStartup>();
         services.AddHostedService<KeyRotationService>();
         services.AddHostedService<StoreMaintenance>();
+        services.AddHostedService<InactiveAccountMaintenance>();
 
         services.AddOpenIddict()
             .AddCore(core =>
@@ -234,6 +235,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.TryAddScoped<IEndedSessions, DatabaseEndedSessions>();
         services.TryAddScoped<Application.Federation.IExternalSessions, DatabaseExternalSessions>();
         services.TryAddScoped<Application.Federation.IProviderSessionChecks, DatabaseProviderSessionChecks>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IAccountDataEraser, TokenServerAccountData>());
         services.TryAddScoped<ISessionLogoutNotifier, BackchannelLogoutNotifier>();
 
         return new AuthenticationBuilder(services, configuration);
@@ -307,6 +309,12 @@ public static class AuthenticationServiceCollectionExtensions
                 .SelectMany(client => client.UpstreamClaims
                     .Where(type => Application.Federation.UpstreamIdentity.IsReserved(type, names))
                     .Select(type => $"Client '{client.ClientId}' can't receive '{type}' from a provider (UpstreamClaims): it is this server's own claim.")));
+
+            if (options.InactiveAccounts.DeleteAfter is { } deleteAfter
+                && (options.InactiveAccounts.WarnBefore <= TimeSpan.Zero || deleteAfter <= options.InactiveAccounts.WarnBefore || options.InactiveAccounts.CheckInterval <= TimeSpan.Zero))
+            {
+                failures.Add("InactiveAccounts: DeleteAfter must be longer than a positive WarnBefore, with a positive CheckInterval.");
+            }
 
             failures.AddRange(options.Clients
                 .Where(client => client.SessionLifetime <= TimeSpan.Zero)

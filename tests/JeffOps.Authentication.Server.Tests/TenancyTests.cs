@@ -68,6 +68,29 @@ public sealed class TenancyTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task The_only_administrator_of_a_tenant_can_t_delete_their_account_and_a_member_s_membership_goes_with_it()
+    {
+        await StartAsync();
+        var operatorToken = await OperatorTokenAsync();
+        var admin = await _host.CreateAccountAsync("admin@contoso.test");
+        var tenant = await CreateTenantAsync(operatorToken, "Contoso", firstAdmin: admin.Id);
+        var colleague = await _host.CreateAccountAsync("colleague@contoso.test");
+        await PostAsync(operatorToken, $"{TenancyEndpointRouteBuilderExtensions.OperatorRoutes}/{tenant}/members", new { accountId = colleague.Id, role = "Member" });
+
+        var adminToken = (await _host.SignInAsync(admin.Id)).AccessToken!;
+        (await CodeAsync(await _host.SendAsync(HttpMethod.Delete, "account", adminToken))).ShouldBe("last_tenant_admin");
+
+        var colleagueToken = (await _host.SignInAsync(colleague.Id)).AccessToken!;
+        (await _host.SendAsync(HttpMethod.Delete, "account", colleagueToken)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await GetAsync(adminToken, TenancyEndpointRouteBuilderExtensions.TenantRoutes + "/members")).GetArrayLength().ShouldBe(1);
+
+        // With another administrator, the first can go.
+        var successor = await _host.CreateAccountAsync("successor@contoso.test");
+        await PostAsync(operatorToken, $"{TenancyEndpointRouteBuilderExtensions.OperatorRoutes}/{tenant}/members", new { accountId = successor.Id, role = "Admin" });
+        (await _host.SendAsync(HttpMethod.Delete, "account", adminToken)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+    }
+
+    [Fact]
     public async Task Tenant_administrators_manage_members_but_never_leave_a_tenant_without_one()
     {
         await StartAsync();

@@ -19,7 +19,37 @@ public interface IAccountRepository
     /// <summary>The emails of the accounts among <paramref name="accountIds"/> that exist, in one read (no accounts loaded).</summary>
     Task<IReadOnlyDictionary<Guid, string>> FindEmailsAsync(IReadOnlyCollection<Guid> accountIds, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Accounts inactive since <paramref name="inactiveSince"/> (<see cref="Account.LastActiveAt"/>) whose user wasn't told of
+    /// their deletion yet, longest inactive first, at most <paramref name="max"/>.
+    /// </summary>
+    Task<IReadOnlyList<Account>> ListToWarnOfDeletionAsync(DateTimeOffset inactiveSince, int max, CancellationToken cancellationToken);
+
+    /// <summary>Accounts still inactive since <paramref name="inactiveSince"/> whose user was told before <paramref name="warnedBefore"/>.</summary>
+    Task<IReadOnlyList<Account>> ListDueForDeletionAsync(DateTimeOffset inactiveSince, DateTimeOffset warnedBefore, int max, CancellationToken cancellationToken);
+
     void Add(Account account);
+
+    void Remove(Account account);
+}
+
+/// <summary>Why an account can't be deleted now, for example the only administrator of a tenant.</summary>
+/// <param name="Code">A stable code, such as <c>last_tenant_admin</c>.</param>
+/// <param name="Message">For the user.</param>
+public sealed record AccountDeletionBlocker(string Code, string Message);
+
+/// <summary>
+/// What a module keeps about an account, removed when the account is deleted. Each module with data per account registers
+/// one, and so do the token server's own tables. Deletion asks every one for a blocker first, then erases with every one, then
+/// deletes the account: a deletion that failed half-way leaves the account, and runs again.
+/// </summary>
+public interface IAccountDataEraser
+{
+    /// <summary>Why the account can't be deleted now, or null.</summary>
+    Task<AccountDeletionBlocker?> BlockerAsync(Guid accountId, CancellationToken cancellationToken);
+
+    /// <summary>Removes what this module keeps about the account. Safe to repeat.</summary>
+    Task EraseAsync(Guid accountId, CancellationToken cancellationToken);
 }
 
 /// <summary>Personal access token storage.</summary>

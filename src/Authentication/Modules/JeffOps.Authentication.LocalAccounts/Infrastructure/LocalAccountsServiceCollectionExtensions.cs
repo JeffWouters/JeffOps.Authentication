@@ -82,6 +82,7 @@ public static class LocalAccountsServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Scoped<JeffOps.Authentication.Application.Federation.IAccountCredentials, LocalAccountCredentials>());
         services.TryAddScoped<IAccountTokenRepository, AccountTokenRepository>();
         services.TryAddScoped<ILocalUnitOfWork, LocalUnitOfWork>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<JeffOps.Authentication.Application.Abstractions.IAccountDataEraser, LocalAccountData>());
         services.TryAddSingleton<ITotpSecretProtector, DataProtectionTotpProtector>();
         services.TryAddScoped<IAccountEmailSender, LoggingAccountEmailSender>();
         services.TryAddSingleton<AccountMailQueue>();

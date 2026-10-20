@@ -81,6 +81,7 @@ public static class DelegationServiceCollectionExtensions
         services.TryAddScoped<ITenantAccessGrantRepository, TenantAccessGrantRepository>();
         services.TryAddScoped<IDueGrantSource, DueGrantSource>();
         services.TryAddScoped<IDelegationUnitOfWork, DelegationUnitOfWork>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<JeffOps.Authentication.Application.Abstractions.IAccountDataEraser, DelegationAccountData>());
 
         services
             .AddHandler<RequestImpersonationHandler>()

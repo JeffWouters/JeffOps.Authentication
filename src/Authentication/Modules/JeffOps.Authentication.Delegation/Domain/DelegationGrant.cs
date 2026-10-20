@@ -22,6 +22,7 @@ public static class GrantEndReasons
     public const string Revoked = "revoked";
     public const string RevokedByTarget = "revoked-by-target";
     public const string Expired = "expired";
+    public const string AccountDeleted = "account-deleted";
 }
 
 /// <summary>

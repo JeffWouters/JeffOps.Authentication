@@ -30,6 +30,7 @@ public sealed record StartSessionCommand(
 
 public sealed class StartSessionHandler(
     IAccountRepository accounts,
+    IUnitOfWork unitOfWork,
     IEndedSessions endedSessions,
     SessionBuilder sessions,
     JeffOps.Authentication.Application.Federation.ProviderSessionGuard providerSessions,
@@ -111,6 +112,11 @@ public sealed class StartSessionHandler(
                     ["claims"] = string.Join(' ', upstream.Select(claim => claim.Type).Distinct(StringComparer.Ordinal)),
                 },
             }, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (account.RecordActivity(time.GetUtcNow()))
+        {
+            await unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
         await events.PublishAsync(

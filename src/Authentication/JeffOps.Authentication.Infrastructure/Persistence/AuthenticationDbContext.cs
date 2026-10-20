@@ -39,6 +39,9 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
     /// <summary>Sessions whose provider is checked again, with the provider's refresh token.</summary>
     public DbSet<Server.ProviderSessionEntry> ProviderSessions => Set<Server.ProviderSessionEntry>();
 
+    private static readonly Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<DateTimeOffset, long> UnixMilliseconds =
+        new(value => value.ToUnixTimeMilliseconds(), value => DateTimeOffset.FromUnixTimeMilliseconds(value));
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -55,6 +58,12 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
             account.Property(entity => entity.Email).HasMaxLength(320).IsRequired();
             account.Property(entity => entity.DisplayName).HasMaxLength(Account.MaxDisplayNameLength).IsRequired();
             account.Property(entity => entity.Status).HasConversion<string>().HasMaxLength(20);
+
+            // Unix milliseconds on every provider, so inactive accounts are found by range (SQLite can't compare DateTimeOffset).
+            account.Property(entity => entity.LastActiveAt).HasConversion(UnixMilliseconds).HasColumnName("LastActiveAtUnixMs");
+            account.Property(entity => entity.DeletionWarnedAt).HasConversion(UnixMilliseconds).HasColumnName("DeletionWarnedAtUnixMs");
+            account.HasIndex(entity => entity.LastActiveAt);
+            account.HasIndex(entity => entity.DeletionWarnedAt);
             account.HasIndex(entity => entity.Email);
             account.Ignore(entity => entity.DomainEvents);
             account.Ignore(entity => entity.CanAuthenticate);

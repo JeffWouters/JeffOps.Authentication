@@ -54,6 +54,45 @@ public sealed class MigrationTests
         }
     }
 
+    /// <summary>Accounts from before activity was recorded count as active from the migration on, so none is found inactive at once.</summary>
+    [Fact]
+    public async Task On_sql_server_existing_accounts_count_as_active_from_the_migration()
+    {
+        Assert.SkipUnless(TestDatabase.SqlServer, "Runs with JEFFOPS_TEST_DATABASE=SqlServer.");
+        var connectionString = await TestDatabase.CreateSqlServerAsync("migration", TestContext.Current.CancellationToken);
+        try
+        {
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:authentication"] = connectionString })
+                .Build();
+            var services = new ServiceCollection();
+            services.AddSingleton<IConfiguration>(configuration);
+            services.AddJeffOpsAuthentication(configuration).AddSqlServerPersistence();
+            JeffOps.Authentication.Testing.TestKeyRing.AddTestKeyRing(services);
+            await using var provider = services.BuildServiceProvider();
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<AuthenticationDbContext>();
+            var migrator = db.GetInfrastructure().GetRequiredService<Microsoft.EntityFrameworkCore.Migrations.IMigrator>();
+
+            await migrator.MigrateAsync("20261020183413_ProviderSessions", TestContext.Current.CancellationToken);
+            await db.Database.ExecuteSqlAsync($"""
+                INSERT INTO [auth].[Accounts] ([Id], [Email], [EmailVerified], [DisplayName], [Status], [CreatedAt], [UpdatedAt])
+                VALUES ({Guid.NewGuid()}, N'old@example.com', 1, N'Old', N'Active', '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00');
+                """, TestContext.Current.CancellationToken);
+            var before = DateTimeOffset.UtcNow.AddMinutes(-5);
+
+            await migrator.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            var account = await db.Accounts.SingleAsync(TestContext.Current.CancellationToken);
+            account.LastActiveAt.ShouldBeGreaterThan(before);
+            account.DeletionWarnedAt.ShouldBeNull();
+        }
+        finally
+        {
+            await TestDatabase.DeleteAsync(connectionString);
+        }
+    }
+
     /// <summary>Rows written before names were stored normalized get them from the migration, and stay unique by them.</summary>
     [Fact]
     public async Task On_sql_server_existing_scim_names_are_normalized_by_the_migration()

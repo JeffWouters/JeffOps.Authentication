@@ -36,6 +36,21 @@ public sealed record AccountStatusChangedEvent(Guid AccountId, bool Disabled) : 
     public override string Type => EventType;
 }
 
+/// <summary>
+/// An account was deleted: by its user, an operator, or for inactivity. Services drop what they keep about it, by their own
+/// retention rules.
+/// </summary>
+/// <param name="AccountId">The deleted account.</param>
+/// <param name="Reason">Why: <c>requested</c>, <c>operator</c> or <c>inactive</c>.</param>
+public sealed record AccountDeletedEvent(Guid AccountId, string Reason) : IntegrationEvent
+{
+    /// <summary>The versioned event type name of <see cref="AccountDeletedEvent"/>.</summary>
+    public const string EventType = "auth.account.deleted.v1";
+
+    /// <inheritdoc />
+    public override string Type => EventType;
+}
+
 /// <summary>A personal access token was created.</summary>
 /// <param name="TokenId">The new token.</param>
 /// <param name="AccountId">The account that owns it.</param>
