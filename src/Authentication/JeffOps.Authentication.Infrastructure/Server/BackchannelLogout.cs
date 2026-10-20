@@ -70,9 +70,10 @@ internal sealed partial class BackchannelLogoutNotifier(
     {
         try
         {
+            // The timeout is for the client's answer: signing the token (the first one loads the keys) doesn't count.
+            using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["logout_token"] = CreateLogoutToken(client.ClientId, subject, sessionId) });
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(options.Value.BackchannelLogoutTimeout);
-            using var content = new FormUrlEncodedContent(new Dictionary<string, string> { ["logout_token"] = CreateLogoutToken(client.ClientId, subject, sessionId) });
             using var response = await httpClientFactory.CreateClient(HttpClientName)
                 .PostAsync(client.BackchannelLogoutUri, content, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
