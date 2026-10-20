@@ -427,6 +427,54 @@ public sealed class FederationTests
     }
 
     [Fact]
+    public async Task A_client_that_skips_the_login_page_sends_the_user_straight_to_its_provider()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        var clients = ProductClients();
+        clients["JeffOps:TokenServer:Clients:3:SkipLoginPage"] = "true";
+        await using var downstream = await StartDownstreamAsync(upstream, clients);
+        using var browser = new Browser(downstream);
+        var authorize = AuthorizePath("time", "https://time.test/callback");
+
+        var first = await browser.GetAsync(downstream, authorize + "&login_hint=lin%40upstream.example");
+        first.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        var location = new Uri(new Uri("https://localhost/"), first.Headers.Location!);
+        location.AbsolutePath.ShouldBe("/signin/upstream");
+        TokenServerHost.QueryValue(location, "returnUrl").ShouldNotBeNull().ShouldStartWith(authorize);
+        TokenServerHost.QueryValue(location, "login_hint").ShouldBe("lin@upstream.example");
+
+        // On to the provider, without the login page.
+        var challenge = await browser.GetAsync(downstream, first.Headers.Location!.OriginalString);
+        challenge.StatusCode.ShouldBe(HttpStatusCode.Redirect);
+        challenge.Headers.Location!.Host.ShouldBe("upstream.test");
+
+        // With prompt=none there is still no one to ask: login_required.
+        var silent = await browser.GetAsync(downstream, authorize + "&prompt=none&state=s");
+        silent.Headers.Location!.ToString().ShouldStartWith("https://time.test/callback?error=login_required");
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("local", null)]
+    [InlineData("upstream", "other")]
+    public async Task Only_a_client_with_one_provider_can_skip_the_login_page(string? first, string? second)
+    {
+        var settings = new Dictionary<string, string?> { ["JeffOps:TokenServer:Clients:0:SkipLoginPage"] = "true" };
+        if (first is not null)
+        {
+            settings["JeffOps:TokenServer:Clients:0:Providers:0"] = first;
+        }
+
+        if (second is not null)
+        {
+            settings["JeffOps:TokenServer:Clients:0:Providers:1"] = second;
+        }
+
+        (await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(settings)))
+            .Message.ShouldContain("SkipLoginPage");
+    }
+
+    [Fact]
     public async Task A_provider_the_client_does_not_accept_is_neither_started_nor_discovered()
     {
         await using var upstream = await StartUpstreamAsync();

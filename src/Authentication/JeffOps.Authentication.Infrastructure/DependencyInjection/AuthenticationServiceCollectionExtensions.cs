@@ -308,6 +308,10 @@ public static class AuthenticationServiceCollectionExtensions
                     .Select(type => $"Client '{client.ClientId}' can't receive '{type}' from a provider (UpstreamClaims): it is this server's own claim.")));
 
             failures.AddRange(options.Clients
+                .Where(client => client.SkipLoginPage && !(client.Providers is [var only] && only != Application.Federation.ClientProviders.Local))
+                .Select(client => $"Client '{client.ClientId}' can skip the login page (SkipLoginPage) only with exactly one provider that isn't '{Application.Federation.ClientProviders.Local}'."));
+
+            failures.AddRange(options.Clients
                 .GroupBy(client => client.ClientId, StringComparer.Ordinal)
                 .Where(group => group.Count() > 1)
                 .Select(group => $"Client '{group.Key}' is configured more than once."));

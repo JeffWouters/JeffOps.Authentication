@@ -594,6 +594,11 @@ Upstream dependency failure → `server_error` (5xx), **not** `invalid_grant`, s
   - The login page offers only the client's providers and names the client ("to continue to …"); home realm discovery
     and `signin/{provider}` skip providers the client doesn't list.
   - Providers that tenants registered themselves (§8.4) are always allowed: a tenant's SSO choice applies to every product.
+  - **Skipping the login page** (`Clients[].SkipLoginPage`, opt-in): the authorize endpoint sends the client's users straight
+    to `signin/{provider}` (with `login_hint`) when the client lists exactly one provider that isn't `local`; anything else
+    fails validation at startup. The provider is asked for the same fresh sign-in and authentication contexts as from the
+    login page, and its errors still show there. Opt-in, because tenants' own providers are reached only through the login
+    page's home realm discovery.
   - The client is read from the return URL's authorization request (`client_id`, which pushed requests repeat). The device
     flow checks it when the code is approved, since its verification page doesn't know the client before.
 - **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): a product

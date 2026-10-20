@@ -113,6 +113,14 @@ internal static class ProtocolEndpoints
                 FreshSignInCookie.Set(context, returnUrl, mustFollow);
             }
 
+            // A client that skips the login page goes straight to its only provider, with the login hint. The provider is asked
+            // for what the return URL carries (a fresh sign-in, authentication contexts), as from the login page.
+            if (client is { SkipLoginPage: true, Providers: [var only] } && only != ClientProviders.Local)
+            {
+                var hint = string.IsNullOrEmpty(request.LoginHint) ? string.Empty : $"&login_hint={Uri.EscapeDataString(request.LoginHint)}";
+                return Results.Redirect($"/signin/{Uri.EscapeDataString(only)}?returnUrl={Uri.EscapeDataString(returnUrl)}{hint}");
+            }
+
             return Results.Challenge(new AuthenticationProperties { RedirectUri = returnUrl }, [signInScheme]);
         }
 

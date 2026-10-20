@@ -207,6 +207,13 @@ public sealed class ClientDefinition
     public IList<string> Providers { get; } = [];
 
     /// <summary>
+    /// Send this client's users straight to its only provider (<see cref="Providers"/> lists exactly one, not <c>local</c>)
+    /// instead of the login page. The login page still shows the provider's errors. Providers tenants registered, which the
+    /// login page finds by email, aren't offered to this client then. Default: false.
+    /// </summary>
+    public bool SkipLoginPage { get; set; }
+
+    /// <summary>
     /// For first-party clients only: put the identity the user signed in with at the provider in this client's access tokens,
     /// as <c>idp</c> (the provider), <c>idp_iss</c> and <c>idp_sub</c> (for Entra the directory's issuer and the user's
     /// <c>oid</c>), so a product that knew its users by their provider identity can find them again. Only for sign-ins through

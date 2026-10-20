@@ -13,6 +13,8 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 - **Authentication contexts through providers** (`acr_values`): passed to the provider (Entra: the `claims` parameter
   with `acrs`); a sign-in through a configured provider that didn't report them signs in again once. Clients receive the
   provider's `acrs` through `UpstreamClaims`.
+- **Skipping the login page** (`Clients[].SkipLoginPage`): a client with exactly one provider can send its users straight
+  to it.
 
 ## [0.1.0-alpha] - 2026-10-20
 
