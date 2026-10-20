@@ -16,19 +16,22 @@ namespace JeffOps.Authentication.Application.Features.Sessions.StartSession;
 /// <param name="Scopes">The scopes granted to the client.</param>
 /// <param name="TenantHint">Start in this tenant when the account has a membership there.</param>
 /// <param name="SessionId">The sign-in session (<c>sid</c>) the tokens belong to.</param>
+/// <param name="Upstream">What the client receives of the provider's answer (<see cref="JeffOps.Authentication.Application.Federation.UpstreamIdentity"/>).</param>
 public sealed record StartSessionCommand(
     Guid AccountId,
     AuthenticationStrength Strength,
     DateTimeOffset SignedInAt,
     IReadOnlyCollection<string> Scopes,
     Guid? TenantHint = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    IReadOnlyList<System.Security.Claims.Claim>? Upstream = null);
 
 public sealed class StartSessionHandler(
     IAccountRepository accounts,
     IEndedSessions endedSessions,
     SessionBuilder sessions,
     IEventPublisher events,
+    JeffOps.Authentication.Abstractions.Auditing.IAuditSink audit,
     JeffOps.Authentication.Abstractions.Claims.ClaimNames names,
     Microsoft.Extensions.Options.IOptions<TokenServerOptions> options,
     TimeProvider time) : ICommandHandler<StartSessionCommand, IssuedIdentity>
@@ -80,6 +83,24 @@ public sealed class StartSessionHandler(
         if (command.SessionId is { } sessionId)
         {
             claims.Add(new System.Security.Claims.Claim(names.SessionId, sessionId));
+        }
+
+        // A first-party client receives the identity the user signed in with at the provider: recorded, as it says who they are there.
+        if (command.Upstream is { Count: > 0 } upstream)
+        {
+            claims.AddRange(upstream);
+            await audit.WriteAsync(new JeffOps.Authentication.Abstractions.Auditing.AuditRecord("session.upstream_identity_forwarded", "account", account.Id.ToString())
+            {
+                ActorId = account.Id,
+                OccurredAt = time.GetUtcNow(),
+                Details = new Dictionary<string, string?>
+                {
+                    ["provider"] = upstream.FirstOrDefault(claim => claim.Type == JeffOps.Authentication.Application.Federation.UpstreamIdentity.ProviderClaim)?.Value,
+                    ["issuer"] = upstream.FirstOrDefault(claim => claim.Type == JeffOps.Authentication.Application.Federation.UpstreamIdentity.IssuerClaim)?.Value,
+                    ["subject"] = upstream.FirstOrDefault(claim => claim.Type == JeffOps.Authentication.Application.Federation.UpstreamIdentity.SubjectClaim)?.Value,
+                    ["claims"] = string.Join(' ', upstream.Select(claim => claim.Type).Distinct(StringComparer.Ordinal)),
+                },
+            }, cancellationToken).ConfigureAwait(false);
         }
 
         await events.PublishAsync(

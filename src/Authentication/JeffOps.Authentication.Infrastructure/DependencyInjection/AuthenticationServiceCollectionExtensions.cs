@@ -259,7 +259,7 @@ public static class AuthenticationServiceCollectionExtensions
         server.Scopes.Add(AccountApi.Scope);
     }
 
-    private sealed class TokenServerOptionsValidator(IHostEnvironment environment) : IValidateOptions<TokenServerOptions>
+    private sealed class TokenServerOptionsValidator(IHostEnvironment environment, Abstractions.Claims.ClaimNames names) : IValidateOptions<TokenServerOptions>
     {
         public ValidateOptionsResult Validate(string? name, TokenServerOptions options)
         {
@@ -301,6 +301,11 @@ public static class AuthenticationServiceCollectionExtensions
             {
                 failures.Add("Personal access tokens need a positive maximum lifetime and a prefix.");
             }
+
+            failures.AddRange(options.Clients
+                .SelectMany(client => client.UpstreamClaims
+                    .Where(type => Application.Federation.UpstreamIdentity.IsReserved(type, names))
+                    .Select(type => $"Client '{client.ClientId}' can't receive '{type}' from a provider (UpstreamClaims): it is this server's own claim.")));
 
             failures.AddRange(options.Clients
                 .GroupBy(client => client.ClientId, StringComparer.Ordinal)

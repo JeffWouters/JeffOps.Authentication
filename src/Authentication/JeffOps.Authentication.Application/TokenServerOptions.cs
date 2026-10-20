@@ -205,6 +205,21 @@ public sealed class ClientDefinition
     /// screen) at the provider. Providers tenants registered themselves (per-tenant SSO) are always allowed.
     /// </summary>
     public IList<string> Providers { get; } = [];
+
+    /// <summary>
+    /// For first-party clients only: put the identity the user signed in with at the provider in this client's access tokens,
+    /// as <c>idp</c> (the provider), <c>idp_iss</c> and <c>idp_sub</c> (for Entra the directory's issuer and the user's
+    /// <c>oid</c>), so a product that knew its users by their provider identity can find them again. Only for sign-ins through
+    /// providers configured on this server, never a provider a tenant registered. Default: false.
+    /// </summary>
+    public bool ForwardUpstreamIdentity { get; set; }
+
+    /// <summary>
+    /// For first-party clients only: claims of the provider's answer to put in this client's access tokens unchanged, for
+    /// example <c>groups</c>, <c>wids</c>, <c>acct</c>. The same rule as <see cref="ForwardUpstreamIdentity"/>; this server's own
+    /// claim types (<c>sub</c>, <c>tid</c>, <c>email</c>, …) can't be listed.
+    /// </summary>
+    public IList<string> UpstreamClaims { get; } = [];
 }
 
 /// <summary>

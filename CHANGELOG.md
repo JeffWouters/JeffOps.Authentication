@@ -5,6 +5,12 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 
 ## [Unreleased]
 
+### Added
+
+- **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): the
+  provider, the user's issuer and subject there (`idp`, `idp_iss`, `idp_sub`) and chosen provider claims in the client's
+  access tokens, only from providers configured on the server, audited.
+
 ## [0.1.0-alpha] - 2026-10-20
 
 First public preview.

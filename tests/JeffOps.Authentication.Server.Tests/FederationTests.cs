@@ -1,6 +1,10 @@
 using System.Net;
 using System.Security.Claims;
+using JeffOps.Authentication.Abstractions.Claims;
+using JeffOps.Authentication.Application;
 using JeffOps.Authentication.Application.Federation;
+using JeffOps.Authentication.Application.Sessions;
+using JeffOps.Authentication.Domain.Sessions;
 using JeffOps.Authentication.Application.Abstractions;
 using JeffOps.Authentication.Domain.Accounts;
 using JeffOps.Authentication.Federation.Entra;
@@ -101,6 +105,79 @@ public sealed class FederationTests
         var (location, _) = await AuthorizeWithBrowserAsync(downstream, browser);
         location.ToString().ShouldStartWith(TokenServerHost.BffRedirect);
     }
+
+    [Fact]
+    public async Task A_first_party_client_receives_the_upstream_identity_and_its_chosen_claims_also_after_a_refresh()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream, new()
+        {
+            ["JeffOps:TokenServer:Federation:OpenRegistration"] = "true",
+            ["JeffOps:TokenServer:Clients:0:ForwardUpstreamIdentity"] = "true",
+            ["JeffOps:TokenServer:Clients:0:UpstreamClaims:0"] = "email_verified",
+        });
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+
+        // The sign-in starts from the client's authorization request, so it knows which claims that client takes.
+        var (authorize, verifier) = AuthorizePath("openid offline_access api");
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id, returnUrl: authorize);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        var tokens = await RedeemAsync(downstream, code.Headers.Location!, verifier);
+
+        tokens.Claims("idp").ShouldBe(["upstream"]);
+        tokens.Claims("idp_iss").ShouldBe(["https://upstream.test"]);
+        tokens.Claims("idp_sub").ShouldBe([upstreamAccount.Id.ToString()]);
+        tokens.Claims("email_verified").ShouldBe(["true"]);
+        new Microsoft.IdentityModel.JsonWebTokens.JsonWebToken(tokens.IdToken!).Claims.ShouldNotContain(claim => claim.Type.StartsWith("idp", StringComparison.Ordinal), "access tokens only");
+
+        var refreshed = await downstream.RefreshAsync(tokens.RefreshToken!);
+        refreshed.Claims("idp_sub").ShouldBe([upstreamAccount.Id.ToString()]);
+        refreshed.Claims("email_verified").ShouldBe(["true"]);
+    }
+
+    [Fact]
+    public async Task Other_clients_receive_nothing_of_the_upstream_identity()
+    {
+        await using var upstream = await StartUpstreamAsync();
+        await using var downstream = await StartDownstreamAsync(upstream);
+        var upstreamAccount = await upstream.CreateAccountAsync("lin@upstream.example");
+        using var browser = new Browser(downstream);
+
+        var (authorize, verifier) = AuthorizePath("openid offline_access api");
+        var callback = await SignInThroughUpstreamAsync(downstream, upstream, browser, upstreamAccount.Id, returnUrl: authorize);
+        var code = await browser.GetAsync(downstream, callback.Headers.Location!.OriginalString);
+        var tokens = await RedeemAsync(downstream, code.Headers.Location!, verifier);
+
+        tokens.Access.Claims.ShouldNotContain(claim => claim.Type == "idp" || claim.Type == "idp_iss" || claim.Type == "idp_sub" || claim.Type == "email_verified");
+    }
+
+    [Fact]
+    public async Task A_client_can_t_take_this_server_s_own_claims_from_a_provider() =>
+        (await Should.ThrowAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => TokenServerHost.StartAsync(new()
+        {
+            ["JeffOps:TokenServer:Clients:0:UpstreamClaims:0"] = "tid",
+        }))).Message.ShouldContain("UpstreamClaims");
+
+    private static (string Path, string Verifier) AuthorizePath(string scope)
+    {
+        var verifier = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var challenge = Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier)))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return ($"/connect/authorize?client_id={TokenServerHost.BffClient}&response_type=code&redirect_uri={Uri.EscapeDataString(TokenServerHost.BffRedirect)}" +
+            $"&scope={Uri.EscapeDataString(scope)}&code_challenge={challenge}&code_challenge_method=S256&state=xyz", verifier);
+    }
+
+    private static Task<TokenResponse> RedeemAsync(TokenServerHost server, Uri redirect, string verifier) =>
+        server.TokenAsync(new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = TokenServerHost.QueryValue(redirect, "code").ShouldNotBeNull(redirect.ToString()),
+            ["redirect_uri"] = TokenServerHost.BffRedirect,
+            ["code_verifier"] = verifier,
+            ["client_id"] = TokenServerHost.BffClient,
+            ["client_secret"] = TokenServerHost.BffSecret,
+        });
 
     [Fact]
     public async Task A_second_sign_in_reuses_the_linked_account()
@@ -363,6 +440,48 @@ public sealed class FederationTests
         response.StatusCode.ShouldBe(HttpStatusCode.Redirect);
         return (response.Headers.Location!, verifier);
     }
+}
+
+public sealed class UpstreamIdentityTests
+{
+    private static readonly ExternalLoginKey Login = new("https://login.microsoftonline.com/0d6f.../v2.0", "1234");
+
+    private static ClaimsPrincipal Provider(params (string Type, string Value)[] claims) =>
+        new(new ClaimsIdentity(claims.Select(claim => new Claim(claim.Type, claim.Value)), "entra"));
+
+    [Fact]
+    public void Nothing_is_kept_of_a_provider_a_tenant_registered()
+    {
+        UpstreamIdentity.Capture(TenantProviderNames.OidcPrefix + Guid.NewGuid().ToString("N"), Login, Provider(("groups", "g1")), ["groups"]).ShouldBeEmpty();
+        UpstreamIdentity.Capture(TenantProviderNames.Prefix + Guid.NewGuid().ToString("N"), Login, Provider(("groups", "g1")), ["groups"]).ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void A_client_gets_only_what_it_asked_for_and_never_from_a_local_sign_in()
+    {
+        var names = ClaimNames.Default;
+        var captured = UpstreamIdentity.Capture("entra-time", Login, Provider(("groups", "g1"), ("groups", "g2"), ("wids", "w1"), ("acct", "0")), ["groups", "wids"]);
+        var signIn = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, names, "test", "entra-time", captured);
+
+        var client = new ClientDefinition { ClientId = "time-web", ForwardUpstreamIdentity = true };
+        client.UpstreamClaims.Add("groups");
+        var forwarded = UpstreamIdentity.FromSignIn(signIn, client, names);
+        forwarded.Select(claim => $"{claim.Type}={claim.Value}").ShouldBe(
+            ["idp=entra-time", $"idp_iss={Login.Issuer}", $"idp_sub={Login.Subject}", "groups=g1", "groups=g2"], ignoreOrder: true);
+
+        UpstreamIdentity.FromSignIn(signIn, new ClientDefinition { ClientId = "other" }, names).ShouldBeEmpty();
+        var local = SignInPrincipal.Create(Guid.NewGuid(), AuthenticationStrength.Password, DateTimeOffset.UtcNow, names, "test", ClientProviders.Local, captured);
+        UpstreamIdentity.FromSignIn(local, client, names).ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("sub")]
+    [InlineData("tid")]
+    [InlineData("email")]
+    [InlineData("act")]
+    [InlineData("idp_sub")]
+    [InlineData("jeffops:idp")]
+    public void This_server_s_own_claims_are_reserved(string type) => UpstreamIdentity.IsReserved(type, ClaimNames.Default).ShouldBeTrue();
 }
 
 public sealed class EntraMapperTests

@@ -16,7 +16,8 @@ namespace JeffOps.Authentication.Application.Features.Sessions.RefreshSession;
 /// </summary>
 /// <param name="Stored">The principal stored with the refresh token or code.</param>
 /// <param name="Scopes">The scopes of the grant.</param>
-public sealed record RefreshSessionCommand(ClaimsPrincipal Stored, IReadOnlyCollection<string> Scopes);
+/// <param name="ClientId">The client redeeming the grant: what it may receive of the provider's answer is checked again.</param>
+public sealed record RefreshSessionCommand(ClaimsPrincipal Stored, IReadOnlyCollection<string> Scopes, string? ClientId = null);
 
 public sealed class RefreshSessionHandler(
     IAccountRepository accounts,
@@ -83,6 +84,8 @@ public sealed class RefreshSessionHandler(
         {
             claims.Add(new Claim(names.SessionId, sessionId));
         }
+
+        claims.AddRange(JeffOps.Authentication.Application.Federation.UpstreamIdentity.FromGrant(stored, JeffOps.Authentication.Application.Federation.ClientProviders.Find(options.Value, command.ClientId), names));
 
         return new IssuedIdentity(account.Id.ToString(), claims, command.Scopes)
         {

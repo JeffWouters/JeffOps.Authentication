@@ -595,7 +595,19 @@ Upstream dependency failure → `server_error` (5xx), **not** `invalid_grant`, s
     and `signin/{provider}` skip providers the client doesn't list.
   - Providers that tenants registered themselves (§8.4) are always allowed: a tenant's SSO choice applies to every product.
   - The client is read from the return URL's authorization request (`client_id`, which pushed requests repeat). The device
-    flow isn't limited: its verification page doesn't know the client until the code is entered.
+    flow checks it when the code is approved, since its verification page doesn't know the client before.
+- **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): a product
+  that knew its users by their provider identity before moving its sign-in here (for example by Entra directory and `oid`)
+  receives it in its access tokens: `idp` (the provider), `idp_iss` and `idp_sub` (the login as this server links it:
+  lowercase, no trailing slash; for Entra the directory's issuer and the `oid`), and the provider claims it lists (for
+  example `groups`, `wids`, `acct`), unchanged.
+  - Only sign-ins through providers configured on this server count: never a provider a tenant registered (its issuer and
+    claims are the tenant's to choose), never a local account.
+  - Access tokens only, never ID tokens. `idp` comes with anything forwarded. This server's own claim types (`sub`, `tid`,
+    `email`, `amr`, `sid`, …) can't be listed; startup fails if they are.
+  - The sign-in cookie keeps them under a private prefix (`jeffops:upstream:`), only what the client in the return URL lists.
+    A refresh keeps what the stored grant carries, within the client's settings at that moment.
+  - Each forwarding is audited (`session.upstream_identity_forwarded`, with provider, issuer, subject and claim types).
 
 ---
 

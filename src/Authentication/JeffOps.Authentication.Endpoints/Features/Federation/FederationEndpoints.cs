@@ -145,9 +145,12 @@ internal static class FederationEndpoints
         }
 
         var signInScheme = options.Value.SignInScheme;
+
+        // Keep what the client being signed in to may receive of the provider's answer (its UpstreamClaims).
+        var upstream = UpstreamIdentity.Capture(provider, identity.Value.Login, principal, ClientProviders.ForReturnUrl(options.Value, returnUrl)?.UpstreamClaims ?? []);
         await context.SignInAsync(
             signInScheme,
-            SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, signInScheme, provider)).ConfigureAwait(false);
+            SignInPrincipal.Create(signedIn.Value.AccountId, signedIn.Value.Strength, time.GetUtcNow(), names, signInScheme, provider, upstream)).ConfigureAwait(false);
 
         return Results.Redirect(returnUrl);
     }

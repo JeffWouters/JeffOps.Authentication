@@ -121,7 +121,8 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var result = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, signedInAt ?? now, request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names)),
+            new StartSessionCommand(accountId, strength, signedInAt ?? now, request.GetScopes(), TenantHintOf(request), SignInPrincipal.SessionId(signedIn.Principal, names),
+                UpstreamIdentity.FromSignIn(signedIn.Principal, client, names)),
             context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsFailure && result.Error.Code is GrantErrors.SessionRevoked or GrantErrors.SessionExpired)
@@ -185,7 +186,7 @@ internal static class ProtocolEndpoints
                 return TokenIssuance.Refuse(Error.Unauthorized(Dpop.InvalidProof, "This grant is bound to a DPoP key; prove possession of it."), Dpop.InvalidProof);
             }
 
-            result = await refreshSession.HandleAsync(new RefreshSessionCommand(stored, stored.GetScopes()), cancellationToken).ConfigureAwait(false);
+            result = await refreshSession.HandleAsync(new RefreshSessionCommand(stored, stored.GetScopes(), request.ClientId), cancellationToken).ConfigureAwait(false);
         }
         else if (request.GrantType == options.Value.PatGrantType)
         {
@@ -289,7 +290,8 @@ internal static class ProtocolEndpoints
 
         var strength = new AuthenticationStrength(signedIn.Principal!.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));
         var session = await startSession.HandleAsync(
-            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names)),
+            new StartSessionCommand(accountId, strength, SignInPrincipal.SignedInAt(signedIn.Principal, names) ?? time.GetUtcNow(), code.GetScopes(), null, SignInPrincipal.SessionId(signedIn.Principal, names),
+                UpstreamIdentity.FromSignIn(signedIn.Principal, ClientProviders.Find(options.Value, code.GetClaim(Claims.ClientId)), names)),
             context.RequestAborted).ConfigureAwait(false);
         if (session.IsFailure)
         {
