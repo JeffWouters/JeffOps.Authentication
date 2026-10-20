@@ -36,14 +36,22 @@ internal static partial class BffEndpoints
         group.MapPost(BffPaths.BackchannelLogout, BackchannelLogoutAsync).DisableAntiforgery();
     }
 
-    /// <summary>Starts the authorization code flow (with PKCE) at the token server; comes back to <paramref name="returnUrl"/>.</summary>
-    private static IResult Login(string? returnUrl, string? prompt, IOptions<BffOptions> options)
+    /// <summary>
+    /// Starts the authorization code flow (with PKCE) at the token server; comes back to <paramref name="returnUrl"/>. A
+    /// <paramref name="tenant_hint"/> (a tenant id) starts the session in that tenant when the account is a member.
+    /// </summary>
+    private static IResult Login(string? returnUrl, string? prompt, string? tenant_hint, IOptions<BffOptions> options)
     {
         var properties = new AuthenticationProperties { RedirectUri = LocalOrRoot(returnUrl) };
         properties.Items[OpenIddictClientAspNetCoreConstants.Properties.Issuer] = options.Value.Authority!.AbsoluteUri;
         if (prompt is "login" or "none")
         {
             properties.Parameters[OpenIddict.Abstractions.OpenIddictConstants.Parameters.Prompt] = prompt;
+        }
+
+        if (Guid.TryParse(tenant_hint, out var tenant))
+        {
+            properties.Parameters["tenant_hint"] = tenant.ToString();
         }
 
         return Results.Challenge(properties, [OpenIddictClientAspNetCoreDefaults.AuthenticationScheme]);

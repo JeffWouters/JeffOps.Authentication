@@ -811,7 +811,8 @@ All models consume the same token server. The library provides a package or docu
 ### 9.2 As built (phase 4)
 
 - **`JeffOps.Authentication.Bff`** is a confidential OIDC client built on the OpenIddict client (code + PKCE, state, ID token validation, refresh and revocation come from the library, not hand-written protocol code). `AddJeffOpsBff`, `UseJeffOpsBff` (CSRF, then cookie-to-bearer), `MapJeffOpsBff`.
-- **Endpoints:** `GET /bff/login?returnUrl=` (local return URLs only), `/bff/callback`, `POST /bff/logout` (CSRF header; revokes the refresh token and answers `{ endSessionUrl }` so the SPA also ends the token-server session), `GET /bff/me`, `POST /bff/backchannel-logout`.
+- **Endpoints:** `GET /bff/login?returnUrl=` (local return URLs only; optional `prompt=login|none`, and `tenant_hint` with a
+  tenant id, passed on to the token server), `/bff/callback`, `POST /bff/logout` (CSRF header; revokes the refresh token and answers `{ endSessionUrl }` so the SPA also ends the token-server session), `GET /bff/me`, `POST /bff/backchannel-logout`.
 - **Sessions** live in `IDistributedCache` under the SHA-256 of a 256-bit id, encrypted with Data Protection, with the absolute deadline and idle timeout as cache expirations. A per-user index serves back-channel logout.
 - **Refresh** is single-flight per session; a refusal ends the session, an outage keeps it and backs off for 5 s; `StoreOutageGrace` optionally serves the last known copy to reads while the store is down (else 503).
 - **Back-channel logout:** when an operator disables an account the token server revokes all its tokens and posts a signed `logout_token` to every client with a `BackchannelLogoutUri`. The BFF validates signature, audience, event, freshness and `jti` replay, then ends every session of that user.
