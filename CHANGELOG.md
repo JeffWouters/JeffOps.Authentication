@@ -5,7 +5,9 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 
 ## [Unreleased]
 
-First public preview (`0.1.0-alpha`).
+## [0.1.0-alpha] - 2026-10-20
+
+First public preview.
 
 ### Added
 
@@ -64,3 +66,6 @@ partner impersonation honours lockbox approval and the relationship's ceiling; c
 - Only permissively licensed packages, without exceptions: `Microsoft.Data.SqlClient` 7.x (Entra authentication to SQL
   Server is now its optional `Microsoft.Data.SqlClient.Extensions.Azure` package), and SqlClient's proprietary native
   networking is excluded in favour of its managed networking. Consumers who want the same: see docs/DESIGN.md §6.5.
+
+[Unreleased]: https://github.com/JeffWouters/JeffOps.Authentication/compare/v0.1.0-alpha...HEAD
+[0.1.0-alpha]: https://github.com/JeffWouters/JeffOps.Authentication/releases/tag/v0.1.0-alpha
