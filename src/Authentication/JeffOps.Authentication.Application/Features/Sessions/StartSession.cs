@@ -32,6 +32,7 @@ public sealed class StartSessionHandler(
     IAccountRepository accounts,
     IEndedSessions endedSessions,
     SessionBuilder sessions,
+    JeffOps.Authentication.Application.Federation.ProviderSessionGuard providerSessions,
     IEventPublisher events,
     JeffOps.Authentication.Abstractions.Auditing.IAuditSink audit,
     JeffOps.Authentication.Abstractions.Claims.ClaimNames names,
@@ -60,6 +61,12 @@ public sealed class StartSessionHandler(
             || (command.SessionId is { } ended && await endedSessions.IsEndedAsync(ended, cancellationToken).ConfigureAwait(false)))
         {
             return Error.Unauthorized(GrantErrors.SessionRevoked, "This session was ended. Sign in again.");
+        }
+
+        // The provider the user signed in through may have ended the session since: asked again at most once per its interval.
+        if (!await providerSessions.StandsAsync(account.Id, command.SessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "Your identity provider ended this session. Sign in again.");
         }
 
         if (!sessions.AllowsSignIn(command.Strength))

@@ -15,6 +15,9 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
   provider's `acrs` through `UpstreamClaims`.
 - **Skipping the login page** (`Clients[].SkipLoginPage`): a client with exactly one provider can send its users straight
   to it.
+- **Checking sessions with their provider again** (`Providers:{name}:SessionCheckInterval`, Entra and OIDC providers): the
+  provider's refresh token is kept with the session and redeemed at most once per interval; a provider that refuses it ends
+  the session, with back-channel logout. New table `ProviderSessions` (migration `ProviderSessions`).
 - **`tenant_hint` on the BFF's `/bff/login`**, passed on to the token server (tenant ids only).
 - **Session lifetime per client** (`Clients[].SessionLifetime`). Ended sessions and spent refresh tokens are kept for the
   longest lifetime of any client.

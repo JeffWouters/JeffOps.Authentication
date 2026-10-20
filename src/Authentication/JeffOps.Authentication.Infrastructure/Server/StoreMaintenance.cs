@@ -50,7 +50,8 @@ internal sealed partial class StoreMaintenance(
 
     /// <summary>
     /// Deletes the short-lived entries nothing reads any more: expired replay entries (an expired one is taken over anyway)
-    /// and external sessions (ignored once expired), and ended sessions whose tokens can no longer be refreshed.
+    /// and external sessions (ignored once expired), ended sessions whose tokens can no longer be refreshed, and providers'
+    /// refresh tokens of sessions that expired or ended.
     /// </summary>
     internal async Task SweepAsync(CancellationToken cancellationToken)
     {
@@ -64,9 +65,14 @@ internal sealed partial class StoreMaintenance(
             var replay = await DeleteAsync(db.ReplayEntries.Where(entry => entry.ExpiresAtUnixMs <= nowMs), cancellationToken).ConfigureAwait(false);
             var external = await DeleteAsync(db.ExternalSessions.Where(entry => entry.ExpiresAtUnixMs <= nowMs), cancellationToken).ConfigureAwait(false);
             var ended = await DeleteAsync(db.EndedSessions.Where(session => session.EndedAtUnixMs < endedBefore), cancellationToken).ConfigureAwait(false);
-            if (replay + external + ended > 0)
+
+            // Providers' refresh tokens: kept no longer than the session here, nor once it ended.
+            var provider = await DeleteAsync(
+                db.ProviderSessions.Where(entry => entry.ExpiresAtUnixMs <= nowMs || db.EndedSessions.Any(session => session.SessionId == entry.SessionId)),
+                cancellationToken).ConfigureAwait(false);
+            if (replay + external + ended + provider > 0)
             {
-                LogSwept(logger, replay, external, ended);
+                LogSwept(logger, replay, external, ended, provider);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -133,8 +139,8 @@ internal sealed partial class StoreMaintenance(
     [LoggerMessage(EventId = 8802, Level = LogLevel.Error, Message = "Pruning the token store failed; retrying at the next interval.")]
     private static partial void LogFailed(ILogger logger, Exception exception);
 
-    [LoggerMessage(EventId = 8803, Level = LogLevel.Debug, Message = "Deleted {Replay} expired replay entries, {External} expired external sessions and {Ended} old ended sessions.")]
-    private static partial void LogSwept(ILogger logger, int replay, int external, int ended);
+    [LoggerMessage(EventId = 8803, Level = LogLevel.Debug, Message = "Deleted {Replay} expired replay entries, {External} expired external sessions, {Ended} old ended sessions and {Provider} provider sessions.")]
+    private static partial void LogSwept(ILogger logger, int replay, int external, int ended, int provider);
 
     [LoggerMessage(EventId = 8804, Level = LogLevel.Error, Message = "Deleting expired replay entries and sessions failed; retrying at the next minute.")]
     private static partial void LogSweepFailed(ILogger logger, Exception exception);

@@ -233,6 +233,7 @@ public static class AuthenticationServiceCollectionExtensions
         services.AddDomainEventHandler<BackchannelLogoutNotifier>();
         services.TryAddScoped<IEndedSessions, DatabaseEndedSessions>();
         services.TryAddScoped<Application.Federation.IExternalSessions, DatabaseExternalSessions>();
+        services.TryAddScoped<Application.Federation.IProviderSessionChecks, DatabaseProviderSessionChecks>();
         services.TryAddScoped<ISessionLogoutNotifier, BackchannelLogoutNotifier>();
 
         return new AuthenticationBuilder(services, configuration);

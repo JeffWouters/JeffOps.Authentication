@@ -36,6 +36,9 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
     /// <summary>Sessions started through external providers, by the provider's session, for their back-channel logout.</summary>
     public DbSet<Server.ExternalSessionEntry> ExternalSessions => Set<Server.ExternalSessionEntry>();
 
+    /// <summary>Sessions whose provider is checked again, with the provider's refresh token.</summary>
+    public DbSet<Server.ProviderSessionEntry> ProviderSessions => Set<Server.ProviderSessionEntry>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -125,6 +128,16 @@ public sealed class AuthenticationDbContext(DbContextOptions<AuthenticationDbCon
             session.Property(entity => entity.ProviderSessionHash).HasMaxLength(64);
             session.HasIndex(entity => new { entity.Provider, entity.ProviderSessionHash });
             session.HasIndex(entity => new { entity.Provider, entity.AccountId });
+            session.HasIndex(entity => entity.ExpiresAtUnixMs);
+        });
+
+        modelBuilder.Entity<Server.ProviderSessionEntry>(session =>
+        {
+            session.ToTable("ProviderSessions");
+            session.HasKey(entity => entity.SessionId);
+            session.Property(entity => entity.SessionId).HasMaxLength(64);
+            session.Property(entity => entity.Provider).HasMaxLength(100).IsRequired();
+            session.Property(entity => entity.ProtectedRefreshToken).IsRequired();
             session.HasIndex(entity => entity.ExpiresAtUnixMs);
         });
     }

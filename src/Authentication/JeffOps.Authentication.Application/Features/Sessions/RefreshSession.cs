@@ -23,6 +23,7 @@ public sealed class RefreshSessionHandler(
     IAccountRepository accounts,
     SessionBuilder sessions,
     IEndedSessions endedSessions,
+    JeffOps.Authentication.Application.Federation.ProviderSessionGuard providerSessions,
     ClaimNames names,
     IOptions<TokenServerOptions> options,
     TimeProvider time) : ICommandHandler<RefreshSessionCommand, IssuedIdentity>
@@ -65,6 +66,12 @@ public sealed class RefreshSessionHandler(
         if (sessionId is not null && await endedSessions.IsEndedAsync(sessionId, cancellationToken).ConfigureAwait(false))
         {
             return Error.Unauthorized(GrantErrors.SessionRevoked, "You signed out of this session. Sign in again.");
+        }
+
+        // The provider the user signed in through may have ended the session since: asked again at most once per its interval.
+        if (!await providerSessions.StandsAsync(account.Id, sessionId, cancellationToken).ConfigureAwait(false))
+        {
+            return Error.Unauthorized(GrantErrors.SessionRevoked, "Your identity provider ended this session. Sign in again.");
         }
 
         var strength = new AuthenticationStrength(stored.FindAll(names.AuthenticationMethods).Select(claim => claim.Value));

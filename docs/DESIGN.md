@@ -1120,6 +1120,23 @@ Non-negotiable defaults. Each has a test.
   only (a pushed request keeps them). Providers are asked again (`prompt=login` and `max_age`, SAML `ForceAuthn`). An
   answer whose `auth_time` or `AuthnInstant` predates the request (one minute of clock skew) gets
   `reauthentication_required`. `auth_time` in tokens is when the user signed in here.
+- **Checking sessions with their provider again** (`Providers:{name}:SessionCheckInterval`, Entra and OIDC providers;
+  off by default). The provider's decisions reach the sessions here within the interval rather than at the end of the
+  session lifetime: a disabled or deleted user, revoked sessions, a Conditional Access condition or sign-in frequency
+  no longer met. Not real time like Continuous Access Evaluation.
+  - `offline_access` is requested. The provider's refresh token is kept with the session (table `ProviderSessions`,
+    protected with Data Protection) until the session expires or ends. A sign-in without one doesn't count
+    (`provider_error`), since the session couldn't be checked.
+  - When the session's tokens are issued (authorize, device approval) or refreshed, and the last check is older than the
+    interval, the token is redeemed at the provider, and a rotated one is kept.
+  - `invalid_grant`, `interaction_required`, `login_required` or `consent_required` ends the session as signing out
+    would: its tokens stop working, clients get a back-channel logout (`sid`), and audit records
+    `session.ended_by_provider`. The grant is refused with `session_revoked`.
+  - Anything else is no verdict on the user and the session continues, checked again at its next refresh. That covers an
+    unreachable provider, a server error, and `invalid_client` (this server's own secret expired).
+  - A token the key ring can no longer read ends the session.
+  - A check that takes longer than 10 seconds counts as unreachable, so a slow provider doesn't hold up the refresh.
+  - Sessions that started before the interval was set aren't checked.
 - **Authentication contexts through providers** (`acr_values`, such as an Entra Conditional Access context `c1`): the
   token server asks the provider for them (`acr_values`; Entra the `claims` parameter with `acrs`, which is how it takes
   the request) and keeps the provider's `acrs`/`acr` with the sign-in. A sign-in through a configured provider that

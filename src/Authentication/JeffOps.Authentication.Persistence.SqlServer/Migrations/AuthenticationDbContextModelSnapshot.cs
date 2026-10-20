@@ -223,6 +223,37 @@ namespace JeffOps.Authentication.Persistence.SqlServer.Migrations
                     b.ToTable("ExternalSessions", "auth");
                 });
 
+            modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.ProviderSessionEntry", b =>
+                {
+                    b.Property<string>("SessionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("CheckedAtUnixMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ExpiresAtUnixMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProtectedRefreshToken")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("SessionId");
+
+                    b.HasIndex("ExpiresAtUnixMs");
+
+                    b.ToTable("ProviderSessions", "auth");
+                });
+
             modelBuilder.Entity("JeffOps.Authentication.Infrastructure.Server.ReplayEntry", b =>
                 {
                     b.Property<string>("Key")

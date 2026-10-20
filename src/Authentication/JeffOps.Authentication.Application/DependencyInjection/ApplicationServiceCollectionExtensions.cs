@@ -35,6 +35,7 @@ public static class ApplicationServiceCollectionExtensions
         services.TryAddScoped<Federation.IPendingLinks, Federation.NoPendingLinks>();
         services.TryAddScoped<Federation.ITenantProviderDirectory, Federation.NoTenantProviders>();
         services.TryAddScoped<SessionBuilder>();
+        services.TryAddScoped<Federation.ProviderSessionGuard>();
         services.TryAddScoped<ServiceIdentity>();
         services.AddScoped<IExtensionGrantHandler, Features.Grants.WorkloadIdentity.WorkloadIdentityGrantHandler>();
         services.AddSingleton(new ExtensionGrantRegistration(Features.Grants.WorkloadIdentity.WorkloadIdentityGrantHandler.GrantType));

@@ -62,6 +62,9 @@ public sealed class StoreMaintenanceTests
             db.ExternalSessions.Add(new ExternalSessionEntry("live-session", "provider", null, Guid.NewGuid(), future));
             db.EndedSessions.Add(new EndedSession("ended-long-ago", Guid.NewGuid(), longAgo));
             db.EndedSessions.Add(new EndedSession("ended-recently", Guid.NewGuid(), past));
+            db.ProviderSessions.Add(new ProviderSessionEntry("expired-provider-session", "provider", Guid.NewGuid(), "token", past, past));
+            db.ProviderSessions.Add(new ProviderSessionEntry("ended-recently", "provider", Guid.NewGuid(), "token", past, future));
+            db.ProviderSessions.Add(new ProviderSessionEntry("live-provider-session", "provider", Guid.NewGuid(), "token", past, future));
             await db.SaveChangesAsync(ct);
         }
 
@@ -73,6 +76,7 @@ public sealed class StoreMaintenanceTests
             (await db.ReplayEntries.Select(entry => entry.Key).ToListAsync(ct)).ShouldBe(["live"], "more than two batches of expired entries");
             (await db.ExternalSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["live-session"]);
             (await db.EndedSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["ended-recently"], "its tokens could still be refreshed");
+            (await db.ProviderSessions.Select(entry => entry.SessionId).ToListAsync(ct)).ShouldBe(["live-provider-session"], "expired or ended: the provider's token goes");
         }
     }
 
