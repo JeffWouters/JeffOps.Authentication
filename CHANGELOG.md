@@ -5,6 +5,10 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 
 ## [Unreleased]
 
+## [0.2.0-alpha] - 2026-10-20
+
+What a product needs to move its web sign-in onto a shared token server without losing what its Entra sign-in gave it.
+
 ### Added
 
 - **Upstream identity for first-party clients** (`Clients[].ForwardUpstreamIdentity`, `Clients[].UpstreamClaims`): the
@@ -13,19 +17,28 @@ project uses [Semantic Versioning](https://semver.org/) from 1.0 on.
 - **Authentication contexts through providers** (`acr_values`): passed to the provider (Entra: the `claims` parameter
   with `acrs`); a sign-in through a configured provider that didn't report them signs in again once. Clients receive the
   provider's `acrs` through `UpstreamClaims`.
-- **Skipping the login page** (`Clients[].SkipLoginPage`): a client with exactly one provider can send its users straight
-  to it.
 - **Checking sessions with their provider again** (`Providers:{name}:SessionCheckInterval`, Entra and OIDC providers): the
   provider's refresh token is kept with the session and redeemed at most once per interval; a provider that refuses it ends
   the session, with back-channel logout. New table `ProviderSessions` (migration `ProviderSessions`).
+- **Session lifetime per client** (`Clients[].SessionLifetime`). Ended sessions and spent refresh tokens are kept for the
+  longest lifetime of any client.
+- **Skipping the login page** (`Clients[].SkipLoginPage`): a client with exactly one provider can send its users straight
+  to it.
 - **Deleting accounts**: by the user (`DELETE account`) or an operator (`DELETE admin/accounts/{id}`), both with step-up,
   and for inactivity (`InactiveAccounts:DeleteAfter`, warned `WarnBefore` ahead through `INotifier`). Modules erase their
   own data (`IAccountDataEraser`); the only administrator of a tenant and SCIM-provisioned accounts can't be deleted.
   Event `auth.account.deleted.v1`. New columns `Accounts.LastActiveAtUnixMs` and `DeletionWarnedAtUnixMs` (migration
   `AccountActivity`; existing accounts count as active from the migration).
 - **`tenant_hint` on the BFF's `/bff/login`**, passed on to the token server (tenant ids only).
-- **Session lifetime per client** (`Clients[].SessionLifetime`). Ended sessions and spent refresh tokens are kept for the
-  longest lifetime of any client.
+
+### Upgrading
+
+- Two SQL Server migrations, `ProviderSessions` and `AccountActivity`: apply them before the new version starts, as you
+  apply migrations now.
+- Sign-ins, refreshes and personal access token exchanges now record the account's activity: at most one write per account
+  per day.
+- Hosts with their own `IAccountRepository`: it has three new members (`ListToWarnOfDeletionAsync`,
+  `ListDueForDeletionAsync`, `Remove`).
 
 ## [0.1.0-alpha] - 2026-10-20
 
@@ -89,5 +102,6 @@ partner impersonation honours lockbox approval and the relationship's ceiling; c
   Server is now its optional `Microsoft.Data.SqlClient.Extensions.Azure` package), and SqlClient's proprietary native
   networking is excluded in favour of its managed networking. Consumers who want the same: see docs/DESIGN.md §6.5.
 
-[Unreleased]: https://github.com/JeffWouters/JeffOps.Authentication/compare/v0.1.0-alpha...HEAD
+[Unreleased]: https://github.com/JeffWouters/JeffOps.Authentication/compare/v0.2.0-alpha...HEAD
+[0.2.0-alpha]: https://github.com/JeffWouters/JeffOps.Authentication/compare/v0.1.0-alpha...v0.2.0-alpha
 [0.1.0-alpha]: https://github.com/JeffWouters/JeffOps.Authentication/releases/tag/v0.1.0-alpha
