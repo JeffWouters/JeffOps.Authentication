@@ -4,12 +4,12 @@
     "net10.0": {
       "ITfoxtec.Identity.Saml2": {
         "type": "Direct",
-        "requested": "[4.21.0, )",
-        "resolved": "4.21.0",
-        "contentHash": "uVGbMjwuTp1j/8TwuV3JZPu3FE1s/F8iG1myLTpWLc1v51UMKRyxkbhc8wF4K18wZxIOeBSIDAsXw/pv6bPIaw==",
+        "requested": "[4.22.0, )",
+        "resolved": "4.22.0",
+        "contentHash": "gAvCRMqoroRcRSvivn36gHEcZke0NzP9Z0tA5L+JoCnZQVf9eYItZuWHOcr50k/UF+wuSXlGFccv6+zB3FCZmw==",
         "dependencies": {
-          "Microsoft.IdentityModel.Tokens.Saml": "8.22.0",
-          "System.ServiceModel.Primitives": "10.0.652802"
+          "Microsoft.IdentityModel.Tokens.Saml": "8.23.0",
+          "System.ServiceModel.Primitives": "10.1.0"
         }
       },
       "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
@@ -25,47 +25,47 @@
       },
       "Microsoft.IdentityModel.Abstractions": {
         "type": "Transitive",
-        "resolved": "8.22.0",
-        "contentHash": "LU3V3owsu4vGpCg2kyL7SsQEuHwcoJ8FSNBqzLADzCf3/PcKUTcx5Plsd51DoTJMfK/WigXV/03UhaN5JXE6uQ=="
+        "resolved": "8.23.0",
+        "contentHash": "JjiBkKj12OKvuWr+kB5sQwb7fmWW5bi03Mq/rd2Fu/7YwZ1RWQO9KhI9lBxki4o1VvY0wzqny8c7nwx1uuZzVg=="
       },
       "Microsoft.IdentityModel.Logging": {
         "type": "Transitive",
-        "resolved": "8.22.0",
-        "contentHash": "G9Tl0yXSlr2pkXv4EpXjO16M4q6oo9N/od+gNyOusZ8yM8LZg1H3f/QOMFuOJiV6znzY5MkAREU97JRRnqpEQw==",
+        "resolved": "8.23.0",
+        "contentHash": "wSXXOoV4b4hhRcC492jyNBZkO0LWrcWtWP5Cl5ujrON3vTMlufXDT39gTZfBhFAZCV2XJtNU6DLHMDR6E9YpUg==",
         "dependencies": {
-          "Microsoft.IdentityModel.Abstractions": "8.22.0"
+          "Microsoft.IdentityModel.Abstractions": "8.23.0"
         }
       },
       "Microsoft.IdentityModel.Tokens": {
         "type": "Transitive",
-        "resolved": "8.22.0",
-        "contentHash": "i4lywKKUuVmheCUA+w/q8QNPReNI0qanHI9hhz48AFqD1ljyb8sxPL2RbXOGiPV13XdJ4kxieL9ukS7tD43LxA==",
+        "resolved": "8.23.0",
+        "contentHash": "PUowLq8gqICt+oepHWmKBOJmnVmWoQ5dOVn2CgwFMBZZOAEMHgCQLWs8ONYdsjAyjhDHaFy+AAx0OMG/oV06Zw==",
         "dependencies": {
           "Microsoft.Bcl.Cryptography": "10.0.2",
-          "Microsoft.IdentityModel.Logging": "8.22.0"
+          "Microsoft.IdentityModel.Logging": "8.23.0"
         }
       },
       "Microsoft.IdentityModel.Tokens.Saml": {
         "type": "Transitive",
-        "resolved": "8.22.0",
-        "contentHash": "Qj10jvo6pN+DDDqUMwNWe8tTWshv0CJrRZZRgCN9pKj0PVTZRQQlEqub1iI3kAFhR51jpZZzMGrKGouvufM8sg==",
+        "resolved": "8.23.0",
+        "contentHash": "oNbHQ3v51FNKgfTwQHYs5xo+o7DwCCs5uCTYXOeAQmctPLpbrUOw3iqLJySVBVqh3oH1ZEQp04Z5JWlL3ZZWbg==",
         "dependencies": {
-          "Microsoft.IdentityModel.Tokens": "8.22.0",
-          "Microsoft.IdentityModel.Xml": "8.22.0"
+          "Microsoft.IdentityModel.Tokens": "8.23.0",
+          "Microsoft.IdentityModel.Xml": "8.23.0"
         }
       },
       "Microsoft.IdentityModel.Xml": {
         "type": "Transitive",
-        "resolved": "8.22.0",
-        "contentHash": "crNhMJNxReeqFDQq20PADnzhJIrneBqSyjf/Fh0MbSI8vOZxvkHZYjAYzya7oUlCRDuM1WDrAp2NJzPpjQ5Mww==",
+        "resolved": "8.23.0",
+        "contentHash": "EQmcG72im0fEyOOGzowXT0b0fB7tin4Rx7t3busI9peiZCu6AzWCaYTyOl1uYndn9Jblwdtn7D4VC3+l3wJHtw==",
         "dependencies": {
-          "Microsoft.IdentityModel.Tokens": "8.22.0"
+          "Microsoft.IdentityModel.Tokens": "8.23.0"
         }
       },
       "System.ServiceModel.Primitives": {
         "type": "Transitive",
-        "resolved": "10.0.652802",
-        "contentHash": "ULfGNl75BNXkpF42wNV2CDXJ64dUZZEa8xO2mBsc4tqbW9QjruxjEB6bAr4Z/T1rNU+leOztIjCJQYsBGFWYlw=="
+        "resolved": "10.1.0",
+        "contentHash": "aFwU1C7xHmHKGt06PMMmaPWIn3RIP/kmF7WuazlTgSMbwDYXW4wIymax+KZegm2VWWljerevIY6m8EW/F/s1rg=="
       },
       "jeffops.authentication.abstractions": {
         "type": "Project"
