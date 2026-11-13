@@ -13,13 +13,13 @@
   </ItemGroup>
 
   <ItemGroup Label="Runtime">
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="10.11.0" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Caching.Hybrid" Version="11.0.0" />
     <PackageVersion Include="OpenIddict.AspNetCore" Version="7.7.2" />
     <PackageVersion Include="OpenIddict.EntityFrameworkCore" Version="7.7.2" />
     <PackageVersion Include="OpenIddict.Server.AspNetCore" Version="7.7.2" />
@@ -29,22 +29,22 @@
     <PackageVersion Include="OpenIddict.Client.WebIntegration" Version="7.7.2" />
     <PackageVersion Include="OpenIddict.Client.DataProtection" Version="7.7.2" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.15" />
     <!-- SqlClient 7 moved Entra authentication to an optional package, so the MSAL broker and its proprietary native interop
          are no longer pulled in. Its native networking (SNI.runtime, also proprietary) is excluded where referenced; SqlClient
          then uses its managed networking (docs/DESIGN.md §6.5, D24). -->
     <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.1" />
-    <PackageVersion Include="Microsoft.Data.SqlClient.SNI.runtime" Version="7.1.0" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Data.SqlClient.SNI.runtime" Version="7.1.2" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15" />
     <PackageVersion Include="Yarp.ReverseProxy" Version="2.3.0" />
     <!-- SAML 2.0 service provider (BSD-3-Clause). -->
     <PackageVersion Include="ITfoxtec.Identity.Saml2" Version="4.21.0" />
     <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.10.2" />
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
     <PackageVersion Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.23.0" />
-    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis" Version="11.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="Transitive security pins">
@@ -58,10 +58,10 @@
     <PackageVersion Include="Shouldly" Version="4.3.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.4" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="11.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="11.0.0" />
     <PackageVersion Include="TngTech.ArchUnitNET" Version="0.13.4" />
     <PackageVersion Include="Verify.XunitV3" Version="33.3.3" />
   </ItemGroup>
